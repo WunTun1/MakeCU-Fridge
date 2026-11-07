@@ -8,9 +8,11 @@ import { Stepper } from '@/components/Stepper';
 import { formatAmount } from '@/lib/amount';
 import { api, type CookLine, type Made, type Nutrition } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
-import { capitalize } from '@/lib/time';
+import { capitalize, whenWord } from '@/lib/time';
 
 const MAX_SERVINGS = 12;
+/** Cooked leftovers keep this long in the fridge (same as the backend's LEFTOVER_DAYS). */
+const LEFTOVER_DAYS = 3;
 const MADE_OPTIONS: { value: Made; label: string }[] = [
   { value: 1, label: 'Full recipe' },
   { value: 0.5, label: 'Half' },
@@ -31,6 +33,14 @@ function yieldText(servings: number | null, made: Made): string {
   if (!servings) return "The recipe doesn't say how many it serves";
   const n = Math.max(1, Math.round(servings * made));
   return `Makes ${n} serving${n === 1 ? '' : 's'}`;
+}
+
+/** "3 servings left over. They'll keep until Tuesday." Null when nothing is left or the yield is unknown. */
+function leftoverText(servings: number | null, made: Made, eaten: number): string | null {
+  const left = servings ? Math.round(servings * made - eaten) : 0;
+  if (left < 1) return null;
+  const until = capitalize(whenWord(LEFTOVER_DAYS));
+  return left === 1 ? `1 serving left over. It'll keep until ${until}.` : `${left} servings left over. They'll keep until ${until}.`;
 }
 
 /** "Logs 1,780 kcal and 104 g protein". */
@@ -94,6 +104,7 @@ export function CookSheet({
   }
 
   const logs = nutritionText(nutrition, eaten);
+  const leftover = leftoverText(servings, made, eaten);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -138,6 +149,7 @@ export function CookSheet({
             {eaten === 1 ? '1 serving' : `${eaten} servings`}
             {logs ? `. ${logs}` : ''}
           </Text>
+          {leftover && <Text style={ui.muted}>{leftover}</Text>}
         </View>
 
         <View style={{ minHeight: 48, flexDirection: 'row' }}>

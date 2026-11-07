@@ -1,6 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Stack } from 'expo-router';
-import { useEffect, useRef, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '@/components/Button';
@@ -23,9 +23,23 @@ function usedSummary(lines: CookLine[]): string {
   return `Used ${parts.join(', ')}`;
 }
 
+/** "35 g protein · 362 kcal · 40 min · Serves 4": one line, protein first. */
+function metaLine(r: RecipeDetail): string {
+  const n = r.nutrition;
+  return [
+    n.protein_g != null && `${Math.round(n.protein_g)} g protein`,
+    n.calories != null && `${Math.round(n.calories)} kcal`,
+    r.minutes != null && `${r.minutes} min`,
+    r.servings != null && `Serves ${Math.round(r.servings)}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+}
+
 /**
  * Everything needed to cook a recipe: what you have, what to swap, what to buy
  * (one tap puts it on the grocery list), steps with swaps written in, and "I made this".
+ * Leftovers from an earlier cook come first: eating one logs it without touching the ingredients.
  */
 export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   const showSnack = useSnackbar();
@@ -33,29 +47,31 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   const [error, setError] = useState<string | null>(null);
   const [onList, setOnList] = useState<Set<string>>(new Set());
   const [sheetOpen, setSheetOpen] = useState(false);
-  const [loggedMeal, setLoggedMeal] = useState<number | null>(null);
   const [rated, setRated] = useState<boolean | null>(null);
   const logging = useRef(false);
 
+  /** Badges, leftovers and "Logged today" all come from the server, so it reloads after every change. */
+  const load = useCallback(
+    () =>
+      api.recipe(recipeId).then(
+        (r) => {
+          setRecipe(r);
+          setOnList(new Set(r.on_grocery_list));
+        },
+        (e) => setError((e as Error).message),
+      ),
+    [recipeId],
+  );
+
   useEffect(() => {
-    let cancelled = false;
-    api
-      .recipe(recipeId)
-      .then((r) => {
-        if (cancelled) return;
-        setRecipe(r);
-        setOnList(new Set(r.on_grocery_list));
-      })
-      .catch((e) => !cancelled && setError((e as Error).message));
-    return () => {
-      cancelled = true;
-    };
-  }, [recipeId]);
+    load();
+  }, [load]);
 
   if (error) return <Text style={styles.muted}>Couldn&apos;t load this recipe: {error}</Text>;
   if (!recipe) return <ActivityIndicator color={colors.accent} style={{ margin: 24 }} />;
 
-  const n = recipe.nutrition;
+  const loggedMeal = recipe.logged_meal_id;
+  const left = recipe.leftovers;
   const needed = [...recipe.missing, ...recipe.short.map((s) => s.name)];
   const toBuy = needed.filter((m) => !onList.has(m));
 
@@ -70,24 +86,17 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     }
   }
 
-  async function log(made: Made, servingsEaten: number) {
+  /** One write at a time; afterwards this page and every other screen reload. */
+  async function write(run: () => Promise<{ message: string; undo: () => Promise<unknown> }>) {
     if (logging.current) return;
     logging.current = true;
     try {
-      const result = await api.cooked(recipeId, made, servingsEaten);
-      setSheetOpen(false);
-      setLoggedMeal(result.meal_id);
+      const { message, undo } = await run();
+      await load();
       refreshAll();
       showSnack({
-        message: usedSummary(result.consumptions),
-        action: {
-          label: 'Undo',
-          onPress: () =>
-            api.undoMeal(result.meal_id).then(() => {
-              setLoggedMeal(null);
-              refreshAll();
-            }, () => {}),
-        },
+        message,
+        action: { label: 'Undo', onPress: () => undo().then(() => (load(), refreshAll()), () => {}) },
       });
     } catch (e) {
       showSnack({ message: `Couldn't log it: ${(e as Error).message}` });
@@ -96,6 +105,20 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     }
   }
 
+  const log = (made: Made, servingsEaten: number) =>
+    write(async () => {
+      const result = await api.cooked(recipeId, made, servingsEaten);
+      setSheetOpen(false);
+      return { message: usedSummary(result.consumptions), undo: () => api.undoMeal(result.meal_id) };
+    });
+
+  const eatLeftover = (productId: number, name: string) =>
+    write(async () => {
+      const eaten = await api.eat(productId);
+      const protein = eaten.protein_g != null ? ` · ${Math.round(eaten.protein_g)} g protein` : '';
+      return { message: `Logged 1 serving of ${name}${protein}`, undo: () => api.undoMeal(eaten.meal_id) };
+    });
+
   async function rate(liked: boolean) {
     setRated(liked);
     await api.rate(recipeId, liked).catch(() => setRated(null));
@@ -103,19 +126,14 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
 
   return (
     <View style={{ gap: 16 }}>
-      <Stack.Screen options={{ title: recipe.name }} />
+      <Stack.Screen options={{ title: '' }} />
       {recipe.image_url && <Image source={{ uri: recipe.image_url }} style={styles.hero} />}
 
       <Text style={styles.title} numberOfLines={3}>
         {recipe.name}
       </Text>
 
-      <View style={styles.stats}>
-        {recipe.minutes != null && <Stat icon="clock-o" text={`${recipe.minutes} min`} />}
-        {recipe.servings != null && <Stat icon="users" text={`Serves ${Math.round(recipe.servings)}`} />}
-        {n.calories != null && <Stat icon="fire" text={`${Math.round(n.calories)} kcal`} />}
-        {n.protein_g != null && <Stat icon="bolt" text={`${Math.round(n.protein_g)} g protein`} />}
-      </View>
+      <Text style={styles.meta}>{metaLine(recipe)}</Text>
       <Text style={styles.muted}>
         {recipe.servings != null
           ? 'Nutrition per serving, from the recipe source.'
@@ -165,9 +183,20 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
       </View>
 
       <View style={styles.cookBox}>
+        {left && (
+          <>
+            <Text style={styles.text}>
+              You have {left.servings === 1 ? '1 serving' : `${left.servings} servings`} left over
+            </Text>
+            <View style={styles.buttonRow}>
+              <Button title="Ate one serving" onPress={() => eatLeftover(left.product_id, recipe.name)} />
+            </View>
+          </>
+        )}
         <View style={styles.buttonRow}>
           <Button
             title={loggedMeal != null ? 'Logged today' : 'I made this'}
+            variant={left ? 'secondary' : 'primary'}
             onPress={() => setSheetOpen(true)}
             disabled={loggedMeal != null}
           />
@@ -269,20 +298,10 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
   );
 }
 
-function Stat({ icon, text }: { icon: ComponentProps<typeof FontAwesome>['name']; text: string }) {
-  return (
-    <View style={styles.stat}>
-      <FontAwesome name={icon} size={15} color={colors.muted} />
-      <Text style={[styles.text, { fontSize: 15 }]}>{text}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   hero: { width: '100%', height: 180, borderRadius: 12, backgroundColor: colors.input },
   title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '700' },
-  stats: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
-  stat: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  meta: { color: colors.text, fontSize: 15, lineHeight: 20 },
   text: { color: colors.text, fontSize: 16 },
   muted: { color: colors.muted, fontSize: 13 },
   reason: { color: colors.accent, fontSize: 15 },
@@ -304,7 +323,7 @@ const styles = StyleSheet.create({
   struck: { textDecorationLine: 'line-through', color: colors.muted },
   stepRow: { flexDirection: 'row', gap: 12 },
   stepNum: { color: colors.accent, fontWeight: '700', width: 24, fontSize: 15 },
-  cookBox: { gap: 4 },
+  cookBox: { gap: 8 },
   buttonRow: { flexDirection: 'row', minHeight: 48 },
   textButton: { minHeight: 44, alignSelf: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   link: { color: colors.accent, fontSize: 15, fontWeight: '600' },

@@ -18,7 +18,7 @@ import { ScreenSimulator } from '@/components/kiosk/ScreenSimulator';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount } from '@/lib/amount';
 import { api, type InventoryEntry, type ProductUsage } from '@/lib/api';
-import { expiryTone, expiryWord } from '@/lib/expiry';
+import { expiryTone, expiryWord, LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
 import { palettes, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
 import { capitalize, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
@@ -271,12 +271,8 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
 
   const d = item.expires_in_days;
   const tone = expiryTone(d);
-  const runsOut =
-    item.days_left == null
-      ? 'Not enough history'
-      : d != null && item.days_left > d
-        ? 'After it goes bad'
-        : capitalize(whenWord(item.days_left));
+  const left = leftWhenBad(item);
+  const runsOut = item.days_left == null ? 'Not enough history' : capitalize(whenWord(item.days_left));
   return (
     <KioskModal visible title={item.name} onClose={onClose}>
       <View style={styles.stats}>
@@ -286,7 +282,11 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
           color={d == null ? colors.muted : tone ? colors[tone] : undefined}
         />
         <Stat label="Have" value={capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))} />
-        <Stat label="Runs out" value={runsOut} color={item.days_left == null ? colors.muted : undefined} />
+        {left ? (
+          <Stat label={LEFT_WHEN_BAD} value={left} />
+        ) : (
+          <Stat label="Runs out" value={runsOut} color={item.days_left == null ? colors.muted : undefined} />
+        )}
       </View>
       {usage && (
         <>

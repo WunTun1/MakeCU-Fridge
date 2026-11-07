@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from intelligence import taste
 from intelligence.expiry import days_until
@@ -40,6 +41,16 @@ FREE_MISSING, MISSING_PENALTY, MAX_MISSING_PENALTY = 2, 0.04, 0.24
 PHOTO_TIEBREAK = 0.03  # between near-equal picks, a card with a photo is easier to choose from
 DISLIKE_PENALTY = 0.4
 HAVE_RATIO = 0.9  # on hand covers at least this share of what the recipe needs -> "have"
+
+# Protein mode (a protein-led goal, or asked for): hide low-protein recipes, rank by protein.
+PROTEIN_MODE_MIN_G, PROTEIN_MODE_RELAXED_G, PROTEIN_MODE_MIN_RESULTS = 25.0, 20.0, 3
+PROTEIN_RICH_PER_100G = 15.0   # pantry items that seed a protein-mode search (chicken, Greek yogurt, eggs)
+PROTEIN_SORT_POOL = 3          # protein mode re-sorts the best `limit * this` matches by protein
+SEARCH_SEED_ITEMS = 12
+
+# Cooked food left over: a fridge item counted in servings (USDA: cooked leftovers keep 3-4 days).
+LEFTOVER_DAYS = 3
+LEFTOVER_SERVING_G = 300.0
 
 # Automatic lists (Cook tonight, One item away) fill a dinner slot.
 DINNER_MINUTES, DINNER_MINUTES_RELAXED, DINNER_MIN_RESULTS = 45, 60, 3
@@ -139,6 +150,10 @@ def grams_needed(ing: dict, product) -> float | None:
     return amount * (product["grams_per_unit"] if product["unit"] == "count" else DEFAULT_PIECE_G)
 
 
+def leftovers_name(recipe_name: str) -> str:
+    return f"{recipe_name} leftovers"
+
+
 def normalized_title(name: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", name.lower()))
 
@@ -156,6 +171,32 @@ def dislike_hits(recipe: Recipe, patterns: list[re.Pattern]) -> list[re.Pattern]
     """Dislikes found in ingredient names or step text ('cream of mushroom soup' counts as mushroom)."""
     text = " ".join([i["name"] for i in recipe.ingredients] + recipe.steps)
     return [p for p in patterns if p.search(text)]
+
+
+def has_allergen(recipe: Recipe, allergies: list[str]) -> bool:
+    """Ingredient lines, the title ('Chicken (Or Shrimp) Lo Mein') and the steps all count."""
+    return bool(allergies) and bool(allergen_hits([i["name"] for i in recipe.ingredients] + [recipe.name] + recipe.steps,
+                                                  allergies))
+
+
+def _protein_of(m: Match) -> float | None:
+    return m.recipe.nutrition.get("protein_g")
+
+
+def protein_floor(items: list, protein_of=_protein_of) -> list:
+    """Protein mode: only recipes with protein data and at least 25 g a serving (20 g when that leaves fewer than 3)."""
+    def at_least(grams: float) -> list:
+        return [x for x in items if (protein_of(x) or 0) >= grams]
+
+    strict = at_least(PROTEIN_MODE_MIN_G)
+    return strict if len(strict) >= PROTEIN_MODE_MIN_RESULTS else at_least(PROTEIN_MODE_RELAXED_G)
+
+
+def protein_key(m: Match) -> tuple[float, float]:
+    """Most protein per serving first; between equals, more protein per calorie."""
+    protein = _protein_of(m) or 0.0
+    kcal = m.recipe.nutrition.get("calories") or 0.0
+    return protein, (protein / kcal if kcal else 0.0)
 
 
 class RecipeEngine:
@@ -269,18 +310,24 @@ class RecipeEngine:
         must_have_all: bool = False,
         limit: int = 5,
         automatic: bool = False,
+        min_servings: float | None = None,
+        min_protein_g: float | None = None,
     ) -> list[Match]:
         """`automatic` is for lists nobody asked for (Cook tonight): dinner-sized main dishes only,
-        dislikes excluded outright."""
+        dislikes excluded outright. `high_protein` is protein mode: see protein_floor and protein_key."""
         pantry = self.pantry()
         allergies, dislikes = self.profile_filters()
         prefs = taste.profile(self.db)
 
         search_text = query
         if not query and not cuisine:
-            # "What can I make?" — search by what you have, things about to expire first.
+            # "What can I make?" — search by what you have, things about to expire first; in protein
+            # mode, the protein-rich things first (and only those plus what's expiring, when there are any).
+            rich = {c for c, p in pantry.products.items() if (p["protein_g_per_100g"] or 0) >= PROTEIN_RICH_PER_100G}
             ordered = sorted(pantry.items, key=lambda c: (c not in pantry.expiring, c))
-            search_text = " ".join(ordered[:12])
+            if high_protein and rich:
+                ordered = sorted(rich) + [c for c in ordered if c in pantry.expiring and c not in rich]
+            search_text = " ".join(ordered[:SEARCH_SEED_ITEMS])
 
         minutes = DINNER_MINUTES_RELAXED if automatic else max_minutes
         hits = self.store.search(search_text, cuisine, minutes, CANDIDATES, main_dish_only=automatic)
@@ -291,8 +338,12 @@ class RecipeEngine:
 
         matches_: list[Match] = []
         for recipe in self.store.get_many([i for i, _ in hits]):
-            if allergen_hits([i["name"] for i in recipe.ingredients], allergies):
+            if has_allergen(recipe, allergies):
                 continue  # hard filter, never shown
+            if min_servings and (recipe.servings is None or recipe.servings < min_servings):
+                continue
+            if min_protein_g and (recipe.nutrition.get("protein_g") or 0) < min_protein_g:
+                continue
             disliked = dislike_hits(recipe, dislikes)
             if automatic and (disliked or not fits_dinner(recipe)):
                 continue
@@ -333,6 +384,9 @@ class RecipeEngine:
             quick = [m for m in ranked if m.recipe.minutes is None or m.recipe.minutes <= DINNER_MINUTES]
             if len(quick) >= DINNER_MIN_RESULTS:
                 ranked = quick
+        if high_protein:
+            # The best fits for right now, shown highest protein first.
+            ranked = sorted(protein_floor(ranked)[:limit * PROTEIN_SORT_POOL], key=protein_key, reverse=True)
         return ranked[:limit]
 
     @staticmethod
@@ -442,18 +496,52 @@ class RecipeEngine:
         )
         for p in plan:
             inv_events.apply_consume(self.db, p["item"]["id"], p["grams"], meta={"meal_id": meal_id})
+        leftovers = self._store_leftovers(recipe, made, servings_eaten, meal_id)
         taste.record_recipe(self.db, "cooked", recipe)
         return {
             "recipe": recipe.name, "meal_id": meal_id, "made": made, "servings_eaten": servings_eaten,
             "used": [{"item": line["item"], "grams": round(line["grams_used"])} for line in preview],
-            "consumptions": preview,
+            "consumptions": preview, "leftovers": leftovers,
         }
 
+    def _store_leftovers(self, recipe: Recipe, made: float, servings_eaten: float, meal_id: int) -> dict | None:
+        """Servings made minus servings eaten go in the fridge as '<Recipe> leftovers', counted in
+        servings, good for LEFTOVER_DAYS. A second cook of the same recipe adds another batch."""
+        if not recipe.servings:
+            return None
+        left = round(recipe.servings * made - servings_eaten)
+        if left < 1:
+            return None
+        per_100g = {k: v * 100 / LEFTOVER_SERVING_G for k, v in recipe.nutrition.items()
+                    if v is not None and k in ("calories", "protein_g", "carbs_g", "fat_g")}
+        product_id = self.db.get_or_create_product(
+            leftovers_name(recipe.name), category="leftovers", unit="count", recipe_id=recipe.id,
+            nutrition_per_100g=per_100g, nutrition_source="recipe", grams_per_unit=LEFTOVER_SERVING_G,
+        )
+        expires = (datetime.now(timezone.utc).date() + timedelta(days=LEFTOVER_DAYS)).isoformat()
+        item_id = inv_events.apply_add(self.db, product_id, left * LEFTOVER_SERVING_G, expiration_date=expires,
+                                       expiration_estimated=True, meta={"meal_id": meal_id})
+        return {"product_id": product_id, "item_id": item_id, "servings": left, "expiration_date": expires}
+
+    def leftovers_for(self, recipe_id: int) -> dict | None:
+        """Leftover servings of this recipe in the fridge now."""
+        product = self.db.product_for_recipe(recipe_id)
+        if product is None:
+            return None
+        grams = sum(i["grams"] for i in self.db.active_items() if i["product_id"] == product["id"])
+        servings = round(grams / product["grams_per_unit"])
+        return {"product_id": product["id"], "servings": servings} if servings >= 1 else None
+
     def undo_meal(self, meal_id: int) -> bool:
-        """Take back an "I made this": the grams go back and the meal is deleted."""
+        """Take back an "I made this" or an eaten serving: the grams go back, leftovers it made
+        go away, and the meal is deleted."""
         if self.db.get_meal(meal_id) is None:
             return False
-        inv_events.undo_events(self.db, [e["id"] for e in self.db.events_for_meal(meal_id)])
+        events = self.db.events_for_meal(meal_id)
+        for e in events:
+            if e["event_type"] == "add":
+                self.db.delete_item(e["item_id"])
+        inv_events.undo_events(self.db, [e["id"] for e in events if e["event_type"] != "add"])
         self.db.delete_meal(meal_id)
         return True
 

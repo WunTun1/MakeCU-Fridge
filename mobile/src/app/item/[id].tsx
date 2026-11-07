@@ -9,9 +9,9 @@ import { Stepper } from '@/components/Stepper';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount, fromGrams, toGrams } from '@/lib/amount';
 import { api, type ProductUsage, type StockItem } from '@/lib/api';
-import { expiryText, expiryTone } from '@/lib/expiry';
+import { expiryText, expiryTone, LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
 import { colors, ui } from '@/lib/theme';
-import { calendarDate, capitalize, daysUntil, isoDateIn, relativeDays, whenWord } from '@/lib/time';
+import { calendarDate, capitalize, daysUntil, isoDateIn, monthName, relativeDays, whenWord } from '@/lib/time';
 import { refreshAll, useApi } from '@/lib/useApi';
 
 /** A panel that's open: one of the actions, or Fix date for one package. */
@@ -26,7 +26,7 @@ export default function ItemDetail() {
   const { data, error, loading, reload } = useApi(() => api.usage(Number(id)));
   const showSnack = useSnackbar();
   const [open, setOpen] = useState<Action | null>(null);
-  const wasting = useRef(false);
+  const busy = useRef(false);
 
   if (loading && !data) return <Loading />;
 
@@ -36,8 +36,21 @@ export default function ItemDetail() {
     refreshAll();
     showSnack({
       message,
-      action: undo && { label: 'Undo', onPress: () => undo().then(reload, () => {}) },
+      action: undo && { label: 'Undo', onPress: () => undo().then(() => (reload(), refreshAll()), () => {}) },
     });
+  };
+
+  /** One write at a time: a second tap while the first is in flight does nothing. */
+  const once = (write: () => Promise<void>) => async () => {
+    if (busy.current) return;
+    busy.current = true;
+    try {
+      await write();
+    } catch (e) {
+      showSnack({ message: `Couldn't save: ${(e as Error).message}` });
+    } finally {
+      busy.current = false;
+    }
   };
 
   return (
@@ -51,23 +64,44 @@ export default function ItemDetail() {
           {data.items.length === 0 ? (
             <Text style={ui.muted}>You don&apos;t have any right now.</Text>
           ) : (
-            <View style={styles.grid}>
-              <GridButton title="Used some" active={open === 'used'} onPress={() => setOpen(open === 'used' ? null : 'used')} />
-              <GridButton
-                title="Threw it out"
-                onPress={async () => {
-                  if (wasting.current) return;
-                  wasting.current = true;
-                  try {
+            <>
+              {data.recipe_id != null && (
+                <View style={styles.buttonRow}>
+                  <Button
+                    title="Ate one serving"
+                    onPress={once(async () => {
+                      const eaten = await api.eat(data.product_id);
+                      const protein = eaten.protein_g != null ? ` · ${Math.round(eaten.protein_g)} g protein` : '';
+                      done(`Logged 1 serving of ${recipeName(data.name)}${protein}`, () => api.undoMeal(eaten.meal_id));
+                    })}
+                  />
+                </View>
+              )}
+              <View style={styles.grid}>
+                <GridButton title="Used some" active={open === 'used'} onPress={() => setOpen(open === 'used' ? null : 'used')} />
+                <GridButton
+                  title="Threw it out"
+                  onPress={once(async () => {
                     const { event_ids } = await api.waste(data.items.map((i) => i.id));
                     done(`Threw out ${data.name}`, () => api.undoEvents(event_ids));
-                  } finally {
-                    wasting.current = false;
-                  }
-                }}
-              />
-              <GridButton title="Fix amount" active={open === 'amount'} onPress={() => setOpen(open === 'amount' ? null : 'amount')} />
-            </View>
+                  })}
+                />
+                {data.items.some((i) => i.location === 'fridge') && (
+                  <GridButton
+                    title="Move to freezer"
+                    onPress={once(async () => {
+                      const moved = await api.freeze(data.product_id);
+                      const amount = formatAmount(moved.grams, data.unit, data.grams_per_unit, data.name);
+                      const what = data.unit === 'count' ? amount : `${amount} ${data.name.toLowerCase()}`;
+                      done(`Moved ${what} to the freezer · good until around ${monthName(moved.expiration_date)}`, () =>
+                        api.undoEvents(moved.event_ids),
+                      );
+                    })}
+                  />
+                )}
+                <GridButton title="Fix amount" active={open === 'amount'} onPress={() => setOpen(open === 'amount' ? null : 'amount')} />
+              </View>
+            </>
           )}
 
           {open === 'used' && <UsedSome data={data} onDone={done} />}
@@ -95,35 +129,45 @@ export default function ItemDetail() {
             </>
           )}
 
-          <Text style={ui.h2}>Used per day, last 4 weeks</Text>
-          <View style={ui.card}>
-            <UsageChart dailyUsage={data.daily_usage_g} unit={data.unit} gramsPerUnit={data.grams_per_unit} name={data.name} />
-          </View>
+          {data.recipe_id == null && (
+            <>
+              <Text style={ui.h2}>Used per day, last 4 weeks</Text>
+              <View style={ui.card}>
+                <UsageChart dailyUsage={data.daily_usage_g} unit={data.unit} gramsPerUnit={data.grams_per_unit} name={data.name} />
+              </View>
+            </>
+          )}
         </>
       )}
     </ScrollView>
   );
 }
 
+/** "Greek Stuffed Chicken leftovers" -> "Greek Stuffed Chicken". */
+const recipeName = (productName: string) => productName.replace(/ leftovers$/, '');
+
+/** All of it is frozen: it keeps for months, so the date is said as a month. */
+const allFrozen = (data: ProductUsage) => data.items.length > 0 && data.items.every((i) => i.location === 'freezer');
+
 function Stats({ data }: { data: ProductUsage }) {
   const days = data.expiration_date ? daysUntil(data.expiration_date) : null;
   const tone = expiryTone(days);
-  const runsOut =
-    data.days_left == null
-      ? 'Not enough history'
-      : days != null && data.days_left > days
-        ? 'After it goes bad'
-        : capitalize(whenWord(data.days_left));
+  const left = leftWhenBad({ ...data, grams: data.on_hand_g, expires_in_days: days });
+  const runsOut = data.days_left == null ? 'Not enough history' : capitalize(whenWord(data.days_left));
   return (
     <View style={[ui.card, styles.stats]}>
-      <Stat
-        label="Goes bad"
-        value={data.expiration_date ? calendarDate(data.expiration_date) : 'No date'}
-        sub={days == null ? undefined : days < 0 ? 'Expired' : relativeDays(days, data.expiry_estimated)}
-        subColor={tone ? colors[tone] : colors.muted}
-      />
+      {allFrozen(data) && data.expiration_date ? (
+        <Stat label="Good until" value={`Around ${monthName(data.expiration_date)}`} sub="In the freezer" subColor={colors.muted} />
+      ) : (
+        <Stat
+          label="Goes bad"
+          value={data.expiration_date ? calendarDate(data.expiration_date) : 'No date'}
+          sub={days == null ? undefined : days < 0 ? 'Expired' : relativeDays(days, data.expiry_estimated)}
+          subColor={tone ? colors[tone] : colors.muted}
+        />
+      )}
       <Stat label="Have" value={formatAmount(data.on_hand_g, data.unit, data.grams_per_unit, data.name)} />
-      <Stat label="Runs out" value={runsOut} />
+      {left ? <Stat label={LEFT_WHEN_BAD} value={left} /> : <Stat label="Runs out" value={runsOut} />}
     </View>
   );
 }
@@ -152,6 +196,14 @@ function GridButton({ title, onPress, active = false }: { title: string; onPress
 
 type PanelProps = { data: ProductUsage; onDone: (message: string, undo?: () => Promise<unknown>) => void };
 
+/** "Goes bad tomorrow · Sun, Nov 8", or "In the freezer · good until around August". */
+function packageWhen(item: StockItem, days: number | null): string {
+  if (item.location === 'freezer') {
+    return item.expiration_date ? `In the freezer · good until around ${monthName(item.expiration_date)}` : 'In the freezer';
+  }
+  return days == null ? 'No date' : `${expiryText(days, item.expiry_estimated)} · ${calendarDate(item.expiration_date!)}`;
+}
+
 /** One package (an add): how much is left of it, when it goes bad, and its own Fix date. */
 function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: StockItem; fixing: boolean; onFix: () => void }) {
   const days = item.expiration_date ? daysUntil(item.expiration_date) : null;
@@ -160,8 +212,8 @@ function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: S
     <View style={styles.packageRow}>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={ui.text}>{capitalize(formatAmount(item.grams, data.unit, data.grams_per_unit, data.name))}</Text>
-        <Text style={[ui.muted, tone && { color: colors[tone] }]}>
-          {days == null ? 'No date' : `${expiryText(days, item.expiry_estimated)} · ${calendarDate(item.expiration_date!)}`}
+        <Text style={[ui.muted, tone && item.location !== 'freezer' && { color: colors[tone] }]}>
+          {packageWhen(item, days)}
         </Text>
       </View>
       <Pressable
@@ -319,6 +371,7 @@ function SaveButton({ title, onPress }: { title: string; onPress: () => Promise<
 const styles = StyleSheet.create({
   stats: { flexDirection: 'row', gap: 12 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  buttonRow: { flexDirection: 'row' },
   gridButton: {
     flexBasis: '48%',
     flexGrow: 1,

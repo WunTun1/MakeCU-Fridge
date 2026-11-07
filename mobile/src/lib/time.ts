@@ -26,9 +26,23 @@ export function calendarDate(isoDate: string): string {
   return localDate(isoDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-/** "Mon". */
-export function shortWeekday(isoDate: string): string {
-  return localDate(isoDate).toLocaleDateString(undefined, { weekday: 'short' });
+/** For "1 L by ...": "today", "tomorrow", "Mon" within the next 6 days, otherwise "Dec 1". */
+export function byDay(isoDate: string, now = new Date()): string {
+  const days = daysUntil(isoDate, now);
+  if (days <= 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  const options: Intl.DateTimeFormatOptions = days <= 6 ? { weekday: 'short' } : { month: 'short', day: 'numeric' };
+  return localDate(isoDate).toLocaleDateString(undefined, options);
+}
+
+/** "August": how freezer dates are said, since they're months away and only approximate. */
+export function monthName(isoDate: string): string {
+  return localDate(isoDate).toLocaleDateString(undefined, { month: 'long' });
+}
+
+/** "12:40 PM" from a timestamp. */
+export function clockTime(isoTimestamp: string): string {
+  return new Date(isoTimestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 /** "Shop by Tue, Nov 10 · covers until Tue, Nov 17": one source for Home and Grocery. */

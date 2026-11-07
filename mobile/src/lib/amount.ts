@@ -29,10 +29,10 @@ function plural(word: string): string {
   return `${word}s`;
 }
 
-/** "egg"/"eggs" from a product name like "Eggs" or "Large Brown Eggs". */
+/** "egg"/"eggs" from a product name like "Eggs" or "Large Brown Eggs"; leftovers are counted in servings. */
 function countNoun(name: string | undefined, n: number): string {
   const last = name?.trim().toLowerCase().split(/\s+/).pop();
-  const one = last ? singular(last) : 'piece';
+  const one = last === 'leftovers' ? 'serving' : last ? singular(last) : 'piece';
   return n === 1 ? one : plural(one);
 }
 

@@ -5,11 +5,12 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 import { FillBar } from '@/components/FillBar';
 import { RecipeCardView } from '@/components/recipes/RecipeCardView';
 import { ErrorCard, Loading } from '@/components/States';
+import { TodayCard } from '@/components/TodayCard';
 import { formatAmount } from '@/lib/amount';
-import { api, type Alert, type InventoryEntry, type Macros, type Profile } from '@/lib/api';
+import { api, type Alert, type InventoryEntry } from '@/lib/api';
 import { expiryTone, goesBadText, runsOutText, urgency, type ExpiryTone } from '@/lib/expiry';
 import { colors, ui } from '@/lib/theme';
-import { capitalize, tripText, whenWord } from '@/lib/time';
+import { capitalize, monthName, tripText, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 5000;
@@ -26,7 +27,7 @@ function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
       if (entry) return goesBadText(entry) ?? alert.detail;
       return days == null ? alert.detail : days < 0 ? 'Expired' : `Goes bad ${whenWord(days)}`;
     case 'low_days_left':
-      return days == null ? alert.detail : runsOutText({ days_left: days, expires_in_days: null });
+      return days == null ? alert.detail : `Runs out ${whenWord(days)}`;
     case 'low_fraction':
       return entry ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left` : 'Running low';
     case 'staple_out':
@@ -45,8 +46,12 @@ export default function Home() {
   if (summary.loading && !summary.data) return <Loading />;
 
   const s = summary.data;
-  const inventory = s ? [...s.inventory].sort(byExpiry) : [];
-  const entryFor = (productId: number | null) => s?.inventory.find((e) => e.product_id === productId);
+  const sorted = s ? [...s.inventory].sort(byExpiry) : [];
+  const inventory = sorted.filter((e) => e.location !== 'freezer');
+  const freezer = sorted.filter((e) => e.location === 'freezer');
+  // Alerts are about what's outside the freezer.
+  const entryFor = (productId: number | null) => inventory.find((e) => e.product_id === productId);
+  const proteinFirst = profile.data?.protein_mode ?? false;
 
   return (
     <ScrollView
@@ -103,18 +108,23 @@ export default function Home() {
             ))
           )}
 
+          <Text style={ui.h2}>Today</Text>
+          <TodayCard totals={s.today_intake.totals} mealCount={s.today_intake.meal_count} profile={profile.data} />
+
           <View style={[ui.row, { justifyContent: 'space-between' }]}>
             <Text style={ui.h2}>Cook tonight</Text>
             <Link href="/chat" style={{ color: colors.accent, fontSize: 14 }}>
               Ask for something else →
             </Link>
           </View>
+          {proteinFirst && <Text style={[ui.muted, styles.caption]}>Highest protein first</Text>}
           {ideas.data && ideas.data.length > 0 ? (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
               {ideas.data.map((r) => (
                 <RecipeCardView
                   key={r.id}
                   card={r}
+                  proteinFirst={proteinFirst}
                   onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
                 />
               ))}
@@ -145,9 +155,6 @@ export default function Home() {
             </Pressable>
           </Link>
 
-          <Text style={ui.h2}>Today</Text>
-          <IntakeCard totals={s.today_intake.totals} profile={profile.data} />
-
           <Text style={ui.h2}>Inventory</Text>
           <View style={ui.card}>
             {inventory.length === 0 ? (
@@ -156,6 +163,17 @@ export default function Home() {
               inventory.map((item, i) => <InventoryRow key={item.product_id} item={item} last={i === inventory.length - 1} />)
             )}
           </View>
+
+          {freezer.length > 0 && (
+            <>
+              <Text style={ui.h2}>Freezer</Text>
+              <View style={ui.card}>
+                {freezer.map((item, i) => (
+                  <InventoryRow key={item.product_id} item={item} last={i === freezer.length - 1} />
+                ))}
+              </View>
+            </>
+          )}
         </>
       )}
     </ScrollView>
@@ -183,46 +201,29 @@ function AlertRow({ alert, text, tone }: { alert: Alert; text: string; tone: Exp
   );
 }
 
-function IntakeCard({ totals, profile }: { totals: Macros; profile: Profile | null }) {
-  const rows: { label: string; value: number; goal: number | null | undefined; unit: string }[] = [
-    { label: 'Calories', value: totals.calories, goal: profile?.daily_calories, unit: 'kcal' },
-    { label: 'Protein', value: totals.protein_g, goal: profile?.daily_protein_g, unit: 'g' },
-    { label: 'Carbs', value: totals.carbs_g, goal: profile?.daily_carbs_g, unit: 'g' },
-    { label: 'Fat', value: totals.fat_g, goal: profile?.daily_fat_g, unit: 'g' },
-  ];
-  return (
-    <View style={[ui.card, { gap: 10 }]}>
-      {rows.map((r) => (
-        <View key={r.label}>
-          <View style={[ui.row, { justifyContent: 'space-between' }]}>
-            <Text style={ui.text}>{r.label}</Text>
-            <Text style={ui.muted}>
-              {Math.round(r.value || 0)}
-              {r.goal ? ` / ${Math.round(r.goal)}` : ''} {r.unit}
-            </Text>
-          </View>
-          {r.goal ? <FillBar fraction={(r.value || 0) / r.goal} /> : null}
-        </View>
-      ))}
-    </View>
-  );
+/** A freezer row says how long it keeps; a fridge row says when it goes bad and when it runs out. */
+function rowLines(item: InventoryEntry): { goesBad: string | null; tone: ExpiryTone; second: string | null } {
+  if (item.location === 'freezer') {
+    const date = item.soonest_batch?.expiration_date;
+    return { goesBad: date ? `Good until around ${monthName(date)}` : null, tone: null, second: null };
+  }
+  return { goesBad: goesBadText(item), tone: expiryTone(item.expires_in_days), second: runsOutText(item) };
 }
 
 // Children of <Link asChild> must get one style object — expo-router throws on style arrays.
 function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
-  const goesBad = goesBadText(item);
-  const dateTone = expiryTone(item.expires_in_days);
+  const { goesBad, tone, second } = rowLines(item);
   return (
     <Link href={{ pathname: '/item/[id]', params: { id: item.product_id } }} asChild>
       <Pressable style={StyleSheet.flatten([styles.invRow, !last && ui.divider])}>
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={[ui.text, { fontWeight: '600' }]}>{item.name}</Text>
-          {goesBad && <Text style={[ui.text, { fontSize: 13 }, dateTone && { color: colors[dateTone] }]}>{goesBad}</Text>}
-          <Text style={ui.muted}>{runsOutText(item)}</Text>
+          {goesBad && <Text style={[ui.text, { fontSize: 13 }, tone && { color: colors[tone] }]}>{goesBad}</Text>}
+          {second && <Text style={ui.muted}>{second}</Text>}
         </View>
         <View style={{ width: 96, alignItems: 'flex-end' }}>
           <Text style={ui.text}>{capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))}</Text>
-          {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} tone={urgency(item)} />}
+          {item.fill_fraction != null && item.location !== 'freezer' && <FillBar fraction={item.fill_fraction} tone={urgency(item)} />}
         </View>
       </Pressable>
     </Link>
@@ -234,4 +235,5 @@ const styles = StyleSheet.create({
   reviewBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderColor: colors.warn },
   linkCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   invRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12 },
+  caption: { marginTop: -4, lineHeight: 18 },
 });

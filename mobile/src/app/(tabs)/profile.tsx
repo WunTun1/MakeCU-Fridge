@@ -19,11 +19,11 @@ const PRESETS: { value: Preset; label: string; goals: Goals }[] = [
   { value: 'lighter', label: 'Lighter', goals: { daily_calories: 1700, daily_protein_g: 110, daily_carbs_g: 170, daily_fat_g: 55 } },
 ];
 
-const GOAL_FIELDS: { key: GoalKey; label: string }[] = [
-  { key: 'daily_calories', label: 'Daily calories' },
-  { key: 'daily_protein_g', label: 'Daily protein (g)' },
-  { key: 'daily_carbs_g', label: 'Daily carbs (g)' },
-  { key: 'daily_fat_g', label: 'Daily fat (g)' },
+const GOAL_FIELDS: { key: GoalKey; label: string; saved: string }[] = [
+  { key: 'daily_calories', label: 'Daily calories', saved: 'Calorie goal saved' },
+  { key: 'daily_protein_g', label: 'Daily protein (g)', saved: 'Protein goal saved' },
+  { key: 'daily_carbs_g', label: 'Daily carbs (g)', saved: 'Carb goal saved' },
+  { key: 'daily_fat_g', label: 'Daily fat (g)', saved: 'Fat goal saved' },
 ];
 
 const DIETS = [
@@ -83,7 +83,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
             key={`${f.key}-${profile[f.key]}`}
             label={f.label}
             value={profile[f.key]}
-            onSave={(v) => save({ [f.key]: v }, `${f.label} saved`)}
+            onSave={(v) => save({ [f.key]: v }, f.saved)}
           />
         ))}
       </View>
@@ -101,6 +101,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
       <Text style={ui.muted}>ReFridge never suggests recipes with these.</Text>
       <ListField
         label="allergies"
+        placeholder="e.g. peanuts"
         values={profile.allergies}
         onChange={(allergies) => save({ allergies }, 'Allergies saved')}
       />
@@ -109,6 +110,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
       <Text style={ui.muted}>Left out of Cook tonight and One item away. Chat skips them unless you ask.</Text>
       <ListField
         label="dislikes"
+        placeholder="e.g. mushrooms"
         values={profile.dislikes}
         onChange={(dislikes) => save({ dislikes }, 'Dislikes saved')}
       />

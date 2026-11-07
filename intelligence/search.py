@@ -7,6 +7,7 @@ from rapidfuzz import fuzz, process
 
 from inventory.database import Database
 from intelligence.consumption import days_left, grams_on_hand
+from intelligence.expiry import days_until
 
 MATCH_SCORE_THRESHOLD = 60
 
@@ -20,6 +21,7 @@ class SearchResult:
     answer: str
     unit: str = "g"
     grams_per_unit: float = 1.0
+    expires_in_days: int | None = None   # soonest, freezer left out
 
 
 def _plain_language(product_name: str, on_hand_g: float, dl: float | None) -> str:
@@ -49,6 +51,8 @@ def search(db: Database, query: str, limit: int = 5) -> list[SearchResult]:
         product = products[idx]
         on_hand = grams_on_hand(db, product["id"])
         dl = days_left(db, product["id"])
+        dates = [i["expiration_date"] for i in db.active_items()
+                 if i["product_id"] == product["id"] and i["expiration_date"] and i["location"] != "freezer"]
         results.append(SearchResult(
             product_id=product["id"],
             product_name=product["name"],
@@ -57,5 +61,6 @@ def search(db: Database, query: str, limit: int = 5) -> list[SearchResult]:
             answer=_plain_language(product["name"], on_hand, dl),
             unit=product["unit"],
             grams_per_unit=product["grams_per_unit"],
+            expires_in_days=days_until(min(dates)) if dates else None,
         ))
     return results

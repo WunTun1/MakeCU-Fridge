@@ -20,16 +20,18 @@ from intelligence import taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import grams_on_hand
 from intelligence.expiry import describe_expiry
-from nutrition.intake import get_intake, log_meal_eaten
+from nutrition.intake import get_intake, log_meal_eaten, log_nutrition, protein_mode
 from nutrition.lookup import lookup_nutrition_usda
 from recipes.engine import RecipeEngine, card
-from recipes.ingredients import allergen_hits
+from recipes.ingredients import allergen_found, allergen_hits
 from recipes.store import CUISINES, get_store
 
 log = logging.getLogger("refridge.nutrition.chatbot")
 
 MAX_TOOL_ROUNDS = 6
 MAX_CARDS = 4
+# "40 g protein per serving" with nothing that high: look again this much lower and say so.
+PROTEIN_RELAX_G = 10
 # Words that say how you're asking, not what you want to eat (offline keyword mode).
 OFFLINE_STOPWORDS = {
     "i", "im", "want", "wanna", "feel", "feeling", "like", "some", "something", "food", "make", "cook",
@@ -51,9 +53,20 @@ swaps they can make, what they'd need to buy). Call get_recipe before walking th
 results have missing ingredients, say what to buy or which swap works. If the user narrows things \
 down ("no, something lighter"), call find_recipes again with new arguments.
 
-Facts: never compute nutrition or stock yourself — call a tool. Allergens are filtered out in code; \
-if check_recipe reports a conflict, that is final. General wellness info only, not medical advice — \
-suggest a doctor or dietitian for medical conditions. Never shame anyone about food."""
+Meal prep: "meal prep", "batch" or "for the week" -> min_servings=4. A protein number ("40 g protein \
+per serving") -> min_protein_g=40. If a tool result has a "say" field, that sentence is already shown \
+to the user; don't repeat or contradict it.
+
+Facts: never compute nutrition or stock yourself — call a tool. Never say you logged, added or found \
+something unless the tool result lists it; anything in "unresolved" was NOT logged. When logging, put \
+every food the user named in one log_meal call, estimating usual portions (a scoop of protein powder is \
+about 30 g, an egg 50 g) instead of asking. A "must_say" sentence is added to your reply automatically: \
+don't write it or your own version of it. If the user gives protein and calories from a label \
+("24 g protein, 120 kcal"), call log_meal with recipe_name, protein_g and calories and no ingredients_g. \
+Allergens are filtered out in code; if a tool reports an \
+allergy block or conflict, that is final: don't suggest that food, and never offer to look for it \
+again. General wellness info only, not medical advice — suggest a doctor or dietitian for medical \
+conditions. Never shame anyone about food. No exclamation marks."""
 
 TOOLS = [
     {
@@ -69,6 +82,8 @@ TOOLS = [
                 "max_minutes": {"type": "integer"},
                 "high_protein": {"type": "boolean"},
                 "must_have_all": {"type": "boolean", "description": "Only recipes makeable now without shopping (swaps allowed)."},
+                "min_servings": {"type": "integer", "description": "Meal prep / batch cooking: 4."},
+                "min_protein_g": {"type": "number", "description": "Protein per serving the user asked for."},
             },
         },
     },
@@ -130,15 +145,19 @@ TOOLS = [
     {
         "name": "log_meal",
         "description": "Records something the user ate that is NOT a library recipe (e.g. 'I had a yogurt'), "
-                        "updates today's intake, and subtracts the ingredients from stock.",
+                        "updates today's intake, and subtracts the ingredients from stock. With protein_g and "
+                        "calories instead of ingredients_g (numbers from a label), logs only the nutrition. "
+                        "The result lists what was logged and what was unresolved (not counted).",
         "parameters": {
             "type": "object",
             "properties": {
                 "recipe_name": {"type": "string"},
                 "servings": {"type": "number"},
-                "ingredients_g": {"type": "object"},
+                "ingredients_g": {"type": "object", "description": "Map of ingredient name -> grams eaten."},
+                "protein_g": {"type": "number"},
+                "calories": {"type": "number"},
             },
-            "required": ["recipe_name", "servings", "ingredients_g"],
+            "required": ["recipe_name"],
         },
     },
     {
@@ -177,6 +196,12 @@ class NutritionistChatbot:
         # Cards the person is looking at now. Chat history stores only text, so without
         # this the model forgets recipe ids between turns ("show me the first one").
         self._on_screen: list[dict] = []
+        # Sentences code says itself this turn, whatever the model writes: tool notes (an allergy
+        # block) first, anything a tool couldn't do last.
+        self._turn_say: list[str] = []
+        self._turn_must_say: list[str] = []
+        self._turn_logged: list[str] = []
+        self._turn_blocked = False
         self._lock = threading.Lock()
 
     @property
@@ -190,27 +215,50 @@ class NutritionistChatbot:
         fresh = [c for c in cards if all(c["id"] != k["id"] for k in self._turn_cards)]
         self._turn_cards = (fresh + self._turn_cards) if front else (self._turn_cards + fresh)
 
+    def _say(self, sentence: str) -> None:
+        if sentence not in self._turn_say:
+            self._turn_say.append(sentence)
+
     def _find_recipes(self, args: dict) -> dict:
         cuisine = (args.get("cuisine") or "").strip() or None
-        matches = self.engine.suggest(
-            query=(args.get("query") or "").strip() or None,
-            cuisine=cuisine,
-            max_minutes=args.get("max_minutes") or None,
-            high_protein=bool(args.get("high_protein")),
-            must_have_all=bool(args.get("must_have_all")),
+        query = (args.get("query") or "").strip() or None
+        blocked = allergen_found(f"{query or ''} {cuisine or ''}", self._get_goals()["allergies"])
+        if blocked:
+            allergy, food = blocked
+            say = f"You listed {allergy} as an allergy, so I won't suggest {food}. You can change allergies in Profile."
+            self._say(say)
+            self._turn_blocked = True
+            self._turn_cards = []
+            return {"recipes": [], "blocked": allergy, "say": say}
+
+        min_protein = args.get("min_protein_g") or None
+        search = dict(
+            query=query, cuisine=cuisine, max_minutes=args.get("max_minutes") or None,
+            high_protein=bool(args.get("high_protein")) or protein_mode(self.db.get_profile()),
+            must_have_all=bool(args.get("must_have_all")), min_servings=args.get("min_servings") or None,
         )
+        matches = self.engine.suggest(**search, min_protein_g=min_protein)
+        result: dict = {}
+        if min_protein and not matches:
+            matches = self.engine.suggest(**search, min_protein_g=max(min_protein - PROTEIN_RELAX_G, 0))
+            if matches:
+                closest = max(m.recipe.nutrition.get("protein_g") or 0 for m in matches)
+                result["say"] = f"Nothing has {min_protein:.0f} g protein per serving. Closest is {closest:.0f} g per serving."
+                self._say(result["say"])
         taste.record_request(self.db, cuisine=cuisine)
         # A new search replaces the cards on screen.
         self._turn_cards = []
         self._remember_cards([card(m) for m in matches])
-        return {"recipes": [
+        result["recipes"] = [
             {"id": m.recipe.id, "name": m.recipe.name, "cuisine": m.recipe.cuisine, "minutes": m.recipe.minutes,
+             "servings": m.recipe.servings,
              "protein_g": m.recipe.nutrition.get("protein_g"), "calories": m.recipe.nutrition.get("calories"),
              "have": len(m.have), "missing": m.missing,
              "short": [f"{s['name']} (you have {s['on_hand']})" for s in m.short], "swaps": [f"{s.missing} -> {s.use}" for s in m.swaps],
              "uses_expiring": m.uses_expiring, "why": m.reasons}
             for m in matches
-        ]}
+        ]
+        return result
 
     def _get_recipe(self, recipe_id: int) -> dict:
         recipe = self.engine.adapted(int(recipe_id))
@@ -292,27 +340,63 @@ class NutritionistChatbot:
             "allergen_conflicts": allergen_conflicts,
         }
 
-    def _log_meal_tool(self, recipe_name: str, servings: float, ingredients_g: dict[str, float]) -> dict:
-        check = self.check_recipe(ingredients_g, servings)
-        if check["allergen_conflicts"]:
-            return {"logged": False, "reason": "allergen conflict", **check}
+    def _log_meal_tool(self, recipe_name: str, servings: float = 1, ingredients_g: dict[str, float] | None = None,
+                       protein_g: float | None = None, calories: float | None = None) -> dict:
+        """Logs only what it can put a number on. Anything without nutrition data comes back as
+        unresolved, with a sentence (must_say) the reply carries word for word. The reply's
+        "Logged ..." sentence is written from what was actually logged."""
+        if not ingredients_g:
+            if protein_g is None and calories is None:
+                return {"logged": False, "reason": "give ingredients_g, or protein_g and calories"}
+            meal_id = log_nutrition(self.db, recipe_name, protein_g, calories, source="chat")
+            item = {"name": recipe_name, "protein_g": protein_g, "calories": calories}
+            self._turn_logged.append(_logged_text(item))
+            return {"logged": True, "meal_id": meal_id, "unresolved": [], "logged_items": [item]}
 
+        if conflicts := allergen_hits(list(ingredients_g), self._get_goals()["allergies"]):
+            return {"logged": False, "reason": "allergen conflict", "allergen_conflicts": conflicts}
+
+        logged_items, unresolved = [], []
+        totals = {"calories": 0.0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
         for name, grams in ingredients_g.items():
-            product = self.db.find_product_by_name(name)
-            if product is None:
+            per100 = self._resolve_ingredient_nutrition(name)
+            if per100.get("calories") is None and per100.get("protein_g") is None:
+                unresolved.append(name)
                 continue
-            remaining = grams
-            for item in self.db.active_items():
-                if item["product_id"] != product["id"] or remaining <= 0:
-                    continue
-                take = min(item["grams"], remaining)
-                inv_events.apply_consume(self.db, item["id"], take)
-                remaining -= take
+            item: dict = {"name": name, "grams": grams}
+            for key in totals:
+                value = (per100.get(key) or 0.0) * grams / 100
+                totals[key] += value
+                if key in ("calories", "protein_g"):
+                    item[key] = round(value)
+            logged_items.append(item)
 
-        meal_id = log_meal_eaten(
-            self.db, recipe_name, servings, check["nutrition_per_serving"], source="chat"
-        )
-        return {"logged": True, "meal_id": meal_id, **check}
+        result: dict = {"logged": bool(logged_items), "logged_items": logged_items, "unresolved": unresolved}
+        if unresolved:
+            result["must_say"] = (f"I couldn't find nutrition for {_join(unresolved)}, so it isn't counted. "
+                                  "Tell me the protein and calories on the label.")
+            self._turn_must_say.append(result["must_say"])
+        if not logged_items:
+            return result
+        self._turn_logged += [_logged_text(item) for item in logged_items]
+
+        per_serving = {k: v / servings for k, v in totals.items()} if servings else totals
+        meal_id = log_meal_eaten(self.db, recipe_name, servings, per_serving, source="chat")
+        for item in logged_items:
+            self._take_from_stock(item["name"], item["grams"], meal_id)
+        return {**result, "meal_id": meal_id}
+
+    def _take_from_stock(self, name: str, grams: float, meal_id: int) -> None:
+        product = self.db.find_product_by_name(name)
+        if product is None:
+            return
+        remaining = grams
+        for item in self.db.active_items():
+            if item["product_id"] != product["id"] or remaining <= 0:
+                continue
+            take = min(item["grams"], remaining)
+            inv_events.apply_consume(self.db, item["id"], take, meta={"meal_id": meal_id})
+            remaining -= take
 
     def _add_item_tool(self, name: str, grams: float, location: str) -> dict:
         per100 = self._resolve_ingredient_nutrition(name)
@@ -330,7 +414,7 @@ class NutritionistChatbot:
         current_total = sum(i["grams"] for i in items)
         delta = current_total - remaining_grams
         if delta > 0:
-            inv_events.apply_consume(self.db, items[0]["id"], min(delta, items[0]["grams"]))
+            inv_events.apply_consume(self.db, items[0]["id"], min(delta, items[0]["grams"]), meta={"source": "chat"})
         else:
             self.db.update_item_grams(items[0]["id"], items[0]["grams"] - delta)
         return {"updated": True}
@@ -351,7 +435,10 @@ class NutritionistChatbot:
         if name == "check_recipe":
             return self.check_recipe(tool_input["ingredients_g"], tool_input.get("servings", 1))
         if name == "log_meal":
-            return self._log_meal_tool(tool_input["recipe_name"], tool_input["servings"], tool_input["ingredients_g"])
+            return self._log_meal_tool(
+                tool_input["recipe_name"], tool_input.get("servings") or 1, tool_input.get("ingredients_g"),
+                tool_input.get("protein_g"), tool_input.get("calories"),
+            )
         if name == "add_item":
             return self._add_item_tool(tool_input["name"], tool_input["grams"], tool_input["location"])
         if name == "update_item":
@@ -364,7 +451,8 @@ class NutritionistChatbot:
         # The fridge screen and the phone share one chatbot; one conversation turn at a time
         # keeps each turn's recipe cards from mixing.
         with self._lock:
-            self._turn_cards = []
+            self._turn_cards, self._turn_say, self._turn_must_say, self._turn_logged = [], [], [], []
+            self._turn_blocked = False
             self.db.add_chat_message("user", user_message)
             client = make_client()
             if client is None:
@@ -377,12 +465,26 @@ class NutritionistChatbot:
                     reply = "Sorry, I couldn't reach the assistant just now — here are some ideas anyway."
                     if not self._turn_cards:
                         self._offline_reply(user_message)
-            reply = plain_text(reply)
+            reply = self._with_code_sentences(plain_text(reply))
             self.db.add_chat_message("assistant", reply)
-            cards = order_by_mention(self._turn_cards, reply)[:MAX_CARDS]
+            cards = [] if self._turn_blocked else order_by_mention(self._turn_cards, reply)[:MAX_CARDS]
             if cards:
                 self._on_screen = cards
             return {"reply": reply, "recipes": cards}
+
+    def _with_code_sentences(self, reply: str) -> str:
+        """What tools did is said by code, not paraphrased by the model: an allergy block replaces
+        the reply (the model may still offer the blocked food), and a logging turn is answered with
+        exactly what was logged and what wasn't. Other tool sentences go before the model's text."""
+        if self._turn_blocked:
+            return " ".join(self._turn_say)
+        if self._turn_logged or self._turn_must_say:
+            logged = [f"Logged {'; '.join(self._turn_logged)}."] if self._turn_logged else []
+            return " ".join([*self._turn_say, *logged, *self._turn_must_say])
+        body = reply
+        for sentence in self._turn_say:
+            body = body.replace(sentence, "").strip()
+        return " ".join(s for s in [*self._turn_say, body] if s)
 
     def _converse(self, client) -> str:
         """Gemini function-calling loop: the model asks for tools, we run them
@@ -428,10 +530,26 @@ class NutritionistChatbot:
             "high_protein": "protein" in text,
             "max_minutes": 30 if any(w in text for w in ("quick", "fast", "easy")) else None,
         })
+        if self._turn_blocked:
+            return ""
         if not self._turn_cards:
             return "I couldn't find a match for that — try a cuisine like Italian or an ingredient you have."
         lead = f"Here are some {cuisine.replace('-', ' ').title()} ideas" if cuisine else "Here are some ideas"
         return lead + " based on what's in your fridge. (Add a Gemini key for full conversation.)"
+
+
+def _logged_text(item: dict) -> str:
+    """'Greek yogurt 200 g (20 g protein, 118 kcal)', 'Whey (24 g protein, 120 kcal)'."""
+    amount = f" {item['grams']:.0f} g" if item.get("grams") else ""
+    facts = [f"{item['protein_g']:.0f} g protein" if item.get("protein_g") is not None else None,
+             f"{item['calories']:.0f} kcal" if item.get("calories") is not None else None]
+    details = ", ".join(f for f in facts if f)
+    return f"{item['name'][:1].upper()}{item['name'][1:].lower()}{amount}" + (f" ({details})" if details else "")
+
+
+def _join(names: list[str]) -> str:
+    """'whey', 'whey and oats', 'whey, oats and chia'."""
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
 def plain_text(reply: str) -> str:

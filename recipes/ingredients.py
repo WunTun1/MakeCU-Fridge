@@ -130,6 +130,14 @@ def dislike_pattern(dislike: str) -> re.Pattern | None:
 # 'cheddar' ~ 'cheddar cheese'. Anything else ('chicken broth') is a different ingredient.
 SPECIFIC_FORMS = {"breast", "thigh", "leg", "drumstick", "wing", "tenderloin", "fillet", "steak", "cheese"}
 
+# Same head noun, and the only extra words describe it: 'greek yogurt' is yogurt. Any other
+# extra word is a different food: 'peanut butter' is not butter, 'almond milk' is not milk.
+MATCH_DESCRIPTORS = {
+    "greek", "plain", "whole", "skim", "low-fat", "nonfat", "fat-free", "unsalted", "salted", "sweet",
+    "fresh", "frozen", "large", "small", "boneless", "skinless", "shredded", "grated", "sharp", "mild",
+    "light", "heavy",
+}
+
 
 def matches(recipe_ingredient: str, inventory_name: str) -> bool:
     """Does an item you have satisfy a recipe ingredient? Both already canonical."""
@@ -141,9 +149,9 @@ def matches(recipe_ingredient: str, inventory_name: str) -> bool:
     small, large = (r, i) if len(r) <= len(i) else (i, r)
     if not set(small) <= set(large):
         return False
-    if head(recipe_ingredient) == head(inventory_name):  # 'yogurt' ~ 'greek yogurt'
-        return True
     extra = set(large) - set(small)
+    if head(recipe_ingredient) == head(inventory_name):
+        return extra <= MATCH_DESCRIPTORS
     return len(small) == 1 and len(extra) == 1 and extra <= SPECIFIC_FORMS
 
 
@@ -153,8 +161,8 @@ ALLERGEN_TERMS: dict[str, set[str]] = {
     "peanut": {"peanut", "peanuts", "peanut butter"},
     "tree nut": {"almond", "walnut", "pecan", "cashew", "pistachio", "hazelnut", "macadamia", "pine nut"},
     "nut": {"peanut", "almond", "walnut", "pecan", "cashew", "pistachio", "hazelnut", "macadamia", "pine nut"},
-    "dairy": {"milk", "cheese", "butter", "cream", "yogurt", "parmesan", "mozzarella", "cheddar", "ricotta", "whey"},
-    "milk": {"milk", "cheese", "butter", "cream", "yogurt", "parmesan", "mozzarella", "cheddar", "ricotta", "whey"},
+    "dairy": {"milk", "buttermilk", "cheese", "butter", "cream", "yogurt", "parmesan", "mozzarella", "cheddar", "ricotta", "whey", "ghee"},
+    "milk": {"milk", "buttermilk", "cheese", "butter", "cream", "yogurt", "parmesan", "mozzarella", "cheddar", "ricotta", "whey", "ghee"},
     "egg": {"egg", "mayonnaise"},
     "gluten": {"flour", "bread", "pasta", "spaghetti", "noodle", "wheat", "barley", "breadcrumb", "tortilla", "couscous", "cracker"},
     "wheat": {"flour", "bread", "pasta", "spaghetti", "noodle", "wheat", "breadcrumb", "tortilla", "couscous", "cracker"},
@@ -165,15 +173,27 @@ ALLERGEN_TERMS: dict[str, set[str]] = {
 }
 
 
-def allergen_hits(ingredients: list[str], allergies: list[str]) -> list[str]:
-    """Ingredients that conflict with any allergy (plain substring match on words)."""
-    hits = []
-    for ing in ingredients:
-        low = ing.lower()
-        for allergy in allergies:
-            a = allergy.strip().lower().rstrip("s")
-            terms = ALLERGEN_TERMS.get(a, set()) | {a}
-            if any(re.search(rf"\b{re.escape(t)}", low) for t in terms if t):
-                hits.append(ing)
-                break
-    return hits
+def _word_pattern(term: str) -> re.Pattern:
+    """Whole words, plurals included: 'egg' finds 'eggs' but not 'eggplant'."""
+    if re.search(r"[^aeiou]y$", term):
+        stem, ending = re.escape(term[:-1]), "(y|ies)"
+    else:
+        stem, ending = re.escape(term), "(s|es)?"
+    return re.compile(rf"\b{stem}{ending}\b", re.I)
+
+
+def allergen_found(text: str, allergies: list[str]) -> tuple[str, str] | None:
+    """(allergy as the person wrote it, the word in `text` that conflicts), or None."""
+    for allergy in allergies:
+        a = allergy.strip().lower()
+        key = a.rstrip("s")
+        terms = ALLERGEN_TERMS.get(key, set()) | {key}
+        for term in sorted(terms, key=len, reverse=True):
+            if term and (m := _word_pattern(term).search(text)):
+                return a, m.group(0).lower()
+    return None
+
+
+def allergen_hits(texts: list[str], allergies: list[str]) -> list[str]:
+    """Ingredient lines (or titles, steps) that conflict with any allergy."""
+    return [t for t in texts if allergen_found(t, allergies)]

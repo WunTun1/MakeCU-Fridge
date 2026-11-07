@@ -31,7 +31,7 @@ class Alert:
 def _expiring_soon_items(db: Database):
     cutoff = (datetime.now(timezone.utc) + timedelta(days=EXPIRING_SOON_DAYS)).date()
     for item in db.active_items():
-        if item["expiration_date"]:
+        if item["expiration_date"] and item["location"] != "freezer":
             exp = datetime.fromisoformat(item["expiration_date"]).date()
             if exp <= cutoff:
                 yield item
@@ -41,14 +41,16 @@ def low_stock_alerts(db: Database) -> list[Alert]:
     alerts: list[Alert] = []
     seen_products: set[int] = set()
 
-    products_on_hand = {}
+    products_on_hand: dict[int, float] = {}
+    outside_freezer: dict[int, float] = {}  # frozen food keeps for months: no "running low" nudges
     for item in db.active_items():
-        products_on_hand.setdefault(item["product_id"], 0.0)
-        products_on_hand[item["product_id"]] += item["grams"]
+        products_on_hand[item["product_id"]] = products_on_hand.get(item["product_id"], 0.0) + item["grams"]
+        if item["location"] != "freezer":
+            outside_freezer[item["product_id"]] = outside_freezer.get(item["product_id"], 0.0) + item["grams"]
 
-    for product_id, on_hand in products_on_hand.items():
+    for product_id, on_hand in outside_freezer.items():
         product = db.get_product(product_id)
-        if product is None:
+        if product is None or product["recipe_id"] is not None:  # leftovers are never restocked
             continue
         dl = days_left(db, product_id)
         if dl is not None and dl <= DAYS_LEFT_THRESHOLD:

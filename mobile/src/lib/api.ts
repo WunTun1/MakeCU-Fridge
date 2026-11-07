@@ -51,6 +51,8 @@ export type Alert = {
   days: number | null;
 };
 
+export type Location = 'fridge' | 'pantry' | 'freezer';
+
 /** How a product is counted; stock is always stored in grams. */
 export type Measured = { unit: Unit; grams_per_unit: number };
 
@@ -68,9 +70,12 @@ export type InventoryEntry = Measured & {
   expiry_estimated: boolean;
   /** The package(s) that go bad first; less than `grams` when newer packages are there too. */
   soonest_batch: { grams: number; expiration_date: string } | null;
-  location: 'fridge' | 'pantry' | 'freezer';
+  /** A product with packages in the freezer and elsewhere has one entry for each. */
+  location: Location;
   /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
   shelf: number | null;
+  /** Cooked food from a recipe, counted in servings. */
+  leftovers: boolean;
 };
 
 export type Macros = { calories: number; protein_g: number; carbs_g: number; fat_g: number };
@@ -101,12 +106,14 @@ export type SearchResult = Measured & {
   on_hand_g: number;
   days_left: number | null;
   answer: string;
+  /** Soonest goes-bad date among packages outside the freezer. */
+  expires_in_days: number | null;
 };
 
 export type StockItem = {
   id: number;
   grams: number;
-  location: string;
+  location: Location;
   expiration_date: string | null;
   expiry_estimated: boolean;
 };
@@ -114,6 +121,9 @@ export type StockItem = {
 export type ProductUsage = Measured & {
   product_id: number;
   name: string;
+  category: string | null;
+  /** Leftovers: the recipe they were cooked from. */
+  recipe_id: number | null;
   daily_usage_g: Record<string, number>;
   on_hand_g: number;
   days_left: number | null;
@@ -173,6 +183,8 @@ export type Profile = {
   diet_type: string | null;
   allergies: string[];
   dislikes: string[];
+  /** Protein is at least 25% of the calorie goal: recipe lists rank by protein. */
+  protein_mode: boolean;
 };
 
 export type Nutrition = {
@@ -224,6 +236,10 @@ export type RecipeDetail = RecipeCard & {
   description: string | null;
   /** Missing or short ingredients that are already on the grocery list. */
   on_grocery_list: string[];
+  /** Servings of it in the fridge from an earlier cook. */
+  leftovers: { product_id: number; servings: number } | null;
+  /** Cooked and logged today. */
+  logged_meal_id: number | null;
 };
 
 /** One product an "I made this" takes from. */
@@ -233,6 +249,21 @@ export type CookLine = Measured & { product_id: number; item: string; grams_used
 export type Made = 1 | 0.5;
 
 export type ChatReply = { reply: string; recipes: RecipeCard[] };
+
+/** A logged meal; a macro is null when nothing was known about it. */
+export type Meal = { [K in keyof Macros]: number | null } & {
+  id: number;
+  name: string | null;
+  servings: number;
+  occurred_at: string;
+  source: string;
+};
+
+/** Ate some of a fridge item as it is; what it logged. */
+export type Eaten = Pick<Meal, keyof Macros> & { meal_id: number; grams: number };
+
+/** A portion of a fridge item worth logging for protein: "Greek yogurt 200 g", "2 eggs". */
+export type QuickAdd = Measured & { product_id: number; name: string; grams: number; protein_g: number; calories: number | null };
 
 export type UnlockSuggestion = { buy: string[]; unlocks: number; examples: string[]; recipe_ids: number[] };
 
@@ -279,10 +310,23 @@ export const api = {
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
   cookPreview: (id: number, made: Made) => request<CookLine[]>(`/api/recipes/${id}/cooked/preview?made=${made}`),
   cooked: (id: number, made: Made, servingsEaten: number) =>
-    post<{ recipe: string; meal_id: number; consumptions: CookLine[] }>(`/api/recipes/${id}/cooked`, {
-      made,
-      servings_eaten: servingsEaten,
-    }),
+    post<{
+      recipe: string;
+      meal_id: number;
+      consumptions: CookLine[];
+      leftovers: { product_id: number; servings: number; expiration_date: string } | null;
+    }>(`/api/recipes/${id}/cooked`, { made, servings_eaten: servingsEaten }),
+  /** Takes back a meal and everything it did to the fridge. */
   undoMeal: (mealId: number) => post<{ ok: true }>(`/api/meals/${mealId}/undo`, {}),
+  meals: () => request<Meal[]>('/api/meals?period=today'),
+  /** Nutrition only (numbers off a label); with occurred_at, puts back a removed meal. */
+  addMeal: (body: Partial<Omit<Meal, 'id'>> & { name: string }) => post<{ meal_id: number }>('/api/meals', body),
+  /** Off today's log only; the fridge stays as it is. Returns the meal for Undo. */
+  deleteMeal: (mealId: number) => del<Omit<Meal, 'id'>>(`/api/meals/${mealId}`),
+  quickAdds: () => request<QuickAdd[]>('/api/meals/quick-adds'),
+  /** Ate it as it is: one serving of leftovers, or `grams` of anything. */
+  eat: (productId: number, grams?: number) => post<Eaten>(`/api/products/${productId}/eat`, { grams }),
+  freeze: (productId: number) =>
+    post<{ event_ids: number[]; grams: number; expiration_date: string }>(`/api/products/${productId}/freeze`, {}),
   rate: (id: number, liked: boolean) => post<{ ok: true }>(`/api/recipes/${id}/rate`, { liked }),
 };

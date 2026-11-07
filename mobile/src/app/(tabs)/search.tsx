@@ -5,6 +5,7 @@ import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { ErrorCard } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
 import { api, type SearchResult } from '@/lib/api';
+import { LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
 import { colors, ui } from '@/lib/theme';
 import { relativeDays } from '@/lib/time';
 
@@ -13,6 +14,8 @@ const DEBOUNCE_MS = 250;
 function answer(r: SearchResult): string {
   if (r.on_hand_g <= 0) return "You're out.";
   const have = `You have ${formatAmount(r.on_hand_g, r.unit, r.grams_per_unit, r.product_name)}.`;
+  const left = leftWhenBad({ ...r, grams: r.on_hand_g, name: r.product_name });
+  if (left) return `${have} ${LEFT_WHEN_BAD}: ${left.toLowerCase()}.`;
   return r.days_left != null ? `${have} Runs out ${relativeDays(r.days_left, true)}.` : have;
 }
 

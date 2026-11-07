@@ -1,4 +1,3 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { RecipeCard } from '@/lib/api';
@@ -23,15 +22,26 @@ function cardStatus(card: RecipeCard): { text: string; ready: boolean } {
   return { text: parts.join(' · '), ready: false };
 }
 
-/** Compact recipe card for chat and suggestion rows. `large` is the fridge-screen size. */
+/** "35 g protein · 362 kcal · 40 min" in protein mode, otherwise "40 min · 35 g protein · 362 kcal". */
+function metaText(card: RecipeCard, proteinFirst: boolean): string {
+  const time = card.minutes != null && `${card.minutes} min`;
+  const protein = card.nutrition.protein_g != null && `${Math.round(card.nutrition.protein_g)} g protein`;
+  const kcal = card.nutrition.calories != null && `${Math.round(card.nutrition.calories)} kcal`;
+  return (proteinFirst ? [protein, kcal, time] : [time, protein, kcal]).filter(Boolean).join(' · ');
+}
+
+/** Compact recipe card for chat and suggestion rows. `large` is the fridge-screen size. A card without a photo has no image area. */
 export function RecipeCardView({
   card,
   onPress,
   large = false,
+  proteinFirst = false,
 }: {
   card: RecipeCard;
   onPress: () => void;
   large?: boolean;
+  /** Protein mode: the meta line leads with protein. */
+  proteinFirst?: boolean;
 }) {
   const width = large ? 250 : 210;
   const status = cardStatus(card);
@@ -40,23 +50,13 @@ export function RecipeCardView({
       onPress={onPress}
       style={({ pressed }) => [styles.card, { width }, pressed && { opacity: 0.75 }]}
     >
-      {card.image_url ? (
-        <Image source={{ uri: card.image_url }} style={[styles.image, { height: large ? 120 : 100 }]} />
-      ) : (
-        <View style={[styles.image, styles.noImage, { height: large ? 120 : 100 }]}>
-          <FontAwesome name="cutlery" size={28} color={colors.muted} />
-        </View>
-      )}
+      {card.image_url && <Image source={{ uri: card.image_url }} style={[styles.image, { height: large ? 120 : 100 }]} />}
       <View style={styles.body}>
         <Text style={[styles.name, large && { fontSize: 17 }]} numberOfLines={2}>
           {card.name}
         </Text>
         <Text style={styles.meta} numberOfLines={1}>
-          {[card.minutes != null && `${card.minutes} min`,
-            card.nutrition.protein_g != null && `${Math.round(card.nutrition.protein_g)} g protein`,
-            card.nutrition.calories != null && `${Math.round(card.nutrition.calories)} kcal`]
-            .filter(Boolean)
-            .join(' · ')}
+          {metaText(card, proteinFirst)}
         </Text>
         <Text style={[styles.status, { color: status.ready ? colors.accent : colors.text }]} numberOfLines={2}>
           {status.text}
@@ -80,7 +80,6 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   image: { width: '100%', backgroundColor: colors.input },
-  noImage: { alignItems: 'center', justifyContent: 'center' },
   body: { padding: 10, gap: 3 },
   name: { color: colors.text, fontSize: 15, fontWeight: '700' },
   meta: { color: colors.muted, fontSize: 13 },

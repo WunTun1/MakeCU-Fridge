@@ -14,8 +14,9 @@ from datetime import date, datetime, timedelta, timezone
 from inventory.database import Database
 from intelligence import taste
 from intelligence.consumption import days_left, grams_on_hand, usage_rate_g_per_day
-from recipes.engine import DINNER_MINUTES_RELAXED, dislike_hits, fits_dinner, normalized_title
-from recipes.ingredients import allergen_hits, canonical
+from recipes.engine import (DINNER_MINUTES_RELAXED, dislike_hits, fits_dinner, has_allergen, normalized_title,
+                            protein_floor)
+from recipes.ingredients import canonical
 
 UNLOCK_POOL_PER_SOURCE = 300
 UNLOCK_MAX_MISSING = 2
@@ -116,7 +117,7 @@ class UnlockSuggestion:
     recipe_ids: list[int] = field(default_factory=list)
 
 
-def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSuggestion]:
+def unlock_suggestions(db: Database, engine, limit: int = 3, high_protein: bool = False) -> list[UnlockSuggestion]:
     """Which purchases would let you cook the most recipes you'd likely enjoy?
 
     Pool: recipes from your favorite cuisines and ingredients (or, with no taste
@@ -124,7 +125,8 @@ def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSugge
     only 1-2 ingredients away after swaps. Purchases are chosen greedily, each one
     counting what earlier picks already completed: "parmesan unlocks 3; then
     lemons unlock 2 more". When no single item completes anything, the best pair
-    is suggested together. Recipes count more the better they fit your taste.
+    is suggested together. Recipes count more the better they fit your taste. In protein mode
+    only recipes with 25 g protein a serving count (20 g when fewer than 3 qualify).
     """
     prefs = taste.profile(db)
     pantry = engine.pantry()
@@ -144,8 +146,7 @@ def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSugge
     candidates: list[tuple[frozenset[str], float, object]] = []  # (missing set, weight, recipe)
     seen_titles: set[str] = set()
     for recipe in engine.store.get_many(list(pool)):
-        if (allergen_hits([i["name"] for i in recipe.ingredients], allergies)
-                or dislike_hits(recipe, dislikes) or not fits_dinner(recipe)):
+        if has_allergen(recipe, allergies) or dislike_hits(recipe, dislikes) or not fits_dinner(recipe):
             continue
         title = normalized_title(recipe.name)
         if title in seen_titles:
@@ -157,6 +158,9 @@ def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSugge
         missing = frozenset(canonical(n) or n.lower() for n in m.to_buy)
         weight = 0.5 + 0.5 * (taste.recipe_affinity(prefs, recipe) + 1) / 2
         candidates.append((missing, weight, recipe))
+
+    if high_protein:
+        candidates = protein_floor(candidates, lambda c: c[2].nutrition.get("protein_g"))
 
     picks: list[UnlockSuggestion] = []
     bought: set[str] = set()

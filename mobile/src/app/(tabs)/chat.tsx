@@ -14,7 +14,9 @@ import {
 
 import { Button } from '@/components/Button';
 import { RecipeCardView } from '@/components/recipes/RecipeCardView';
+import { api } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
+import { useApi } from '@/lib/useApi';
 import { useChat } from '@/lib/useChat';
 
 const SUGGESTIONS = [
@@ -25,6 +27,7 @@ const SUGGESTIONS = [
 
 export default function Chat() {
   const { messages, sending, send, reset } = useChat();
+  const proteinFirst = useApi(api.profile).data?.protein_mode ?? false;
   const [input, setInput] = useState('');
   const scrollRef = useRef<ScrollViewInstance>(null);
 
@@ -79,6 +82,7 @@ export default function Chat() {
                   <RecipeCardView
                     key={r.id}
                     card={r}
+                    proteinFirst={proteinFirst}
                     onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
                   />
                 ))}

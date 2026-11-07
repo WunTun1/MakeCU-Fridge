@@ -67,10 +67,33 @@ export function goesBadText(item: InventoryEntry): string | null {
   return `${capitalize(part)} ${verb}`;
 }
 
-/** "Runs out tomorrow"; when it lasts past its date, "More than you'll use by then". */
-export function runsOutText(item: Pick<InventoryEntry, 'days_left' | 'expires_in_days'>): string {
+type Stock = Pick<InventoryEntry, 'grams' | 'unit' | 'grams_per_unit' | 'name' | 'days_left' | 'expires_in_days'>;
+
+/** The label for what's left when it goes bad, the same on every screen. */
+export const LEFT_WHEN_BAD = 'Left when it goes bad';
+
+/**
+ * How much you won't have used by the day it goes bad, at your usual rate: "1.2 kg" (always an
+ * estimate, so shown with "about"). Null when you'll finish it first, or there's no date or history.
+ */
+function leftAmount(item: Stock): string | null {
+  const { days_left: runsOut, expires_in_days: goesBad } = item;
+  if (runsOut == null || goesBad == null || runsOut <= goesBad) return null;
+  const left = item.grams * (1 - Math.max(goesBad, 0) / runsOut);
+  return formatAmount(left, item.unit, item.grams_per_unit, item.name).replace(/^about /, '');
+}
+
+/** The stat value under LEFT_WHEN_BAD: "About 1.2 kg". */
+export function leftWhenBad(item: Stock): string | null {
+  const amount = leftAmount(item);
+  return amount && `About ${amount}`;
+}
+
+/** "Runs out tomorrow", or "Left when it goes bad: about 1.2 kg" when it outlasts its date. */
+export function runsOutText(item: Stock): string {
   if (item.days_left == null) return 'No usage history yet';
-  if (item.expires_in_days != null && item.days_left > item.expires_in_days) return "More than you'll use by then";
+  const amount = leftAmount(item);
+  if (amount) return `${LEFT_WHEN_BAD}: about ${amount}`;
   return `Runs out ${whenWord(item.days_left)}`;
 }
 

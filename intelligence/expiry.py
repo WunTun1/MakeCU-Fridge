@@ -51,6 +51,26 @@ def estimate_shelf_life_days(name: str | None, category: str | None = None) -> i
     return None
 
 
+# Freezer quality guidance in months (USDA FoodKeeper ballparks); first keyword match wins.
+FREEZER_MONTHS_BY_KEYWORD: list[tuple[str, int]] = [
+    ("leftover", 3), ("cooked", 3), ("ground", 4), ("hamburger", 4), ("sausage", 2), ("bacon", 1),
+    ("chicken", 9), ("turkey", 9), ("duck", 9), ("beef", 9), ("steak", 9), ("pork", 9), ("lamb", 9),
+    ("bread", 3), ("bagel", 3), ("tortilla", 3), ("cheese", 6),
+]
+FREEZER_MONTHS_BY_CATEGORY: dict[str, int] = {"leftovers": 3, "meat": 9}
+DEFAULT_FREEZER_MONTHS = 3
+DAYS_PER_MONTH = 30
+
+
+def freezer_days(name: str | None, category: str | None = None) -> int:
+    """How long it keeps well in the freezer, from today."""
+    lowered = (name or "").lower()
+    months = next((m for keyword, m in FREEZER_MONTHS_BY_KEYWORD if keyword in lowered), None)
+    if months is None:
+        months = FREEZER_MONTHS_BY_CATEGORY.get((category or "").strip().lower(), DEFAULT_FREEZER_MONTHS)
+    return months * DAYS_PER_MONTH
+
+
 def _valid_days(days: object) -> int | None:
     """The model's estimate, if it's a sane whole number of days."""
     if isinstance(days, bool) or not isinstance(days, (int, float)):

@@ -16,6 +16,7 @@ NOT_A_UNIT_WORDS = ("sour cream", "cream cheese", "ice cream", "peppercorn", "eg
 
 GRAMS_PER_PIECE = {"egg": 50.0, "lemon": 100.0, "apple": 180.0, "onion": 150.0}
 DEFAULT_PIECE_G = 100.0
+LEFTOVERS_WORD = "leftovers"  # "Chili leftovers" is counted in servings
 ML_G = 1.0
 
 
@@ -55,6 +56,8 @@ def to_grams(quantity: float, unit: str, grams_per_unit: float) -> float:
 def _count_noun(name: str | None, n: int) -> str:
     words = re.findall(r"[a-z]+", (name or "").lower())
     word = words[-1] if words else "piece"
+    if word == LEFTOVERS_WORD:
+        word = "serving"
     if word.endswith("ies"):
         word = word[:-3] + "y"
     elif word.endswith("oes"):

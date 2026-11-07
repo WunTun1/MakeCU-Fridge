@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS products (
     nutrition_source TEXT,
     created_at TEXT NOT NULL,
     unit TEXT NOT NULL DEFAULT 'g',             -- g | count | ml: how amounts are entered and shown
-    grams_per_unit REAL NOT NULL DEFAULT 1      -- grams in one egg / one ml; 1 for g
+    grams_per_unit REAL NOT NULL DEFAULT 1,     -- grams in one egg / one ml; 1 for g
+    recipe_id INTEGER                           -- leftovers: the library recipe they were cooked from
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -50,7 +51,8 @@ CREATE TABLE IF NOT EXISTS items (
     expiration_date TEXT,
     expiration_estimated INTEGER NOT NULL DEFAULT 0,  -- 1 = estimated shelf life, 0 = printed on package
     last_seen TEXT,
-    confidence REAL
+    confidence REAL,
+    leaving_shelf INTEGER NOT NULL DEFAULT 0   -- moved elsewhere (freezer) in the app: its shelf drop is expected
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -138,6 +140,10 @@ CREATE INDEX IF NOT EXISTS idx_events_occurred ON events(occurred_at);
 """
 
 
+# A counted item with less than this many units left is finished: nobody keeps 0.4 of an egg.
+REMNANT_UNITS = 0.5
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -172,7 +178,11 @@ class Database:
         grocery_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(grocery_entries)")}
         if "amount" not in grocery_columns:
             self._conn.execute("ALTER TABLE grocery_entries ADD COLUMN amount TEXT")
+        if "leaving_shelf" not in item_columns:
+            self._conn.execute("ALTER TABLE items ADD COLUMN leaving_shelf INTEGER NOT NULL DEFAULT 0")
         product_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(products)")}
+        if "recipe_id" not in product_columns:
+            self._conn.execute("ALTER TABLE products ADD COLUMN recipe_id INTEGER")
         if "unit" not in product_columns:
             self._conn.execute("ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT 'g'")
             self._conn.execute("ALTER TABLE products ADD COLUMN grams_per_unit REAL NOT NULL DEFAULT 1")
@@ -182,6 +192,21 @@ class Database:
                     "UPDATE products SET unit = ?, grams_per_unit = ? WHERE id = ?",
                     (unit, default_grams_per_unit(row["name"], unit), row["id"]),
                 )
+        self._finish_remnants_once()
+
+    def _finish_remnants_once(self) -> None:
+        """Counted items left with less than half a unit (0.4 of an egg) are finished. Deductions
+        do this as they happen (inventory/events.py); this clears what older versions left behind."""
+        done = self._conn.execute("SELECT 1 FROM settings WHERE key = 'remnants_finished'").fetchone()
+        if done:
+            return
+        self._conn.execute(
+            """UPDATE items SET status = 'removed', grams = 0
+               WHERE status = 'active' AND product_id IN (SELECT id FROM products WHERE unit = 'count')
+               AND grams < (SELECT ? * grams_per_unit FROM products WHERE products.id = items.product_id)""",
+            (REMNANT_UNITS,),
+        )
+        self._conn.execute("INSERT INTO settings (key, value) VALUES ('remnants_finished', '1')")
 
     def _ensure_profile_row(self) -> None:
         cur = self._conn.execute("SELECT id FROM profile WHERE id = 1")
@@ -236,6 +261,8 @@ class Database:
         nutrition_per_100g: dict[str, float] | None = None,
         nutrition_source: str | None = None,
         unit: str | None = None,
+        recipe_id: int | None = None,
+        grams_per_unit: float | None = None,
     ) -> int:
         """`unit` defaults to a guess from the name (eggs are counted, milk is poured)."""
         n = nutrition_per_100g or {}
@@ -246,13 +273,14 @@ class Database:
                    (name, category, usual_package_size_g, is_staple, barcode,
                     calories_per_100g, protein_g_per_100g, carbs_g_per_100g, fat_g_per_100g,
                     fiber_g_per_100g, sugar_g_per_100g, sodium_mg_per_100g,
-                    nutrition_source, created_at, unit, grams_per_unit)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    nutrition_source, created_at, unit, grams_per_unit, recipe_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name, category, usual_package_size_g, int(is_staple), barcode,
                     n.get("calories"), n.get("protein_g"), n.get("carbs_g"), n.get("fat_g"),
                     n.get("fiber_g"), n.get("sugar_g"), n.get("sodium_mg"),
-                    nutrition_source, now_iso(), unit, default_grams_per_unit(name, unit),
+                    nutrition_source, now_iso(), unit, grams_per_unit or default_grams_per_unit(name, unit),
+                    recipe_id,
                 ),
             )
             return cur.lastrowid
@@ -267,14 +295,22 @@ class Database:
         nutrition_per_100g: dict[str, float] | None = None,
         nutrition_source: str | None = None,
         unit: str | None = None,
+        recipe_id: int | None = None,
+        grams_per_unit: float | None = None,
     ) -> int:
         existing = self.find_product_by_name(name)
         if existing:
             return existing["id"]
         return self.create_product(
             name, category, usual_package_size_g, is_staple, barcode,
-            nutrition_per_100g, nutrition_source, unit,
+            nutrition_per_100g, nutrition_source, unit, recipe_id, grams_per_unit,
         )
+
+    def product_for_recipe(self, recipe_id: int) -> Optional[sqlite3.Row]:
+        """The leftovers product cooked from this recipe, if any."""
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM products WHERE recipe_id = ? ORDER BY id LIMIT 1", (recipe_id,))
+            return cur.fetchone()
 
     # ------------------------------------------------------------------- items
     def create_item(
@@ -337,6 +373,25 @@ class Database:
                     "UPDATE items SET expiration_date = ?, expiration_estimated = 0 WHERE id = ?",
                     (expiration_date, item_id),
                 )
+
+    def set_item_storage(
+        self, item_id: int, location: str, expiration_date: str | None, expiration_estimated: bool, leaving_shelf: bool,
+    ) -> None:
+        """Moved between fridge and freezer: a new place, a new date, and whether a shelf drop is expected."""
+        with self.cursor() as cur:
+            cur.execute(
+                """UPDATE items SET location = ?, expiration_date = ?, expiration_estimated = ?, leaving_shelf = ?,
+                   last_seen = ? WHERE id = ?""",
+                (location, expiration_date, int(expiration_estimated), int(leaving_shelf), now_iso(), item_id),
+            )
+
+    def clear_leaving_shelf(self, item_id: int) -> None:
+        """It has left the shelf: off the weighed shelf, and no longer tracked by the camera."""
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE items SET leaving_shelf = 0, shelf = NULL, position_x = NULL, position_y = NULL WHERE id = ?",
+                (item_id,),
+            )
 
     def delete_item(self, item_id: int) -> None:
         """Forget an item entirely, with its history. Only for undoing an add."""

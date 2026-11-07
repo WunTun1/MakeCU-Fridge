@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -26,11 +26,11 @@ from inventory.units import default_grams_per_unit, to_grams
 from intelligence import grocery_list, taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
-from intelligence.expiry import days_until, resolve_expiration
+from intelligence.expiry import days_until, freezer_days, resolve_expiration
 from intelligence.grocery import unlock_suggestions
 from intelligence.search import search as fuzzy_search
 from nutrition.chatbot import NutritionistChatbot
-from nutrition.intake import get_intake
+from nutrition.intake import eat_from_fridge, get_intake, log_nutrition, meals, protein_mode
 from nutrition.lookup import lookup_barcode_off
 from recipes.engine import card
 from sensors.scale import get_scale_reader
@@ -41,6 +41,10 @@ MAX_CHAT_CHARS = 1000
 UNLOCK_CACHE_SECONDS = 60
 TONIGHT_CACHE_SECONDS = 600
 TONIGHT_LIMIT = 6
+# "Add food" on Today: fridge items worth logging for protein, as one usual portion each.
+QUICK_ADD_MIN_PROTEIN_G, QUICK_ADD_LIMIT = 10.0, 4
+QUICK_ADD_PORTION_G, QUICK_ADD_PORTION_COUNT = 200.0, 2
+RAW_CATEGORIES = {"meat", "seafood", "poultry"}
 
 app = FastAPI(title="ReFridge API")
 app.add_middleware(
@@ -154,13 +158,21 @@ class ChatIn(BaseModel):
 
 
 class MealIn(BaseModel):
+    """Nutrition only ({name, protein_g, calories} off a label); nothing leaves the fridge."""
+    name: str | None = None
     recipe_name: str | None = None
     servings: float = 1
-    calories: float | None = None
-    protein_g: float | None = None
+    calories: float | None = Field(None, ge=0)
+    protein_g: float | None = Field(None, ge=0)
     carbs_g: float | None = None
     fat_g: float | None = None
     source: str = "manual"
+    occurred_at: datetime | None = None
+
+
+class EatIn(BaseModel):
+    """Grams to eat; one unit (a serving of leftovers, an egg) when left out."""
+    grams: float | None = Field(None, gt=0)
 
 
 class PiWeightIn(BaseModel):
@@ -240,23 +252,26 @@ def post_event(event: EventIn):
 @app.get("/api/summary")
 def get_summary():
     items = db.active_items()
-    by_product: dict[int, dict] = {}
+    # What's in the freezer is listed apart from the same product in the fridge or pantry.
+    by_product: dict[tuple[int, bool], dict] = {}
     for item in items:
         product = db.get_product(item["product_id"])
         if product is None:
             continue
-        entry = by_product.setdefault(product["id"], {
+        frozen = item["location"] == "freezer"
+        entry = by_product.setdefault((product["id"], frozen), {
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
             "unit": product["unit"], "grams_per_unit": product["grams_per_unit"],
             "expires_in_days": None, "expiry_estimated": False, "soonest_batch": None,
-            "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0,
+            "location": item["location"], "shelf": None if frozen else item["shelf"], "_shelf_grams": -1.0,
+            "leftovers": product["recipe_id"] is not None,
         })
         entry["grams"] += item["grams"]
         if item["location"] == "fridge":
             entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
         # A product split across shelves is shown on the shelf holding most of it.
-        if item["shelf"] is not None and item["grams"] > entry["_shelf_grams"]:
+        if not frozen and item["shelf"] is not None and item["grams"] > entry["_shelf_grams"]:
             entry["shelf"], entry["_shelf_grams"] = item["shelf"], item["grams"]
         if item["expiration_date"]:
             d = days_until(item["expiration_date"])
@@ -312,6 +327,9 @@ def get_product_usage(product_id: int, days: int = 28):
     return {
         "product_id": product_id,
         "name": product["name"],
+        "category": product["category"],
+        "recipe_id": product["recipe_id"],
+        "protein_g_per_100g": product["protein_g_per_100g"],
         "unit": product["unit"],
         "grams_per_unit": product["grams_per_unit"],
         "daily_usage_g": daily_usage(db, product_id, days=days),
@@ -368,8 +386,8 @@ def _fridge_version() -> tuple:
     """Changes whenever the inventory or the profile filters change."""
     profile = db.get_profile()
     return (
-        tuple((i["id"], round(i["grams"])) for i in db.active_items()),
-        profile["allergies"], profile["dislikes"],
+        tuple((i["id"], round(i["grams"]), i["location"]) for i in db.active_items()),
+        profile["allergies"], profile["dislikes"], protein_mode(profile),
     )
 
 
@@ -388,7 +406,8 @@ def get_grocery_unlock():
     """Slow (searches the recipe library), so it's cached until the fridge or
     profile changes, or for a minute."""
     return _cached(_unlock_cache, UNLOCK_CACHE_SECONDS,
-                   lambda: [u.__dict__ for u in unlock_suggestions(db, chatbot.engine)])
+                   lambda: [u.__dict__ for u in unlock_suggestions(
+                       db, chatbot.engine, high_protein=protein_mode(db.get_profile()))])
 
 
 # -------------------------------------------------------------------- review
@@ -506,6 +525,36 @@ def undo_events(body: EventIdsIn):
     return {"ok": True}
 
 
+@app.post("/api/products/{product_id}/eat")
+def eat_product(product_id: int, body: EatIn):
+    """Ate some as it is: a serving of leftovers, a yogurt. Logs its nutrition and takes it from the
+    fridge, nothing else. Undo with /api/meals/{meal_id}/undo."""
+    product = db.get_product(product_id)
+    if product is None:
+        raise HTTPException(404, "product not found")
+    leftovers = product["recipe_id"] is not None
+    name = product["name"].removesuffix(" leftovers") if leftovers else product["name"]
+    eaten = eat_from_fridge(db, product_id, body.grams or product["grams_per_unit"], name,
+                            source="leftovers" if leftovers else "fridge")
+    if eaten is None:
+        raise HTTPException(409, "none left")
+    return eaten
+
+
+@app.post("/api/products/{product_id}/freeze")
+def freeze_product(product_id: int):
+    """Every fridge package of it goes to the freezer, with a freezer date. Undo with /api/events/undo."""
+    product = db.get_product(product_id)
+    items = [i for i in db.active_items(location="fridge") if i["product_id"] == product_id]
+    if product is None or not items:
+        raise HTTPException(404, "nothing of this in the fridge")
+    days = freezer_days(product["name"], product["category"])
+    expires = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
+    event_ids = [inv_events.move_storage(db, i["id"], "freezer", expires) for i in items]
+    return {"event_ids": [e for e in event_ids if e is not None], "grams": sum(i["grams"] for i in items),
+            "expiration_date": expires}
+
+
 @app.post("/api/items/remove")
 def remove_item(body: ItemIdIn):
     inv_events.apply_remove(db, body.item_id)
@@ -540,7 +589,7 @@ def get_profile():
         "daily_calories": p["daily_calories"], "daily_protein_g": p["daily_protein_g"],
         "daily_carbs_g": p["daily_carbs_g"], "daily_fat_g": p["daily_fat_g"],
         "diet_type": p["diet_type"], "allergies": json.loads(p["allergies"] or "[]"),
-        "dislikes": json.loads(p["dislikes"] or "[]"),
+        "dislikes": json.loads(p["dislikes"] or "[]"), "protein_mode": protein_mode(p),
     }
 
 
@@ -581,8 +630,8 @@ _tonight_cache: dict = {}
 def recipes_tonight():
     """Cook tonight: dinner-sized main dishes from what you have. Cached until the fridge or
     profile changes (up to 10 minutes) so the home screen shows them at once."""
-    return _cached(_tonight_cache, TONIGHT_CACHE_SECONDS,
-                   lambda: [card(m) for m in chatbot.engine.suggest(limit=TONIGHT_LIMIT, automatic=True)])
+    return _cached(_tonight_cache, TONIGHT_CACHE_SECONDS, lambda: [card(m) for m in chatbot.engine.suggest(
+        limit=TONIGHT_LIMIT, automatic=True, high_protein=protein_mode(db.get_profile()))])
 
 
 @app.get("/api/recipes/{recipe_id}")
@@ -593,6 +642,9 @@ def get_recipe(recipe_id: int):
     listed = grocery_list.listed_norms(db)
     to_buy = recipe["missing"] + [s["name"] for s in recipe["short"]]
     recipe["on_grocery_list"] = [n for n in to_buy if grocery_list.normalize(n) in listed]
+    recipe["leftovers"] = chatbot.engine.leftovers_for(recipe_id)
+    cooked_today = [m for m in meals(db, "today") if m["source"] == "recipe" and m["name"] == recipe["name"]]
+    recipe["logged_meal_id"] = cooked_today[-1]["id"] if cooked_today else None
     return recipe
 
 
@@ -632,13 +684,57 @@ def get_taste():
     }
 
 
+@app.get("/api/meals")
+def get_meals(period: Literal["today", "week"] = "today"):
+    return meals(db, period)
+
+
 @app.post("/api/meals")
 def post_meal(body: MealIn):
-    meal_id = db.log_meal(
-        recipe_name=body.recipe_name, servings=body.servings, calories=body.calories,
-        protein_g=body.protein_g, carbs_g=body.carbs_g, fat_g=body.fat_g, source=body.source,
-    )
+    name = (body.name or body.recipe_name or "").strip()
+    if not name:
+        raise HTTPException(422, "name is required")
+    if body.occurred_at:  # putting back a meal removed from today, at its own time
+        meal_id = db.log_meal(name, body.servings, body.calories, body.protein_g, body.carbs_g, body.fat_g,
+                              source=body.source, occurred_at=body.occurred_at.isoformat())
+    else:
+        meal_id = log_nutrition(db, name, body.protein_g, body.calories, source=body.source,
+                                carbs_g=body.carbs_g, fat_g=body.fat_g)
     return {"meal_id": meal_id}
+
+
+@app.delete("/api/meals/{meal_id}")
+def delete_meal(meal_id: int):
+    """Off the nutrition log only; what left the fridge stays gone. Returns the meal so it can be put back."""
+    meal = db.get_meal(meal_id)
+    if meal is None:
+        raise HTTPException(404, "meal not found")
+    db.delete_meal(meal_id)
+    return {"name": meal["recipe_name"], "servings": meal["servings"], "occurred_at": meal["occurred_at"],
+            "source": meal["source"], **{k: meal[k] for k in ("calories", "protein_g", "carbs_g", "fat_g")}}
+
+
+@app.get("/api/meals/quick-adds")
+def get_quick_adds():
+    """Fridge items with at least 10 g protein in a usual portion (2 eggs, 200 g of yogurt, one
+    serving of leftovers), most protein first. Raw meat is left out: nobody eats it as it is."""
+    out = []
+    for entry in get_summary()["inventory"]:
+        product = db.get_product(entry["product_id"])
+        per_100g = product["protein_g_per_100g"]
+        if entry["location"] != "fridge" or per_100g is None or (product["category"] or "").lower() in RAW_CATEGORIES:
+            continue
+        if product["unit"] == "count":
+            grams = (1 if entry["leftovers"] else QUICK_ADD_PORTION_COUNT) * product["grams_per_unit"]
+        else:
+            grams = QUICK_ADD_PORTION_G
+        protein = per_100g * grams / 100
+        if protein >= QUICK_ADD_MIN_PROTEIN_G and entry["grams"] >= grams - 0.5:
+            kcal = product["calories_per_100g"]
+            out.append({"product_id": product["id"], "name": product["name"], "unit": product["unit"],
+                        "grams_per_unit": product["grams_per_unit"], "grams": grams, "protein_g": round(protein),
+                        "calories": round(kcal * grams / 100) if kcal is not None else None})
+    return sorted(out, key=lambda q: -q["protein_g"])[:QUICK_ADD_LIMIT]
 
 
 @app.post("/api/meals/{meal_id}/undo")

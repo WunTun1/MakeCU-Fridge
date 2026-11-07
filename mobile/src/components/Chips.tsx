@@ -43,10 +43,13 @@ export function ChoiceChips<T extends string>({
  */
 export function ListField({
   label,
+  placeholder,
   values,
   onChange,
 }: {
   label: string;
+  /** An example, starting with "e.g.". */
+  placeholder: string;
   values: string[];
   onChange: (values: string[]) => void;
 }) {
@@ -83,7 +86,7 @@ export function ListField({
           value={text}
           onChangeText={setText}
           onSubmitEditing={add}
-          placeholder="e.g. peanuts"
+          placeholder={placeholder}
           placeholderTextColor={colors.muted}
           returnKeyType="done"
           accessibilityLabel={`Add to ${label}`}

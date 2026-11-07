@@ -6,7 +6,7 @@ import { formatAmount } from '@/lib/amount';
 import type { InventoryEntry } from '@/lib/api';
 import { expiryTone, glanceWord, runsOutSoon, soonestPart, urgency } from '@/lib/expiry';
 import { type Palette, useColors } from '@/lib/theme';
-import { capitalize, shortWeekday } from '@/lib/time';
+import { byDay, capitalize } from '@/lib/time';
 
 /** Average glyph width of the bold system font, as a share of the font size. */
 const GLYPH_W = 0.62;
@@ -25,11 +25,11 @@ function glanceSize(text: string, contentW: number, compact: boolean): number {
   return Math.max(min, Math.min(max, Math.floor(contentW / (GLYPH_W * longest))));
 }
 
-/** "3 L · 1 L by Mon" when only the older package goes bad soon (the wide panel has room for it). */
+/** "3 L · 1 L by Mon" ("by Dec 1" past the next 6 days) when only the older package goes bad soon; the wide panel has room for it. */
 function amountText(item: InventoryEntry, compact: boolean): string {
   const total = capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name));
   const part = compact ? null : soonestPart(item);
-  const parts = [part ? `${total} · ${part} by ${shortWeekday(item.soonest_batch!.expiration_date)}` : total];
+  const parts = [part ? `${total} · ${part} by ${byDay(item.soonest_batch!.expiration_date)}` : total];
   if (runsOutSoon(item)) parts.push('low');
   return parts.join(' · ');
 }
