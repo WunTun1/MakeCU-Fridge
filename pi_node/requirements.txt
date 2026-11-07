@@ -1,0 +1,13 @@
+# Install on the Raspberry Pi:  pip install -r pi_node/requirements.txt
+# (Simulated mode on a PC needs nothing extra — the root requirements.txt covers it.)
+fastapi==0.115.0
+uvicorn==0.30.6
+requests==2.32.3
+python-dotenv==1.0.1
+numpy==1.26.4
+opencv-python-headless==4.10.0.84
+smbus2==0.5.1
+grove.py==0.6
+# Pi 4 and earlier:
+RPi.GPIO==0.7.1; platform_machine == "armv7l" or platform_machine == "aarch64"
+# Pi 5: uninstall RPi.GPIO and `pip install rpi-lgpio` instead (same import, works with the Pi 5's RP1 chip).
