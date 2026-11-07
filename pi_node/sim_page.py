@@ -25,8 +25,9 @@ SIM_PAGE = """<!doctype html>
   <section class="card">
     <h1>Simulated fridge</h1>
     <p class="muted">Stands in for the Raspberry Pi. Weights, door, and sensor readings are pushed to the backend
-      exactly like the real Pi will; this camera feed is what the backend's vision pipeline sees.</p>
-    <img id="cam" alt="Simulated fridge camera">
+      exactly like the real Pi will.</p>
+    <img id="cam" alt="Fridge camera">
+    <p class="muted" id="camlabel" style="margin:6px 0 0"></p>
     <div class="row" style="margin-top:10px">
       <span>Door: <span id="door" class="pill">?</span></span>
       <button onclick="door(true)">Open</button>
@@ -104,8 +105,25 @@ function render(s) {
 }
 setInterval(() => fetch("/sim/state").then(r => r.json()).then(render), 500);
 fetch("/sim/state").then(r => r.json()).then(render);
+// Show the backend's annotated vision view; fall back to the raw camera when the
+// vision loop isn't running (and retry the vision view every few seconds).
+const BACKEND = "__BACKEND__";
 const cam = document.getElementById("cam");
-setInterval(() => { cam.src = "/frame.jpg?t=" + Date.now(); }, 200);
+const camLabel = document.getElementById("camlabel");
+let visionOk = true;
+cam.onload = () => {
+  camLabel.innerHTML = visionOk
+    ? '<b>Live vision view</b> &mdash; <span style="color:#ff8c00">orange</span> = your hand, '
+      + '<span style="color:#00dcff">cyan</span> = what changed, '
+      + '<span style="color:#4ade80">green flash</span> = the snapshot for Gemini'
+    : "Raw camera (the backend's vision view isn't available yet)";
+};
+cam.onerror = () => {
+  if (visionOk) { visionOk = false; setTimeout(() => { visionOk = true; }, 4000); }
+};
+setInterval(() => {
+  cam.src = (visionOk ? BACKEND + "/api/vision/frame.jpg" : "/frame.jpg") + "?t=" + Date.now();
+}, 200);
 </script>
 </body></html>
 """

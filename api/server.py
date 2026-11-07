@@ -8,24 +8,32 @@ manual endpoints (section 15's "if hardware breaks" fallback).
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field
 
 from inventory import events as inv_events
 from inventory.database import get_db
+from intelligence import taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand
-from intelligence.grocery import grocery_plan, next_trip_date
+from intelligence.expiry import days_until, resolve_expiration
+from intelligence.grocery import grocery_plan, next_trip_date, unlock_suggestions
 from intelligence.search import search as fuzzy_search
 from nutrition.chatbot import NutritionistChatbot
 from nutrition.intake import get_intake
 from nutrition.lookup import lookup_barcode_off
+from recipes.engine import card
 from sensors.scale import get_scale_reader
+from vision.debug import view as vision_view
+
+log = logging.getLogger("refridge.api")
+MAX_CHAT_CHARS = 1000
 
 app = FastAPI(title="ReFridge API")
 app.add_middleware(
@@ -35,6 +43,14 @@ app.add_middleware(
 db = get_db(os.getenv("DATABASE_PATH", "refridge.db"))
 chatbot = NutritionistChatbot(db)
 scale = get_scale_reader()
+
+
+def _expiry_for(location: str, *, printed_date=None, estimated_days=None, name=None, category=None):
+    """(expiration_date, is_estimate). Shelf-life estimates are fridge numbers,
+    so pantry/freezer items only get a date if one was actually provided."""
+    if location != "fridge":
+        return printed_date, False
+    return resolve_expiration(printed_date=printed_date, estimated_days=estimated_days, name=name, category=category)
 
 
 def _condition_dict(row) -> dict | None:
@@ -125,6 +141,14 @@ class PiConditionsIn(BaseModel):
     light_raw: float | None = None
 
 
+class CookedIn(BaseModel):
+    servings_eaten: float = Field(1.0, gt=0, le=20)
+
+
+class RateIn(BaseModel):
+    liked: bool
+
+
 class ReviewResolutionIn(BaseModel):
     action: str  # "ignore" | "remove" | "consume" | "add_confirmed"
     item_id: int | None = None
@@ -136,10 +160,12 @@ class ReviewResolutionIn(BaseModel):
 @app.post("/api/events")
 def post_event(event: EventIn):
     if event.event_type == "add":
-        product_id = db.get_or_create_product(event.product_name or "Unknown Item", category=event.category)
+        name = event.product_name or "Unknown Item"
+        expires, estimated = _expiry_for(event.location, printed_date=event.expiration_date, name=name, category=event.category)
+        product_id = db.get_or_create_product(name, category=event.category)
         item_id = inv_events.apply_add(
-            db, product_id, event.grams, event.location, event.shelf, event.position, event.expiration_date,
-            event.confidence,
+            db, product_id, event.grams, event.location, event.shelf, event.position, expires,
+            event.confidence, expiration_estimated=estimated,
         )
         return {"item_id": item_id}
 
@@ -176,8 +202,16 @@ def get_summary():
         entry = by_product.setdefault(product["id"], {
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
+            "expires_in_days": None, "expiry_estimated": False, "location": item["location"],
         })
         entry["grams"] += item["grams"]
+        if item["location"] == "fridge":
+            entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
+        if item["expiration_date"]:
+            d = days_until(item["expiration_date"])
+            if entry["expires_in_days"] is None or d < entry["expires_in_days"]:
+                entry["expires_in_days"] = d
+                entry["expiry_estimated"] = bool(item["expiration_estimated"])
 
     inventory = []
     for entry in by_product.values():
@@ -197,11 +231,6 @@ def get_summary():
         "conditions": _condition_dict(db.latest_condition()),
         "door_open": scale.door_is_open(),
     }
-
-
-@app.get("/api/activity")
-def get_activity(limit: int = 10):
-    return [dict(r) for r in db.recent_activity(min(limit, 50))]
 
 
 @app.get("/api/products/common")
@@ -231,8 +260,12 @@ def get_product_usage(product_id: int, days: int = 28):
 @app.get("/api/grocery")
 def get_grocery(trip_in_days: int | None = None):
     plan = grocery_plan(db, trip_in_days)
-    return {"trip_date": next_trip_date(db).isoformat() if next_trip_date(db) else None,
-            "items": [i.__dict__ for i in plan]}
+    trip = next_trip_date(db)
+    return {
+        "trip_date": trip.isoformat() if trip else None,
+        "items": [i.__dict__ for i in plan],
+        "unlock": [u.__dict__ for u in unlock_suggestions(db, chatbot.engine)],
+    }
 
 
 # -------------------------------------------------------------------- review
@@ -268,8 +301,21 @@ def resolve_review(review_id: int, resolution: ReviewResolutionIn):
             raise HTTPException(400, "grams required")
         position = tuple(meta["position"]) if meta.get("position") else None
         location = "fridge" if event["shelf"] is not None else "pantry"
-        product_id = db.get_or_create_product(resolution.product_name.strip())
-        inv_events.apply_add(db, product_id, grams, location=location, shelf=event["shelf"], position=position)
+        name = resolution.product_name.strip()
+        # The model's freshness estimate only applies if the user agreed with its guess.
+        candidate = meta.get("candidate") or {}
+        same_item = (candidate.get("item_name") or "").strip().lower() == name.lower()
+        expires, estimated = _expiry_for(
+            location,
+            printed_date=candidate.get("visible_expiration_date") if same_item else None,
+            estimated_days=candidate.get("days_until_expired") if same_item else None,
+            name=name, category=candidate.get("category") if same_item else None,
+        )
+        product_id = db.get_or_create_product(name)
+        inv_events.apply_add(
+            db, product_id, grams, location=location, shelf=event["shelf"], position=position,
+            expiration_date=expires, expiration_estimated=estimated,
+        )
     else:
         raise HTTPException(400, f"can't apply {resolution.action!r} with the given fields")
     db.resolve_event(review_id)
@@ -283,8 +329,10 @@ def create_item(item: ItemIn):
         item.name, category=item.category, usual_package_size_g=item.usual_package_size_g,
         is_staple=item.is_staple,
     )
+    expires, estimated = _expiry_for(item.location, printed_date=item.expiration_date, name=item.name, category=item.category)
     item_id = inv_events.apply_add(
-        db, product_id, item.grams, location=item.location, expiration_date=item.expiration_date,
+        db, product_id, item.grams, location=item.location,
+        expiration_date=expires, expiration_estimated=estimated,
     )
     return {"item_id": item_id, "product_id": product_id}
 
@@ -343,8 +391,51 @@ def update_profile(body: ProfileIn):
 # ---------------------------------------------------------------------- chat
 @app.post("/api/chat")
 def post_chat(body: ChatIn):
-    reply = chatbot.chat(body.message)
-    return {"reply": reply}
+    message = body.message.strip()
+    if not message:
+        raise HTTPException(400, "empty message")
+    return chatbot.chat(message[:MAX_CHAT_CHARS])
+
+
+# ------------------------------------------------------------------- recipes
+@app.get("/api/recipes/suggest")
+def suggest_recipes(q: str | None = None, cuisine: str | None = None, max_minutes: int | None = None,
+                    high_protein: bool = False, must_have_all: bool = False, limit: int = 6):
+    matches = chatbot.engine.suggest(q, cuisine, max_minutes, high_protein, must_have_all, min(limit, 20))
+    return [card(m) for m in matches]
+
+
+@app.get("/api/recipes/{recipe_id}")
+def get_recipe(recipe_id: int):
+    recipe = chatbot.engine.adapted(recipe_id)
+    if recipe is None:
+        raise HTTPException(404, "recipe not found")
+    return recipe
+
+
+@app.post("/api/recipes/{recipe_id}/cooked")
+def recipe_cooked(recipe_id: int, body: CookedIn):
+    result = chatbot.engine.cooked(recipe_id, body.servings_eaten)
+    if result is None:
+        raise HTTPException(404, "recipe not found")
+    return result
+
+
+@app.post("/api/recipes/{recipe_id}/rate")
+def recipe_rate(recipe_id: int, body: RateIn):
+    if not chatbot.engine.rate(recipe_id, body.liked):
+        raise HTTPException(404, "recipe not found")
+    return {"ok": True}
+
+
+@app.get("/api/taste")
+def get_taste():
+    """What ReFridge has learned about your cooking, for the profile screen."""
+    prof = taste.profile(db)
+    return {
+        "cuisines": taste.top_preferences(prof, "cuisine", 4),
+        "ingredients": taste.top_preferences(prof, "ingredient", 6),
+    }
 
 
 @app.post("/api/meals")
@@ -386,6 +477,15 @@ def get_conditions():
 @app.get("/api/health")
 def health():
     return {"ok": True, "scale_source": scale.source}
+
+
+@app.get("/api/vision/frame.jpg")
+def vision_frame():
+    """Latest camera frame annotated with what the vision pipeline sees (vision/debug.py)."""
+    jpeg = vision_view.jpeg()
+    if jpeg is None:
+        raise HTTPException(404, "no vision frames yet — is the fridge loop running?")
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 # ------------------------------------------------- web build (fridge screen)

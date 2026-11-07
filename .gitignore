@@ -13,3 +13,5 @@ node_modules/
 pi_node/calibration.json
 # recordings from software/vision/capture.py
 captures/
+# recipe library (rebuild with `python -m recipes.build`; recipes/sample_recipes.jsonl.gz ships instead)
+data/

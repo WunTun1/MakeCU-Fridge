@@ -2,36 +2,39 @@
 plain code. Section 7.
 
 Called when a changed region can't be matched to any known item. Quantity
-always comes from the scale, never from the model; the model also isn't
-trusted to invent an expiration date it can't actually read.
+always comes from the scale, never from the model. The model reports a
+printed expiry date only if it can read one, and separately estimates days
+until the item goes bad from how it looks; intelligence/expiry.py decides
+which to trust and labels estimates as such.
 
 Uses Google Gemini (multimodal: text + image in one call).
 """
 from __future__ import annotations
 
 import json
-import os
+import logging
+from datetime import datetime, timezone
 
 import cv2
 import numpy as np
 
-try:
-    from google import genai
-    from google.genai import types
-except ImportError:  # pragma: no cover
-    genai = None
-    types = None
+from gemini import make_client, model_name, types
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+log = logging.getLogger("refridge.vision.classifier")
+
 LOW_CONFIDENCE_THRESHOLD = 0.6
 
 SYSTEM_PROMPT = (
     "You identify grocery items from a fridge camera for an inventory system. "
     "Look at the cropped item photo (and the full shelf photo for context). "
     "Respond with ONLY compact JSON: "
-    '{"item_name": str, "category": str, "visible_expiration_date": "YYYY-MM-DD" or null, "confidence": 0-1}. '
-    "Only set visible_expiration_date if you can actually read a printed date on the packaging — "
-    "never guess one. If you aren't confident what the item is, say so with a low confidence score "
+    '{"item_name": str, "category": "produce|dairy|meat|seafood|leftovers|drink|packaged|other", '
+    '"visible_expiration_date": "YYYY-MM-DD" or null, "days_until_expired": int or null, '
+    '"confidence": 0-1}. '
+    "visible_expiration_date: only if you can actually read a printed date on the packaging — never guess one. "
+    "days_until_expired: your estimate of how many days from today this will stay good in a refrigerator, "
+    "judged from what kind of food it is and how fresh it looks (browning, wilting, mold mean fewer days); "
+    "null if you can't tell. If you aren't confident what the item is, say so with a low confidence score "
     "rather than guessing a specific brand."
 )
 
@@ -48,15 +51,17 @@ def identify_item(
     shelf_context: np.ndarray | None,
     measured_grams: float,
 ) -> dict:
-    """Returns {"item_name", "category", "visible_expiration_date", "confidence",
-    "needs_confirmation"}. Falls back to an "Unknown Item" placeholder (flagged
-    for user confirmation) if no API key is configured or the call fails."""
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key or genai is None:
+    """Returns {"item_name", "category", "visible_expiration_date",
+    "days_until_expired", "confidence", "needs_confirmation"}. Falls back to an
+    "Unknown Item" placeholder (flagged for user confirmation) if no API key is
+    configured or the call fails."""
+    client = make_client()
+    if client is None:
         return _unknown_item_fallback()
 
+    today = datetime.now(timezone.utc).date().isoformat()
     parts = [
-        f"Measured weight: {measured_grams:.0f} g. Cropped item photo:",
+        f"Today is {today}. Measured weight: {measured_grams:.0f} g. Cropped item photo:",
         types.Part.from_bytes(data=_encode_jpeg(crop), mime_type="image/jpeg"),
     ]
     if shelf_context is not None:
@@ -64,9 +69,8 @@ def identify_item(
         parts.append(types.Part.from_bytes(data=_encode_jpeg(shelf_context), mime_type="image/jpeg"))
 
     try:
-        client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL", DEFAULT_MODEL),
+            model=model_name(),
             contents=parts,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
@@ -74,10 +78,15 @@ def identify_item(
             ),
         )
         result = json.loads(response.text)
+        if not isinstance(result, dict):
+            raise ValueError(f"expected a JSON object, got {type(result).__name__}")
+        result["confidence"] = float(result.get("confidence", 0.5))
     except Exception:
+        # Still fall back so the fridge keeps working, but never silently —
+        # a bad key or model name would otherwise look like "AI can't recognize anything".
+        log.exception("Gemini item identification failed; asking the user instead")
         return _unknown_item_fallback()
 
-    result.setdefault("confidence", 0.5)
     result["needs_confirmation"] = result["confidence"] < LOW_CONFIDENCE_THRESHOLD
     return result
 
@@ -87,6 +96,7 @@ def _unknown_item_fallback() -> dict:
         "item_name": "Unknown Item",
         "category": None,
         "visible_expiration_date": None,
+        "days_until_expired": None,
         "confidence": 0.0,
         "needs_confirmation": True,
     }

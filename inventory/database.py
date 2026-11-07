@@ -6,6 +6,7 @@ only has to change in one place.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS items (
     status TEXT NOT NULL DEFAULT 'active',     -- active | removed
     added_at TEXT NOT NULL,
     expiration_date TEXT,
+    expiration_estimated INTEGER NOT NULL DEFAULT 0,  -- 1 = estimated shelf life, 0 = printed on package
     last_seen TEXT,
     confidence REAL
 );
@@ -88,6 +90,14 @@ CREATE TABLE IF NOT EXISTS chat_memory (
     occurred_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS taste_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    signal TEXT NOT NULL,      -- cooked | liked | disliked | asked
+    feature TEXT NOT NULL,     -- recipe:<id> | cuisine:<name> | ingredient:<canonical name>
+    weight REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS fridge_conditions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at TEXT NOT NULL,
@@ -118,8 +128,18 @@ class Database:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
         self._ensure_profile_row()
+
+    def _migrate(self) -> None:
+        """Bring databases created by older versions up to the current schema.
+        CREATE TABLE IF NOT EXISTS never adds columns to an existing table."""
+        item_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(items)")}
+        if "expiration_estimated" not in item_columns:
+            self._conn.execute(
+                "ALTER TABLE items ADD COLUMN expiration_estimated INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _ensure_profile_row(self) -> None:
         cur = self._conn.execute("SELECT id FROM profile WHERE id = 1")
@@ -219,16 +239,17 @@ class Database:
         position: tuple[float, float] | None = None,
         expiration_date: str | None = None,
         confidence: float | None = None,
+        expiration_estimated: bool = False,
     ) -> int:
         px, py = position if position else (None, None)
         with self.cursor() as cur:
             cur.execute(
                 """INSERT INTO items
                    (product_id, location, shelf, position_x, position_y, grams, status,
-                    added_at, expiration_date, last_seen, confidence)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)""",
+                    added_at, expiration_date, expiration_estimated, last_seen, confidence)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)""",
                 (product_id, location, shelf, px, py, grams, now_iso(),
-                 expiration_date, now_iso(), confidence),
+                 expiration_date, int(expiration_estimated), now_iso(), confidence),
             )
             return cur.lastrowid
 
@@ -325,17 +346,6 @@ class Database:
             cur.execute(q, params)
             return cur.fetchall()
 
-    def recent_activity(self, limit: int = 10) -> list[sqlite3.Row]:
-        with self.cursor() as cur:
-            cur.execute(
-                """SELECT e.id, e.event_type, e.grams_delta, e.shelf, e.occurred_at, p.name AS product_name
-                   FROM events e JOIN products p ON p.id = e.product_id
-                   WHERE e.event_type IN ('add', 'remove', 'consume', 'return', 'waste')
-                   ORDER BY e.occurred_at DESC, e.id DESC LIMIT ?""",
-                (limit,),
-            )
-            return cur.fetchall()
-
     def common_products(self, limit: int = 8) -> list[sqlite3.Row]:
         """Products added most often — quick-pick names for the fridge screen."""
         with self.cursor() as cur:
@@ -422,6 +432,20 @@ class Database:
             )
             return list(reversed(cur.fetchall()))
 
+    # ------------------------------------------------------------ taste_events
+    def log_taste(self, signal: str, features: list[tuple[str, float]], occurred_at: str | None = None) -> None:
+        when = occurred_at or now_iso()
+        with self.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO taste_events (occurred_at, signal, feature, weight) VALUES (?, ?, ?, ?)",
+                [(when, signal, feature, weight) for feature, weight in features],
+            )
+
+    def taste_events_since(self, since: str) -> list[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM taste_events WHERE occurred_at >= ?", (since,))
+            return cur.fetchall()
+
     # -------------------------------------------------------- fridge_conditions
     def log_condition(
         self,
@@ -456,9 +480,11 @@ class Database:
 _db: Database | None = None
 
 
-def get_db(path: str | Path = "refridge.db") -> Database:
-    """Process-wide singleton so every module shares one connection."""
+def get_db(path: str | Path | None = None) -> Database:
+    """Process-wide singleton so every module shares one connection. Without an
+    explicit path it honors DATABASE_PATH, so nothing can quietly open the
+    default database when another one was configured."""
     global _db
     if _db is None:
-        _db = Database(path)
+        _db = Database(path or os.getenv("DATABASE_PATH", "refridge.db"))
     return _db

@@ -21,6 +21,7 @@ HAND_GONE_DEBOUNCE_S = 0.5
 DOOR_OPEN_RELEARN_S = 1.0       # ignore the door-light flicker right after opening
 MIN_MOTION_AREA = 4000          # px of changed pixels between frames that counts as a hand
 MOTION_PIXEL_THRESHOLD = 25
+MIN_MOTION_BOX_AREA = 1500      # ignore specks when reporting where the motion is
 
 
 class TripDetector:
@@ -30,6 +31,8 @@ class TripDetector:
         self._hand_present = False
         self._last_motion_ts: float | None = None
         self._ignore_until: float = 0.0
+        # Where the latest motion was (x, y, w, h) — for the live vision view.
+        self.motion_boxes: list[tuple[int, int, int, int]] = []
 
     def on_door_open(self) -> None:
         self._ignore_until = time.monotonic() + DOOR_OPEN_RELEARN_S
@@ -41,9 +44,17 @@ class TripDetector:
         gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (7, 7), 0)
         prev, self._prev_gray = self._prev_gray, gray
         if prev is None or prev.shape != gray.shape:
+            self.motion_boxes = []
             return 0
         _, mask = cv2.threshold(cv2.absdiff(prev, gray), MOTION_PIXEL_THRESHOLD, 255, cv2.THRESH_BINARY)
-        return int(cv2.countNonZero(mask))
+        area = int(cv2.countNonZero(mask))
+        if area >= MIN_MOTION_BOX_AREA:
+            blobs = cv2.dilate(mask, np.ones((15, 15), np.uint8))  # merge a hand's pieces into one box
+            contours, _ = cv2.findContours(blobs, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            self.motion_boxes = [cv2.boundingRect(c) for c in contours if cv2.contourArea(c) >= MIN_MOTION_BOX_AREA]
+        else:
+            self.motion_boxes = []
+        return area
 
     def process_frame(self, frame: np.ndarray) -> dict:
         """Returns {"hand_entered", "hand_left", "hand_present"} for this frame;

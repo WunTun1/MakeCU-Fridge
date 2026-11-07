@@ -3,9 +3,12 @@ import { Link, Stack, router } from 'expo-router';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { FillBar } from '@/components/FillBar';
+import { RecipeCardView } from '@/components/recipes/RecipeCardView';
 import { ErrorCard, Loading } from '@/components/States';
 import { api, type Alert, type InventoryEntry, type Macros, type Profile } from '@/lib/api';
+import { expiryColor, expiryText } from '@/lib/expiry';
 import { colors, formatGrams, ui } from '@/lib/theme';
+import { shortDate } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 5000;
@@ -14,6 +17,8 @@ const URGENT: Alert['reason'][] = ['staple_out', 'expiring_soon', 'fridge_temp_h
 export default function Home() {
   const summary = useApi(api.summary, POLL_MS);
   const profile = useApi(api.profile);
+  // No query: the engine searches by what's in the fridge, expiring items first.
+  const ideas = useApi(() => api.suggestRecipes({ limit: 6 }));
 
   if (summary.loading && !summary.data) return <Loading />;
 
@@ -40,7 +45,7 @@ export default function Home() {
 
       {s && s.review_queue_count > 0 && (
         <Link href="/review" asChild>
-          <Pressable style={[ui.card, styles.reviewBanner]}>
+          <Pressable style={StyleSheet.flatten([ui.card, styles.reviewBanner])}>
             <Text style={ui.text}>
               {s.review_queue_count} fridge change{s.review_queue_count > 1 ? 's' : ''} need a quick answer
             </Text>
@@ -69,6 +74,28 @@ export default function Home() {
             ))
           )}
 
+          <View style={[ui.row, { justifyContent: 'space-between' }]}>
+            <Text style={ui.h2}>Cook tonight</Text>
+            <Link href="/chat" style={{ color: colors.accent, fontSize: 14 }}>
+              Ask for something else →
+            </Link>
+          </View>
+          {ideas.data && ideas.data.length > 0 ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
+              {ideas.data.map((r) => (
+                <RecipeCardView
+                  key={r.id}
+                  card={r}
+                  onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
+                />
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={ui.card}>
+              <Text style={ui.muted}>{ideas.loading ? 'Finding recipes for what you have…' : 'Add a few items to get ideas.'}</Text>
+            </View>
+          )}
+
           {s.conditions && (
             <View style={[ui.card, ui.row, { justifyContent: 'space-between' }]}>
               <Text style={ui.muted}>Fridge</Text>
@@ -82,7 +109,7 @@ export default function Home() {
           <Text style={ui.h2}>Next trip</Text>
           <View style={ui.card}>
             <Text style={ui.text}>
-              {s.next_trip_date ? `Suggested: ${s.next_trip_date}` : 'No trip needed in the next two weeks.'}
+              {s.next_trip_date ? `Shop ${shortDate(s.next_trip_date)}` : 'No trip needed in the next two weeks.'}
             </Text>
           </View>
 
@@ -130,15 +157,21 @@ function IntakeCard({ totals, profile }: { totals: Macros; profile: Profile | nu
   );
 }
 
+// Children of <Link asChild> must get one style object — expo-router throws on style arrays.
 function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
   return (
     <Link href={{ pathname: '/item/[id]', params: { id: item.product_id } }} asChild>
-      <Pressable style={[styles.invRow, !last && ui.divider]}>
+      <Pressable style={StyleSheet.flatten([styles.invRow, !last && ui.divider])}>
         <View style={{ flex: 1 }}>
           <Text style={ui.text}>{item.name}</Text>
           <Text style={ui.muted}>
-            {item.days_left != null ? `${item.days_left.toFixed(1)} days left` : 'no usage history yet'}
+            {item.days_left != null ? `Runs out in ${item.days_left.toFixed(1)} days` : 'No usage history yet'}
           </Text>
+          {item.expires_in_days != null && (
+            <Text style={[ui.muted, { color: expiryColor(item.expires_in_days) }]}>
+              {expiryText(item.expires_in_days, item.expiry_estimated)}
+            </Text>
+          )}
         </View>
         <View style={{ width: 90, alignItems: 'flex-end' }}>
           <Text style={ui.text}>{formatGrams(item.grams)}</Text>

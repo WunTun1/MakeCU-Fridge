@@ -98,6 +98,33 @@ function ProfileForm({ initial }: { initial: Profile }) {
       </Text>
       <Button title="Save" onPress={save} />
       {status && <Text style={ui.muted}>{status}</Text>}
+
+      <LearnedTastes />
     </ScrollView>
+  );
+}
+
+/** What the taste profile has picked up from cooking, ratings, requests, and habits. */
+function LearnedTastes() {
+  const { data } = useApi(api.taste);
+  if (!data) return null;
+  const nothingYet = data.cuisines.length === 0 && data.ingredients.length === 0;
+  return (
+    <View style={[ui.card, { gap: 6, marginTop: 8 }]}>
+      <Text style={ui.h2}>What ReFridge has learned</Text>
+      {nothingYet ? (
+        <Text style={ui.muted}>Cook, rate, and ask for recipes and this fills in — suggestions adapt as it does.</Text>
+      ) : (
+        <>
+          {data.cuisines.length > 0 && (
+            <Text style={ui.text}>
+              You enjoy: <Text style={{ textTransform: 'capitalize' }}>{data.cuisines.map((c) => c.replace('-', ' ')).join(', ')}</Text>
+            </Text>
+          )}
+          {data.ingredients.length > 0 && <Text style={ui.text}>Favorite ingredients: {data.ingredients.join(', ')}</Text>}
+          <Text style={ui.muted}>Recent habits count more; older ones fade over about a month.</Text>
+        </>
+      )}
+    </View>
   );
 }

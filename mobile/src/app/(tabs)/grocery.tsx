@@ -1,4 +1,5 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 
@@ -86,6 +87,29 @@ function GroceryList({ tripInDays }: { tripInDays: number | undefined }) {
           );
         })}
       </View>
+
+      {data.unlock.length > 0 && (
+        <>
+          <Text style={ui.h2}>Unlock recipes</Text>
+          <Text style={ui.muted}>Small buys that complete recipes you&apos;d probably like, based on what you cook.</Text>
+          {data.unlock.map((u) => (
+            <View key={u.buy.join('+')} style={[ui.card, { gap: 6 }]}>
+              <Text style={[ui.text, { fontWeight: '700', textTransform: 'capitalize' }]}>{u.buy.join(' + ')}</Text>
+              <Text style={ui.muted}>
+                Unlocks {u.unlocks} recipe{u.unlocks === 1 ? '' : 's'}: {u.examples.join(', ')}
+              </Text>
+              {u.recipe_ids[0] != null && (
+                <Text
+                  style={[ui.text, { color: colors.accent }]}
+                  onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: u.recipe_ids[0] } })}
+                >
+                  See {u.examples[0]} →
+                </Text>
+              )}
+            </View>
+          ))}
+        </>
+      )}
     </>
   );
 }

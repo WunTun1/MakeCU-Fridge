@@ -3,6 +3,8 @@
 for driving the fake fridge: open the door, put items in, take some out."""
 from __future__ import annotations
 
+import json
+
 import cv2
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, Response
@@ -32,8 +34,10 @@ class TempIn(BaseModel):
     temperature_c: float | None  # null clears the override
 
 
-def create_app(hw: Hardware) -> FastAPI:
+def create_app(hw: Hardware, backend_url: str = "") -> FastAPI:
     app = FastAPI(title="ReFridge Pi node")
+    # json.dumps gives a safely quoted JS string for the page's backend address.
+    page = SIM_PAGE.replace('"__BACKEND__"', json.dumps(backend_url.rstrip("/")))
 
     @app.get("/frame.jpg")
     def frame():
@@ -54,7 +58,7 @@ def create_app(hw: Hardware) -> FastAPI:
 
         @app.get("/", response_class=HTMLResponse)
         def control_page():
-            return SIM_PAGE
+            return page
 
         @app.get("/sim/state")
         def sim_state():

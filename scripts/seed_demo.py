@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from intelligence.expiry import estimate_shelf_life_days  # noqa: E402
 from inventory.database import Database  # noqa: E402
 
 DAYS_OF_HISTORY = 21
@@ -83,16 +84,23 @@ def seed(db: Database) -> None:
     db.log_meal("Spinach Omelette", servings=1, calories=320, protein_g=24, carbs_g=6, fat_g=22, source="chat",
                 occurred_at=now.isoformat())
 
+    # Fridge items get an estimated expiry partway through their typical shelf life;
+    # the spinach gets a "printed" date for tomorrow, so the app shows both kinds.
     spinach = db.find_product_by_name("Baby Spinach")
-    if spinach:
-        items = db.active_items(location="fridge")
-        for item in items:
-            if item["product_id"] == spinach["id"]:
-                with db.cursor() as cur:
-                    cur.execute(
-                        "UPDATE items SET expiration_date = ? WHERE id = ?",
-                        ((now + timedelta(days=1)).date().isoformat(), item["id"]),
-                    )
+    for item in db.active_items(location="fridge"):
+        product = db.get_product(item["product_id"])
+        if spinach and item["product_id"] == spinach["id"]:
+            expires, estimated = (now + timedelta(days=1)).date().isoformat(), 0
+        else:
+            shelf_life = estimate_shelf_life_days(product["name"], product["category"])
+            if shelf_life is None:
+                continue
+            expires, estimated = (now + timedelta(days=random.randint(1, shelf_life))).date().isoformat(), 1
+        with db.cursor() as cur:
+            cur.execute(
+                "UPDATE items SET expiration_date = ?, expiration_estimated = ? WHERE id = ?",
+                (expires, estimated, item["id"]),
+            )
 
     print(f"Seeded {len(PRODUCTS)} fridge products and {len(PANTRY_PRODUCTS)} pantry products "
           f"with {DAYS_OF_HISTORY} days of history.")

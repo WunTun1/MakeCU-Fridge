@@ -80,7 +80,7 @@ def main() -> None:
     stop = threading.Event()
     threading.Thread(target=push_loop, args=(hw, config, stop), daemon=True).start()
     try:
-        uvicorn.run(create_app(hw), host="0.0.0.0", port=config.camera_port, log_level="warning")
+        uvicorn.run(create_app(hw, config.backend_url), host="0.0.0.0", port=config.camera_port, log_level="warning")
     finally:
         stop.set()
         hw.close()

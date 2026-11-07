@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -21,6 +22,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("refridge.main")
 
 CONSUME_MATCH_TOLERANCE_G = 20.0  # an item "heavy enough" to have lost X grams may read slightly under X
+SNAPSHOT_DIR = Path(__file__).parent / "data" / "snapshots"
+
+
+def identify_items_enabled() -> bool:
+    """IDENTIFY_ITEMS=off skips the Gemini call for new items (testing the camera without AI)."""
+    return os.getenv("IDENTIFY_ITEMS", "on").lower() not in ("off", "false", "0")
+
+
+def save_snapshot(image) -> Path:
+    import cv2
+
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    path = SNAPSHOT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}.jpg"
+    cv2.imwrite(str(path), image)
+    return path
 
 
 def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
@@ -59,15 +75,20 @@ def _handle_trip(
     db, shelf: int, num_shelves: int, before_frame, after_frame, weight_before: float, weight_after: float
 ) -> None:
     from fusion.reconcile import CameraObservation, MovedItem, NewRegion, VanishedItem, reconcile_shelf
+    from intelligence.expiry import resolve_expiration
     from inventory import events as inv_events
     from vision import tracking
     from vision.camera import crop
     from vision.change import detect_changes
     from vision.classifier import identify_item
 
+    from vision.debug import view
+
     band = shelf_band(shelf, num_shelves)
     frame_h = after_frame.shape[0]
     regions = [r for r in detect_changes(before_frame, after_frame) if _in_band(r.bbox, frame_h, band)]
+    if regions:
+        view.changes([r.bbox for r in regions])
     known = _known_items_for_shelf(db, shelf, before_frame)
     result = tracking.match(known, regions, before_frame, after_frame)
 
@@ -97,15 +118,31 @@ def _handle_trip(
             else:
                 inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
         elif d.kind == "add":
-            region_crop = crop(after_frame, d.region.bbox) if d.region and d.region.bbox else after_frame
-            info = identify_item(region_crop, after_frame, d.grams)
+            box = d.region.bbox if d.region and d.region.bbox else None
+            region_crop = crop(after_frame, box) if box else after_frame
+            view.gemini_sending(box)
+            if identify_items_enabled():
+                info = identify_item(region_crop, after_frame, d.grams)
+            else:
+                # Testing without AI: keep the snapshot so you can see what Gemini would get,
+                # and let the person name the item on the fridge screen instead.
+                path = save_snapshot(region_crop)
+                log.info("Item identification off — snapshot saved to %s", path)
+                info = {"item_name": "Unknown Item", "category": None, "visible_expiration_date": None,
+                        "days_until_expired": None, "confidence": 0.0, "needs_confirmation": True, "skipped": True}
+            view.gemini_result(info)
             if info.get("needs_confirmation"):
                 inv_events.apply_needs_review(db, shelf=shelf, meta={"candidate": info, "grams": d.grams, "position": d.position})
             else:
+                expires, estimated = resolve_expiration(
+                    printed_date=info.get("visible_expiration_date"),
+                    estimated_days=info.get("days_until_expired"),
+                    name=info["item_name"], category=info.get("category"),
+                )
                 product_id = db.get_or_create_product(info["item_name"], category=info.get("category"))
                 inv_events.apply_add(
                     db, product_id, d.grams, shelf=shelf, position=d.position,
-                    expiration_date=info.get("visible_expiration_date"), confidence=info.get("confidence"),
+                    expiration_date=expires, expiration_estimated=estimated, confidence=info.get("confidence"),
                 )
         elif d.kind == "restock_hidden":
             inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
@@ -130,10 +167,15 @@ def _measure_trip(db, cam, scale, reference_frame, reference_weights, after_fram
     return after_frame, new_weights
 
 
+def _weights_text(scale) -> str:
+    return "  ".join(f"shelf {s}: {g:.0f} g" for s, g in sorted(scale.snapshot().items()))
+
+
 def run_fridge_loop(stop_event: threading.Event) -> None:
     from inventory.database import get_db
     from sensors.scale import get_scale_reader
     from vision.camera import make_camera
+    from vision.debug import view
     from vision.hands import TripDetector
 
     db = get_db(os.getenv("DATABASE_PATH", "refridge.db"))
@@ -148,28 +190,41 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
         while not stop_event.is_set():
             try:
                 door_open = scale.door_is_open()
+                frame = cam.read_frame()
+                hand_boxes: list = []
 
                 if door_open and not door_was_open:
                     trip_detector.on_door_open()
-                    reference_frame = last_quiet_frame = cam.read_frame()
+                    reference_frame = last_quiet_frame = frame
                     reference_weights = scale.snapshot()
+                    status = "Door opened - learning the scene"
 
                 elif door_open:
-                    frame = cam.read_frame()
                     signal = trip_detector.process_frame(frame)
+                    hand_boxes = trip_detector.motion_boxes
                     if not signal["hand_present"]:
                         last_quiet_frame = frame
+                    status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
+                              else "Ready - put something in or take something out")
                     if signal["hand_left"]:
+                        view.frame(frame, door_open=True, hand_boxes=[],
+                                   status="Hand left - weighing and comparing photos...")
                         reference_frame, reference_weights = _measure_trip(
                             db, cam, scale, reference_frame, reference_weights
                         )
+                        status = "Done - ready for the next one"
 
                 elif door_was_open and reference_frame is not None:
                     # Door just closed: final weight check. The camera is inside a now-dark
                     # fridge, so compare against the last hand-free frame from while it was open.
                     _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=last_quiet_frame)
                     reference_frame = reference_weights = last_quiet_frame = None
+                    status = "Door closed - final check done"
+                else:
+                    status = "Door closed"
 
+                view.frame(frame, door_open=door_open, hand_boxes=hand_boxes,
+                           status=f"{status}   |   {_weights_text(scale)}")
                 door_was_open = door_open
             except Exception:
                 # A dropped Wi-Fi packet to the Pi shouldn't kill the loop.

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from inventory.database import Database
-from intelligence.consumption import days_left, grams_on_hand
+from intelligence.consumption import days_left
+from intelligence.expiry import describe_expiry
 
 DAYS_LEFT_THRESHOLD = 3
 LOW_PACKAGE_FRACTION = 0.20
@@ -47,7 +48,7 @@ def low_stock_alerts(db: Database) -> list[Alert]:
         dl = days_left(db, product_id)
         if dl is not None and dl <= DAYS_LEFT_THRESHOLD:
             alerts.append(Alert(product_id, product["name"], "low_days_left",
-                                 f"~{dl:.1f} days left"))
+                                 f"runs out in ~{dl:.1f} days"))
             seen_products.add(product_id)
         if product["usual_package_size_g"] and on_hand < product["usual_package_size_g"] * LOW_PACKAGE_FRACTION:
             if product_id not in seen_products:
@@ -69,7 +70,7 @@ def low_stock_alerts(db: Database) -> list[Alert]:
         if product is None:
             continue
         alerts.append(Alert(product["id"], product["name"], "expiring_soon",
-                             f"expires {item['expiration_date']}"))
+                             describe_expiry(item["expiration_date"], bool(item["expiration_estimated"]))))
 
     temp_alert = _fridge_temp_alert(db)
     if temp_alert:

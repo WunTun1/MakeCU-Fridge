@@ -16,9 +16,10 @@ def apply_add(
     position: tuple[float, float] | None = None,
     expiration_date: str | None = None,
     confidence: float | None = None,
+    expiration_estimated: bool = False,
 ) -> int:
     item_id = db.create_item(
-        product_id, grams, location, shelf, position, expiration_date, confidence
+        product_id, grams, location, shelf, position, expiration_date, confidence, expiration_estimated
     )
     db.log_event("add", product_id=product_id, item_id=item_id, grams_delta=grams, shelf=shelf)
     return item_id

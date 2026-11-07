@@ -1,12 +1,24 @@
-"""Next trip date + shopping list. Section 10."""
+"""Next trip date + shopping list. Section 10.
+
+Two kinds of suggestions:
+  restock  staples you're running out of (usage forecasting)
+  unlock   a few ingredients that would let you cook several recipes you'd
+           probably like (taste profile + recipe library)
+"""
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 from inventory.database import Database
+from intelligence import taste
 from intelligence.consumption import days_left, grams_on_hand, usage_rate_g_per_day
+from recipes.ingredients import allergen_hits, canonical
+
+UNLOCK_POOL_PER_SOURCE = 300
+UNLOCK_MAX_MISSING = 2
 
 NO_TRIP_NEEDED_WITHIN_DAYS = 14
 DEFAULT_TRIP_CADENCE_DAYS = 7
@@ -88,3 +100,72 @@ def grocery_plan(
             reason=f"~{on_hand_at_trip:.0f}g left by {trip_date.isoformat()}, uses ~{rate:.0f}g/day",
         ))
     return plan
+
+
+@dataclass
+class UnlockSuggestion:
+    buy: list[str]                       # ingredient names to add to the list
+    unlocks: int                         # recipes this makes cookable
+    examples: list[str] = field(default_factory=list)
+    recipe_ids: list[int] = field(default_factory=list)
+
+
+def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSuggestion]:
+    """Which purchases would let you cook the most recipes you'd likely enjoy?
+
+    Pool: recipes from your favorite cuisines and ingredients (or, with no taste
+    history yet, recipes built around what's already in the fridge), keeping those
+    only 1-2 ingredients away after swaps. Purchases are chosen greedily, each one
+    counting what earlier picks already completed: "parmesan unlocks 3; then
+    lemons unlock 2 more". When no single item completes anything, the best pair
+    is suggested together. Recipes count more the better they fit your taste.
+    """
+    prefs = taste.profile(db)
+    pantry = engine.pantry()
+    allergies = json.loads(db.get_profile()["allergies"] or "[]")
+
+    pool: dict[int, float] = {}
+    for cuisine in taste.top_preferences(prefs, "cuisine", 2):
+        pool.update(engine.store.search(None, cuisine, None, UNLOCK_POOL_PER_SOURCE))
+    liked = taste.top_preferences(prefs, "ingredient", 4)
+    seed = " ".join(liked) or " ".join(sorted(pantry.items)[:10])
+    if seed:
+        pool.update(engine.store.search(seed, None, None, UNLOCK_POOL_PER_SOURCE))
+
+    candidates: list[tuple[frozenset[str], float, object]] = []  # (missing set, weight, recipe)
+    for recipe in engine.store.get_many(list(pool)):
+        if allergen_hits([i["name"] for i in recipe.ingredients], allergies):
+            continue
+        m = engine.analyze(recipe, pantry)
+        if not 1 <= len(m.missing) <= UNLOCK_MAX_MISSING:
+            continue
+        missing = frozenset(canonical(n) or n.lower() for n in m.missing)
+        weight = 0.5 + 0.5 * (taste.recipe_affinity(prefs, recipe) + 1) / 2
+        candidates.append((missing, weight, recipe))
+
+    picks: list[UnlockSuggestion] = []
+    bought: set[str] = set()
+    remaining = list(candidates)
+    while remaining and len(picks) < limit:
+        items = {i for missing, _, _ in remaining for i in missing}
+
+        def completes(buy: set[str]):
+            return [(w, r) for missing, w, r in remaining if missing <= bought | buy]
+
+        best_single = max(items, key=lambda i: sum(w for w, _ in completes({i})), default=None)
+        best_buy = {best_single} if best_single else set()
+        if not best_single or not completes(best_buy):
+            # Nothing completes alone — find the pair that does the most.
+            pairs = [missing for missing, _, _ in remaining if len(missing) == 2]
+            if not pairs:
+                break
+            best_buy = set(max(pairs, key=lambda p: sum(w for w, _ in completes(set(p)))))
+
+        done = sorted(completes(best_buy), key=lambda wr: wr[0], reverse=True)
+        picks.append(UnlockSuggestion(
+            buy=sorted(best_buy), unlocks=len(done),
+            examples=[r.name for _, r in done[:3]], recipe_ids=[r.id for _, r in done[:10]],
+        ))
+        bought |= best_buy
+        remaining = [c for c in remaining if not c[0] <= bought]
+    return picks

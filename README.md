@@ -1,26 +1,31 @@
 # ReFridge
 
 A smart fridge that knows what's inside, how much is left, how fast you use it,
-what to buy next, and what you can cook to hit your nutrition goals.
+when it goes bad, what to buy next — and what to cook. The fridge's touchscreen
+shows what's inside and when it expires; in the phone app, say "I'm feeling
+Italian and need more protein" and it suggests **real recipes** ranked by what
+you have, what's about to expire, your goals, and what it has learned you like.
 
 ## How it fits together
 
 ```
- Raspberry Pi (in the fridge)                 Computer (the compute)
- ───────────────────────────                  ──────────────────────────────────────
+ Raspberry Pi (in the fridge)                 Computer — or the same Pi ("all-in-one")
+ ───────────────────────────                  ──────────────────────────────────────────
  HX711 load cells  ─┐                         main.py
  Grove micro switch ─┤  pi_node/agent.py ──►   FastAPI  /api/pi/*  (weights, door, conditions)
- Grove barometer    ─┤   pushes over Wi-Fi     fridge loop: hand trips → vision → fusion
- Grove light sensor ─┘                         Gemini (item naming + nutrition chat)
- USB webcam  ── GET /frame.jpg ◄─────────────  SQLite, forecasting, grocery plan
+ Grove barometer    ─┤   pushes over HTTP      fridge loop: hand trips → vision → fusion
+ Grove light sensor ─┘                         Gemini (item naming, recipe chat) — in the cloud
+ USB webcam  ── GET /frame.jpg ◄─────────────  SQLite: inventory, taste profile, recipe library
  7" touchscreen ── Chromium /kiosk ◄─────────  serves the Expo web build
                                                      ▲
                               Phone: Expo app ───────┘
 ```
 
-The Pi only reads sensors and the camera; all OpenCV, AI, and storage run on
-the computer. For testing on one machine, a **simulated Pi** stands in for
-the hardware and talks to the backend over the exact same HTTP calls.
+The Pi reads sensors and the camera. Vision, the database, and the recipe
+engine run in `main.py`, on a computer (hybrid) or on the Pi itself
+(all-in-one — fine on a Pi 4/5; the AI runs on Google's servers either way).
+For testing on one machine, a **simulated Pi** stands in for the hardware over
+the exact same HTTP calls.
 
 ## Test everything on your computer
 
@@ -28,24 +33,39 @@ the hardware and talks to the backend over the exact same HTTP calls.
 python -m venv .venv
 .venv\Scripts\activate                # Windows   (source .venv/bin/activate elsewhere)
 pip install -r requirements.txt
-cp .env.example .env                  # add GEMINI_API_KEY to enable AI; optional
+cp .env.example .env                  # add GEMINI_API_KEY for AI; everything has a no-key fallback
 
 cd mobile && npm install && npx expo export --platform web && cd ..   # builds the fridge screen
+python -m recipes.build               # optional: full ~230k-recipe library (one ~900 MB download, ~2 min)
 
-python run_local.py --seed            # --seed loads 3 weeks of demo history
+.venv\Scripts\python run_local.py --seed       # --seed loads 3 weeks of demo history
+.venv\Scripts\python run_local.py --camera "USB Camera"   # a real camera, by name (see --list-cameras)
 ```
 
-Then open:
+Always run with the project's `.venv` Python — other Pythons may be missing packages.
 
-| | |
+| Open | What |
 |---|---|
-| **Simulated fridge** — http://localhost:8001 | Open the door, put items in, pour some out, take them out. A hand reaches in on the camera feed and the weight changes, just like the real thing. |
-| **Fridge screen** — http://localhost:8000/kiosk | The touchscreen UI. Size the window to 1024×600 to see it as it'll look on the door. |
-| **Phone app** — `cd mobile && npx expo start` | Scan the QR code with Expo Go (phone on the same Wi-Fi), or press `w` for a browser. |
+| **Simulated fridge** — http://localhost:8001 | Open the door, put items in, pour some out, take them out. With `--camera`, press "Put in" then place a real item in view. |
+| **Fridge screen** — http://localhost:8000/kiosk | Touch-only display (best at 1024×600): what's in the fridge, how much, and when it goes bad — soonest first. Tap an item for details. |
+| **Phone app** — `cd mobile && npx expo start` | Everything else: recipe chat, "Cook tonight" ideas, grocery list, profile. Scan the QR code with Expo Go (same Wi-Fi; on iPhone, sign in to the same Expo account with `npx expo login`), or press `w` for a browser. |
 
-Without a Gemini key, new items can't be named automatically — the fridge
-screen asks "what is it?" with one-tap answers instead. `--webcam` swaps the
-synthetic camera for your laptop's webcam.
+## Recipes, swaps, and learning your taste
+
+- **Library** — real Food.com recipes in a local SQLite full-text index (`recipes/`).
+  Without the full build, a bundled 3,000-recipe starter set loads automatically.
+- **Chat** — Gemini turns requests into searches but may only suggest recipes the
+  library returns; it never invents one. Results are ranked in plain code by
+  ingredients you have, expiring items, protein goals, and taste. **Allergies are a
+  hard filter** in code.
+- **Swaps** — missing basil but have parsley? Similar-ingredient groups
+  (`recipes/substitutions.py`) propose swaps with a cooking note and rewrite the steps.
+- **Taste profile** — cooking a recipe, thumbs up/down, what you ask for, and what
+  you buy all feed it, fading over ~30 days (`intelligence/taste.py`).
+- **Grocery "unlock" suggestions** — the purchases that complete the most recipes
+  you'd likely enjoy, alongside the usual "running low" restock list.
+- **Expiry** — printed dates (read by Gemini) beat estimates; estimates are always
+  labeled "(est.)" (`intelligence/expiry.py`).
 
 ## Moving to the real Pi
 
@@ -64,18 +84,27 @@ No code changes — just configuration.
 
    Tie each HX711's RATE pin high (80 samples/s) so readings settle quickly.
 
-2. **On the Pi:**
+2. **On the Pi** — pick a mode:
    ```bash
-   python -m venv .venv && .venv/bin/pip install -r pi_node/requirements.txt   # Pi 5: rpi-lgpio instead of RPi.GPIO
-   cp pi_node/.env.example pi_node/.env      # set BACKEND_URL to the computer's IP
-   .venv/bin/python -m pi_node.calibrate tare 0        # empty shelf, inside the cold fridge
-   .venv/bin/python -m pi_node.calibrate cal 0 500     # with a known 500 g weight
-   bash pi_node/kiosk/install.sh             # agent at boot + fridge screen at login
-   ```
+   # all-in-one (recommended for the demo): this Pi runs everything
+   python -m venv .venv && .venv/bin/pip install -r requirements.txt -r pi_node/requirements.txt
+   cp pi_node/.env.example pi_node/.env && cp .env.example .env    # put GEMINI_API_KEY in .env
+   bash pi_node/kiosk/install.sh --all-in-one
 
-3. **On the computer**, in `.env`: `SCALE_SOURCE=network`, `PI_AGENT_URL=http://<pi-ip>:8001`,
-   `ENABLE_FRIDGE_LOOP=true`, then `python main.py`. Once the camera is mounted,
-   set `SHELF_BANDS` to where each shelf appears in the image.
+   # hybrid: a computer runs main.py; the Pi only reads sensors + shows the screen
+   python -m venv .venv && .venv/bin/pip install -r pi_node/requirements.txt
+   cp pi_node/.env.example pi_node/.env      # set BACKEND_URL to the computer's IP
+   bash pi_node/kiosk/install.sh
+   ```
+   Then calibrate each shelf inside the cold fridge:
+   `.venv/bin/python -m pi_node.calibrate tare 0` (empty), then `cal 0 500` (with a 500 g weight).
+   Pi 5: use `rpi-lgpio` instead of `RPi.GPIO`. Copy `data/recipes.db` from your computer
+   for the full recipe library.
+
+3. **Hybrid only — on the computer**, in `.env`: `SCALE_SOURCE=network`,
+   `PI_AGENT_URL=http://<pi-ip>:8001`, `ENABLE_FRIDGE_LOOP=true`, then `python main.py`.
+
+Once the camera is mounted, set `SHELF_BANDS` in `.env` to where each shelf appears in the image.
 
 ## Layout
 
@@ -83,14 +112,16 @@ No code changes — just configuration.
 |---|---|
 | `main.py` | Backend entry: API server + fridge loop (hand trips → vision → fusion) |
 | `run_local.py` | Backend + simulated Pi together, for testing on one computer |
+| `recipes/` | Recipe library (build, search), ingredient matching, swaps, ranking engine |
 | `pi_node/` | Runs on the Pi: hardware drivers, sensor push agent, camera server, simulator, kiosk setup |
 | `mobile/` | Expo app — phone screens, plus `/kiosk` for the fridge touchscreen |
 | `api/` `inventory/` `intelligence/` `nutrition/` `vision/` `fusion/` `sensors/` | Backend modules |
+| `software/` | Max's two-camera GPT capture experiment (own `requirements.txt`; uses OpenCV windows, so keep it in its own environment) |
 | `firmware/scale_esp32/` | Legacy ESP32 load-cell firmware (`SCALE_SOURCE=serial`); unused with the Pi |
 
 ## Tests
 
 ```bash
-pytest                          # backend + Pi driver math (checked against the Bosch datasheets)
+pytest                          # backend, recipes, taste, expiry, Pi driver math (vs. Bosch datasheets)
 cd mobile && npx tsc --noEmit && npx expo lint
 ```
