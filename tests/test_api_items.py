@@ -58,3 +58,36 @@ def test_grocery_endpoints_round_trip(client):
     assert client.get("/api/grocery").json()["trip_in_days"] == 7
     client.post("/api/grocery/clear-checked")
     assert client.get("/api/grocery").json()["items"] == []
+
+
+def test_adding_an_item_checks_it_off_the_list(client):
+    [entry] = client.post("/api/grocery/items", json={"names": ["eggs"]}).json()["ids"]
+    res = client.post("/api/items", json={"name": "Eggs", "quantity": 12, "unit": "count", "location": "fridge"}).json()
+    assert res["checked_off"] == {"id": entry, "name": "eggs"}
+    client.patch(f"/api/grocery/items/{entry}", json={"checked": False})
+    assert client.get("/api/grocery").json()["items"][0]["checked"] is False
+
+
+def test_remove_grocery_row_and_undo(client):
+    [entry] = client.post("/api/grocery/items", json={"names": ["apples 6"]}).json()["ids"]
+    client.patch(f"/api/grocery/items/{entry}", json={"hidden": True})
+    assert client.get("/api/grocery").json()["items"] == []
+    client.patch(f"/api/grocery/items/{entry}", json={"hidden": False})
+    assert [(i["name"], i["amount"]) for i in client.get("/api/grocery").json()["items"]] == [("apples", "6")]
+
+
+def test_summary_shows_the_soonest_package_and_the_saved_trip(client):
+    client.post("/api/items", json={"name": "Milk", "quantity": 1000, "unit": "ml", "location": "fridge",
+                                    "expiration_date": "2030-01-02"})
+    client.post("/api/items", json={"name": "Milk", "quantity": 2000, "unit": "ml", "location": "fridge",
+                                    "expiration_date": "2030-01-20"})
+    milk = _inventory(client)["Milk"]
+    assert milk["grams"] == 3000
+    assert milk["soonest_batch"] == {"grams": 1000, "expiration_date": "2030-01-02"}
+    grocery = client.put("/api/grocery/horizon", json={"trip_in_days": 7}).json()
+    summary = client.get("/api/summary").json()
+    assert (summary["next_trip_date"], summary["covers_until"]) == (grocery["trip_date"], grocery["covers_until"])
+
+
+def test_cook_preview_takes_made_as_half_or_full(client):
+    assert client.get("/api/recipes/1/cooked/preview?made=0.75").status_code == 422

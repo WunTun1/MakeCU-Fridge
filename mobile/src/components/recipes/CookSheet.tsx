@@ -3,13 +3,18 @@ import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'rea
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/Button';
+import { Segmented } from '@/components/Segmented';
 import { Stepper } from '@/components/Stepper';
 import { formatAmount } from '@/lib/amount';
-import { api, type CookLine } from '@/lib/api';
+import { api, type CookLine, type Made, type Nutrition } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
 import { capitalize } from '@/lib/time';
 
 const MAX_SERVINGS = 12;
+const MADE_OPTIONS: { value: Made; label: string }[] = [
+  { value: 1, label: 'Full recipe' },
+  { value: 0.5, label: 'Half' },
+];
 
 /** Whether a line takes everything there is (within a gram). */
 export const usesAll = (line: CookLine) => line.grams_used >= line.grams_on_hand - 1;
@@ -21,22 +26,48 @@ function lineText(line: CookLine): string {
   return usesAll(line) ? `${name}: all ${amount(line.grams_on_hand)}` : `${name}: ${amount(line.grams_used)} of ${amount(line.grams_on_hand)}`;
 }
 
-/** Confirm "I made this": pick servings and see exactly what comes out of the fridge first. */
+/** "Makes 4 servings" for what was cooked, or that the recipe doesn't say. */
+function yieldText(servings: number | null, made: Made): string {
+  if (!servings) return "The recipe doesn't say how many it serves";
+  const n = Math.max(1, Math.round(servings * made));
+  return `Makes ${n} serving${n === 1 ? '' : 's'}`;
+}
+
+/** "Logs 1,780 kcal and 104 g protein". */
+function nutritionText(n: Nutrition, servings: number): string | null {
+  const parts = [
+    n.calories != null && `${Math.round(n.calories * servings).toLocaleString()} kcal`,
+    n.protein_g != null && `${Math.round(n.protein_g * servings)} g protein`,
+  ].filter(Boolean);
+  return parts.length ? `Logs ${parts.join(' and ')}` : null;
+}
+
+/**
+ * Confirm "I made this". Two separate questions: how much was cooked (that leaves the
+ * fridge) and how much you ate (that goes in today's nutrition).
+ */
 export function CookSheet({
   recipeId,
   recipeName,
+  servings,
+  nutrition,
   visible,
   onClose,
   onLog,
 }: {
   recipeId: number;
   recipeName: string;
+  /** How many the full recipe serves; null when the source doesn't say. */
+  servings: number | null;
+  /** Per serving. */
+  nutrition: Nutrition;
   visible: boolean;
   onClose: () => void;
-  onLog: (servings: number) => Promise<void>;
+  onLog: (made: Made, servingsEaten: number) => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
-  const [servings, setServings] = useState(1);
+  const [made, setMade] = useState<Made>(1);
+  const [eaten, setEaten] = useState(1);
   const [lines, setLines] = useState<CookLine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logging, setLogging] = useState(false);
@@ -45,24 +76,24 @@ export function CookSheet({
     if (!visible) return;
     let cancelled = false;
     api
-      .cookPreview(recipeId, servings)
+      .cookPreview(recipeId, made)
       .then((l) => !cancelled && (setLines(l), setError(null)))
       .catch((e) => !cancelled && setError((e as Error).message));
     return () => {
       cancelled = true;
     };
-  }, [recipeId, servings, visible]);
+  }, [recipeId, made, visible]);
 
   async function log() {
     setLogging(true);
     try {
-      await onLog(servings);
+      await onLog(made, eaten);
     } finally {
       setLogging(false);
     }
   }
 
-  const plural = servings === 1 ? 'serving' : 'servings';
+  const logs = nutritionText(nutrition, eaten);
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -72,16 +103,10 @@ export function CookSheet({
           Log {recipeName}?
         </Text>
 
-        <View style={[ui.row, { justifyContent: 'space-between' }]}>
-          <Text style={ui.text}>Servings</Text>
-          <Stepper
-            label="servings"
-            value={String(servings)}
-            canMinus={servings > 1}
-            canPlus={servings < MAX_SERVINGS}
-            onMinus={() => setServings((s) => s - 1)}
-            onPlus={() => setServings((s) => s + 1)}
-          />
+        <View style={styles.question}>
+          <Text style={styles.label}>How much did you make?</Text>
+          <Segmented label="How much did you make?" options={MADE_OPTIONS} value={made} onChange={setMade} />
+          <Text style={ui.muted}>{yieldText(servings, made)}</Text>
         </View>
 
         <View style={{ gap: 4 }}>
@@ -96,8 +121,27 @@ export function CookSheet({
           ))}
         </View>
 
+        <View style={styles.question}>
+          <View style={[ui.row, { justifyContent: 'space-between' }]}>
+            <Text style={styles.label}>How much did you eat?</Text>
+            <Stepper
+              minusLabel="Fewer servings"
+              plusLabel="More servings"
+              value={`${eaten}`}
+              canMinus={eaten > 1}
+              canPlus={eaten < MAX_SERVINGS}
+              onMinus={() => setEaten((s) => s - 1)}
+              onPlus={() => setEaten((s) => s + 1)}
+            />
+          </View>
+          <Text style={ui.muted}>
+            {eaten === 1 ? '1 serving' : `${eaten} servings`}
+            {logs ? `. ${logs}` : ''}
+          </Text>
+        </View>
+
         <View style={{ minHeight: 48, flexDirection: 'row' }}>
-          <Button title={logging ? 'Logging…' : `Log ${servings} ${plural}`} onPress={log} disabled={logging || !lines} />
+          <Button title={logging ? 'Logging…' : 'Log it'} onPress={log} disabled={logging || !lines} />
         </View>
       </View>
     </Modal>
@@ -116,4 +160,6 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '700' },
+  question: { gap: 8 },
+  label: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
 });

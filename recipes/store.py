@@ -6,6 +6,7 @@ data/recipes.db to the Pi instead of rebuilding it there.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -132,6 +133,7 @@ class RecipeStore:
         cuisine: str | None = None,
         max_minutes: int | None = None,
         limit: int = 300,
+        main_dish_only: bool = False,
     ) -> list[tuple[int, float]]:
         """(recipe_id, relevance) best first; relevance is 0-1 within this result set."""
         match = build_match(query, cuisine)
@@ -145,6 +147,8 @@ class RecipeStore:
         if max_minutes:
             sql += " AND r.minutes <= ?"
             params.append(max_minutes)
+        if main_dish_only:
+            sql += " AND r.tags LIKE '%\"main-dish\"%'"
         if query and _fts_terms(query):
             sql += " ORDER BY rank LIMIT ?"
         else:
@@ -179,16 +183,20 @@ class RecipeStore:
 
     @staticmethod
     def _to_recipe(row: sqlite3.Row) -> Recipe:
+        # Food.com text carries HTML entities ("Mac &amp; Cheese"); decoded here so no screen shows them.
         ingredients = json.loads(row["ingredients"])
         for ing in ingredients:
+            ing["name"] = html.unescape(ing["name"])
             # Recomputed on read so improvements to ingredient matching apply without a rebuild.
             ing["canon"] = canonical(ing["name"])
         return Recipe(
-            id=row["id"], name=row["name"], cuisine=row["cuisine"], minutes=row["minutes"],
+            id=row["id"], name=html.unescape(row["name"]), cuisine=row["cuisine"], minutes=row["minutes"],
             servings=row["servings"],
             nutrition={k: row[k] for k in ("calories", "protein_g", "fat_g", "carbs_g", "fiber_g", "sugar_g", "sodium_mg")},
-            image_url=row["image_url"], description=row["description"], tags=json.loads(row["tags"]),
-            ingredients=ingredients, steps=json.loads(row["steps"]),
+            image_url=row["image_url"],
+            description=html.unescape(row["description"]) if row["description"] else None,
+            tags=json.loads(row["tags"]), ingredients=ingredients,
+            steps=[html.unescape(s) for s in json.loads(row["steps"])],
         )
 
 

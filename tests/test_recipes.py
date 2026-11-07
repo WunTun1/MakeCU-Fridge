@@ -6,7 +6,7 @@ from intelligence import taste
 from intelligence.grocery import unlock_suggestions
 from inventory import events as inv_events
 from recipes.engine import RecipeEngine, quantity_to_grams
-from recipes.ingredients import allergen_hits, canonical, is_staple, matches
+from recipes.ingredients import allergen_hits, canonical, is_staple, matches, needs_no_badge
 from recipes.store import RecipeStore, build_match
 from recipes.substitutions import find_swap
 
@@ -90,8 +90,8 @@ def engine(db, tmp_path):
     ]:
         store.add(r)
     store.commit()
-    for name, grams, exp in [("Baby Spinach", 150, "2026-01-01"), ("Spaghetti", 500, None),
-                             ("Parsley", 30, None), ("Parmesan Cheese", 200, None), ("Chicken Breast", 600, None)]:
+    for name, grams, exp in [("Baby Spinach", 200, "2026-01-01"), ("Spaghetti", 500, None),
+                             ("Parsley", 200, None), ("Parmesan Cheese", 200, None), ("Chicken Breast", 600, None)]:
         pid = db.get_or_create_product(name)
         inv_events.apply_add(db, pid, grams, expiration_date=exp)
     return RecipeEngine(db, store)
@@ -161,10 +161,10 @@ def test_cook_preview_changes_nothing_and_undo_restores_everything(engine):
 
     before, meals_before = snapshot(), len(db.meals_since("2000-01-01"))
 
-    preview = engine.preview_cooked(1, servings=2)  # serves 2 -> the whole recipe
+    preview = engine.preview_cooked(1)
     assert snapshot() == before
     spinach = next(line for line in preview if line["item"] == "Baby Spinach")
-    assert spinach["grams_used"] == 150 and spinach["grams_on_hand"] == 150  # 1 cup wants 200 g; all 150 g
+    assert spinach["grams_used"] == 200 and spinach["grams_on_hand"] == 200  # 1 cup = 200 g
 
     result = engine.cooked(1, servings_eaten=2)
     assert result["meal_id"] and snapshot() != before
@@ -173,7 +173,124 @@ def test_cook_preview_changes_nothing_and_undo_restores_everything(engine):
     assert len(db.meals_since("2000-01-01")) == meals_before
 
 
-def test_cooking_scales_with_servings(engine):
-    half = {line["item"]: line["grams_used"] for line in engine.preview_cooked(2, servings=1)}
-    full = {line["item"]: line["grams_used"] for line in engine.preview_cooked(2, servings=2)}
-    assert full["Chicken Breast"] == 2 * half["Chicken Breast"]
+def test_made_scales_deduction_and_ate_scales_only_nutrition(engine):
+    def used(made):
+        return {line["item"]: line["grams_used"] for line in engine.preview_cooked(2, made)}
+
+    assert used(0.5)["Chicken Breast"] * 2 == used(1.0)["Chicken Breast"] == 200  # full recipe, not / servings
+
+    chicken = engine.db.find_product_by_name("Chicken Breast")["id"]
+
+    def chicken_grams():
+        return sum(i["grams"] for i in engine.db.active_items() if i["product_id"] == chicken)
+
+    start = chicken_grams()
+    one = engine.cooked(2, made=1.0, servings_eaten=1)
+    after_one = chicken_grams()
+    engine.undo_meal(one["meal_id"])
+    four = engine.cooked(2, made=1.0, servings_eaten=4)
+    assert chicken_grams() == after_one == start - 200
+    meal = engine.db.get_meal(four["meal_id"])
+    assert meal["calories"] == 4 * 400 and meal["servings"] == 4
+
+
+def test_cooking_uses_the_package_that_goes_bad_first(engine):
+    db = engine.db
+    pid = db.find_product_by_name("Chicken Breast")["id"]
+    old = inv_events.apply_add(db, pid, 150, expiration_date="2026-01-02")
+    inv_events.apply_add(db, pid, 700, expiration_date="2026-02-01")
+    plan = engine.planned_use(2)
+    first = next(p for p in plan if p["name"] == "Chicken Breast")
+    assert first["item"]["id"] == old and first["grams"] == 150
+
+
+# ------------------------------------------------------- quantity-aware status
+def _store_with(tmp_path, recipes):
+    store = RecipeStore(tmp_path / "q.db")
+    for r in recipes:
+        store.add(r)
+    store.commit()
+    return store
+
+
+def _lines(r):
+    return {line["name"]: line for line in r["ingredients"]}
+
+
+def test_have_short_missing_and_unparseable(db, tmp_path):
+    recipe = _recipe(10, "Spinach Egg Bake", None, ["eggs", "fresh spinach", "feta cheese", "chives",
+                                                   "water from the pasta", "milk"])
+    amounts = {"eggs": ("4", None), "fresh spinach": ("1", "lb"), "feta cheese": ("2", "oz"),
+               "chives": ("1", "bunch"), "water from the pasta": ("1/4", "cup"), "milk": ("1", "cup")}
+    for ing in recipe["ingredients"]:
+        ing["quantity"], ing["unit"] = amounts[ing["name"]]
+    engine = RecipeEngine(db, _store_with(tmp_path, [recipe]))
+    for name, grams in [("Eggs", 50), ("Baby Spinach", 150), ("Chives", 10), ("Milk", 1000)]:
+        inv_events.apply_add(db, db.get_or_create_product(name), grams)
+
+    r = engine.adapted(10)
+    lines = _lines(r)
+    assert lines["eggs"]["status"] == "short" and lines["eggs"]["on_hand"] == "1 egg"   # 1 egg vs 4
+    assert lines["fresh spinach"]["status"] == "short" and lines["fresh spinach"]["on_hand"] == "150 g"
+    assert lines["feta cheese"]["status"] == "missing"
+    assert lines["chives"]["status"] == "have"           # "1 bunch" can't be read: shown as have
+    assert lines["milk"]["status"] == "have"             # 1 L covers a cup
+    assert lines["water from the pasta"]["status"] == "staple"
+    assert {s["name"] for s in r["short"]} == {"eggs", "fresh spinach"}
+    assert r["missing"] == ["feta cheese"]
+
+
+def test_enough_is_have_within_ten_percent(db, tmp_path):
+    recipe = _recipe(11, "Omelette", None, ["eggs"])
+    recipe["ingredients"][0].update(quantity="4", unit=None)
+    engine = RecipeEngine(db, _store_with(tmp_path, [recipe]))
+    inv_events.apply_add(db, db.get_or_create_product("Eggs"), 4 * 50)
+    assert _lines(engine.adapted(11))["eggs"]["status"] == "have"
+
+
+# --------------------------------------------------------- automatic lists
+def test_automatic_lists_drop_dislikes_desserts_slow_and_duplicate_recipes(db, tmp_path):
+    def dish(rid, name, ingredients, **kw):
+        r = _recipe(rid, name, None, ingredients, tags=kw.pop("tags", ("main-dish",)))
+        r.update(kw)
+        return r
+
+    store = _store_with(tmp_path, [
+        dish(1, "Chicken Spinach Pasta", ["chicken breast", "spinach", "penne"]),
+        dish(2, "Chicken  Spinach Pasta", ["chicken breast", "spinach", "penne"]),         # duplicate title
+        dish(3, "Smothered Chicken", ["chicken breast", "cream of mushroom soup"]),        # dislike in ingredients
+        dish(4, "Chicken Skillet", ["chicken breast", "spinach"], steps=["Saute the mushrooms."]),  # in steps
+        dish(5, "Chicken Cookies", ["chicken breast", "spinach"], tags=("main-dish", "desserts")),
+        dish(6, "Chicken Casserole", ["chicken breast", "spinach"], minutes=85),
+        dish(7, "Chicken Broth Sip", ["chicken breast", "spinach"], calories=90),
+        dish(8, "Chicken Spinach Wrap", ["chicken breast", "spinach", "tortilla"]),
+        dish(9, "Chicken Spinach Salad", ["chicken breast", "spinach"]),
+    ])
+    engine = RecipeEngine(db, store)
+    db.update_profile(dislikes=["Mushrooms"])
+    for name in ("Chicken Breast", "Baby Spinach"):
+        inv_events.apply_add(db, db.get_or_create_product(name), 1000)
+
+    names = [m.recipe.name for m in engine.suggest(limit=10, automatic=True)]
+    assert sorted(names) == ["Chicken Spinach Pasta", "Chicken Spinach Salad", "Chicken Spinach Wrap"]
+
+    chat = [m.recipe.name for m in engine.suggest(query="chicken mushroom", limit=10)]
+    assert "Smothered Chicken" in chat  # asked for by name in chat
+
+
+def test_recipe_text_has_no_html_entities(tmp_path):
+    r = _recipe(1, "Mac &amp; Cheese", None, ["macaroni &amp; cheese"])
+    r["steps"] = ["Stir &amp; serve."]
+    store = _store_with(tmp_path, [r])
+    got = store.get(1)
+    assert got.name == "Mac & Cheese" and got.steps == ["Stir & serve."]
+    assert got.ingredients[0]["name"] == "macaroni & cheese"
+
+
+@pytest.mark.parametrize("raw, badge", [
+    ("water", False), ("boiling water", False), ("ice cubes", False), ("water from the pasta", False),
+    ("1/2 cup reserved cooking liquid", False), ("water (keep in ratio to cornstarch", False),
+    ("rose water", True), ("water chestnuts", True), ("ice cream", True), ("spinach", True),
+])
+def test_water_and_cooking_liquid_get_no_badge(raw, badge):
+    assert needs_no_badge(raw, canonical(raw)) is not badge

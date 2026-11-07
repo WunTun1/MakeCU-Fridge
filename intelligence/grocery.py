@@ -7,7 +7,6 @@ Two kinds of suggestions:
 """
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -15,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from inventory.database import Database
 from intelligence import taste
 from intelligence.consumption import days_left, grams_on_hand, usage_rate_g_per_day
+from recipes.engine import DINNER_MINUTES_RELAXED, dislike_hits, fits_dinner, normalized_title
 from recipes.ingredients import allergen_hits, canonical
 
 UNLOCK_POOL_PER_SOURCE = 300
@@ -128,24 +128,33 @@ def unlock_suggestions(db: Database, engine, limit: int = 3) -> list[UnlockSugge
     """
     prefs = taste.profile(db)
     pantry = engine.pantry()
-    allergies = json.loads(db.get_profile()["allergies"] or "[]")
+    allergies, dislikes = engine.profile_filters()
+
+    def search(query: str | None, cuisine: str | None):
+        return engine.store.search(query, cuisine, DINNER_MINUTES_RELAXED, UNLOCK_POOL_PER_SOURCE, main_dish_only=True)
 
     pool: dict[int, float] = {}
     for cuisine in taste.top_preferences(prefs, "cuisine", 2):
-        pool.update(engine.store.search(None, cuisine, None, UNLOCK_POOL_PER_SOURCE))
+        pool.update(search(None, cuisine))
     liked = taste.top_preferences(prefs, "ingredient", 4)
     seed = " ".join(liked) or " ".join(sorted(pantry.items)[:10])
     if seed:
-        pool.update(engine.store.search(seed, None, None, UNLOCK_POOL_PER_SOURCE))
+        pool.update(search(seed, None))
 
     candidates: list[tuple[frozenset[str], float, object]] = []  # (missing set, weight, recipe)
+    seen_titles: set[str] = set()
     for recipe in engine.store.get_many(list(pool)):
-        if allergen_hits([i["name"] for i in recipe.ingredients], allergies):
+        if (allergen_hits([i["name"] for i in recipe.ingredients], allergies)
+                or dislike_hits(recipe, dislikes) or not fits_dinner(recipe)):
+            continue
+        title = normalized_title(recipe.name)
+        if title in seen_titles:
             continue
         m = engine.analyze(recipe, pantry)
-        if not 1 <= len(m.missing) <= UNLOCK_MAX_MISSING:
+        if not 1 <= len(m.to_buy) <= UNLOCK_MAX_MISSING:
             continue
-        missing = frozenset(canonical(n) or n.lower() for n in m.missing)
+        seen_titles.add(title)
+        missing = frozenset(canonical(n) or n.lower() for n in m.to_buy)
         weight = 0.5 + 0.5 * (taste.recipe_affinity(prefs, recipe) + 1) / 2
         candidates.append((missing, weight, recipe))
 

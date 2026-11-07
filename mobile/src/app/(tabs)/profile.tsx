@@ -1,35 +1,42 @@
 import { useState } from 'react';
 import { ScrollView, Text, TextInput, View } from 'react-native';
 
-import { Button } from '@/components/Button';
+import { ChoiceChips, ListField } from '@/components/Chips';
+import { Segmented } from '@/components/Segmented';
 import { useSnackbar } from '@/components/Snackbar';
 import { ErrorCard, Loading } from '@/components/States';
 import { api, type Profile } from '@/lib/api';
-import { colors, ui } from '@/lib/theme';
+import { ui } from '@/lib/theme';
 import { useApi } from '@/lib/useApi';
 
-type Form = Record<'calories' | 'protein' | 'carbs' | 'fat' | 'diet' | 'allergies' | 'dislikes', string>;
+type Goals = Pick<Profile, 'daily_calories' | 'daily_protein_g' | 'daily_carbs_g' | 'daily_fat_g'>;
+type GoalKey = keyof Goals;
+type Preset = 'maintain' | 'protein' | 'lighter';
 
-const PRESETS: { label: string; values: Partial<Form> }[] = [
-  { label: 'Maintain', values: { calories: '2000', protein: '100', carbs: '225', fat: '65' } },
-  { label: 'High protein', values: { calories: '2200', protein: '160', carbs: '200', fat: '70' } },
-  { label: 'Lighter', values: { calories: '1700', protein: '110', carbs: '170', fat: '55' } },
+const PRESETS: { value: Preset; label: string; goals: Goals }[] = [
+  { value: 'maintain', label: 'Maintain', goals: { daily_calories: 2000, daily_protein_g: 100, daily_carbs_g: 225, daily_fat_g: 65 } },
+  { value: 'protein', label: 'More protein', goals: { daily_calories: 2200, daily_protein_g: 160, daily_carbs_g: 200, daily_fat_g: 70 } },
+  { value: 'lighter', label: 'Lighter', goals: { daily_calories: 1700, daily_protein_g: 110, daily_carbs_g: 170, daily_fat_g: 55 } },
 ];
 
-const toList = (s: string) => s.split(',').map((x) => x.trim()).filter(Boolean);
-const toNum = (s: string) => (s.trim() === '' ? null : Number(s));
+const GOAL_FIELDS: { key: GoalKey; label: string }[] = [
+  { key: 'daily_calories', label: 'Daily calories' },
+  { key: 'daily_protein_g', label: 'Daily protein (g)' },
+  { key: 'daily_carbs_g', label: 'Daily carbs (g)' },
+  { key: 'daily_fat_g', label: 'Daily fat (g)' },
+];
 
-function toForm(p: Profile): Form {
-  return {
-    calories: p.daily_calories?.toString() ?? '',
-    protein: p.daily_protein_g?.toString() ?? '',
-    carbs: p.daily_carbs_g?.toString() ?? '',
-    fat: p.daily_fat_g?.toString() ?? '',
-    diet: p.diet_type ?? '',
-    allergies: p.allergies.join(', '),
-    dislikes: p.dislikes.join(', '),
-  };
-}
+const DIETS = [
+  { value: 'none', label: 'None' },
+  { value: 'vegetarian', label: 'Vegetarian' },
+  { value: 'vegan', label: 'Vegan' },
+  { value: 'pescatarian', label: 'Pescatarian' },
+  { value: 'gluten-free', label: 'Gluten-free' },
+];
+
+/** The preset whose four numbers match the goals exactly; otherwise none (custom goals). */
+const presetFor = (p: Goals): Preset | null =>
+  PRESETS.find((preset) => GOAL_FIELDS.every(({ key }) => preset.goals[key] === p[key]))?.value ?? null;
 
 export default function ProfileScreen() {
   const { data, error, loading } = useApi(api.profile);
@@ -38,69 +45,100 @@ export default function ProfileScreen() {
   return <ProfileForm initial={data} />;
 }
 
+/** Every change saves right away, so what's on screen is always what ReFridge uses. */
 function ProfileForm({ initial }: { initial: Profile }) {
-  const [form, setForm] = useState<Form>(() => toForm(initial));
+  const [profile, setProfile] = useState<Profile>(initial);
   const showSnack = useSnackbar();
 
-  const set = (key: keyof Form) => (v: string) => setForm((f) => ({ ...f, [key]: v }));
-
-  async function save() {
+  async function save(patch: Partial<Profile>, message: string) {
+    const before = profile;
+    setProfile((p) => ({ ...p, ...patch }));
     try {
-      await api.saveProfile({
-        daily_calories: toNum(form.calories),
-        daily_protein_g: toNum(form.protein),
-        daily_carbs_g: toNum(form.carbs),
-        daily_fat_g: toNum(form.fat),
-        diet_type: form.diet || null,
-        allergies: toList(form.allergies),
-        dislikes: toList(form.dislikes),
-      });
-      showSnack({ message: 'Saved' });
+      await api.saveProfile(patch);
+      showSnack({ message });
     } catch (e) {
+      setProfile(before);
       showSnack({ message: `Couldn't save: ${(e as Error).message}` });
     }
   }
 
-  const field = (label: string, key: keyof Form, numeric = false, placeholder?: string) => (
+  const preset = presetFor(profile);
+
+  return (
+    <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
+      <Text style={ui.h2}>Daily goals</Text>
+      <Segmented
+        label="Goal preset"
+        options={PRESETS}
+        value={preset}
+        onChange={(v) => {
+          const p = PRESETS.find((x) => x.value === v)!;
+          save(p.goals, `Goals set to ${p.label.toLowerCase()}`);
+        }}
+      />
+      {preset == null && <Text style={ui.muted}>Custom goals</Text>}
+      <View style={[ui.card, { gap: 12 }]}>
+        {GOAL_FIELDS.map((f) => (
+          <GoalField
+            key={`${f.key}-${profile[f.key]}`}
+            label={f.label}
+            value={profile[f.key]}
+            onSave={(v) => save({ [f.key]: v }, `${f.label} saved`)}
+          />
+        ))}
+      </View>
+      <Text style={ui.muted}>General wellness info, not medical advice.</Text>
+
+      <Text style={ui.h2}>Diet</Text>
+      <ChoiceChips
+        label="Diet"
+        options={DIETS}
+        value={profile.diet_type}
+        onChange={(v) => save({ diet_type: v }, 'Diet saved')}
+      />
+
+      <Text style={ui.h2}>Allergies</Text>
+      <Text style={ui.muted}>ReFridge never suggests recipes with these.</Text>
+      <ListField
+        label="allergies"
+        values={profile.allergies}
+        onChange={(allergies) => save({ allergies }, 'Allergies saved')}
+      />
+
+      <Text style={ui.h2}>Dislikes</Text>
+      <Text style={ui.muted}>Left out of Cook tonight and One item away. Chat skips them unless you ask.</Text>
+      <ListField
+        label="dislikes"
+        values={profile.dislikes}
+        onChange={(dislikes) => save({ dislikes }, 'Dislikes saved')}
+      />
+
+      <LearnedTastes />
+    </ScrollView>
+  );
+}
+
+/** A number that saves when you leave the field. */
+function GoalField({ label, value, onSave }: { label: string; value: number | null; onSave: (v: number) => void }) {
+  const [text, setText] = useState(value?.toString() ?? '');
+  const commit = () => {
+    const n = Number(text.replace(',', '.'));
+    if (text.trim() !== '' && n > 0 && n !== value) onSave(n);
+  };
+  return (
     <View style={{ gap: 4 }}>
       <Text style={ui.muted}>{label}</Text>
       <TextInput
         style={ui.input}
-        value={form[key]}
-        onChangeText={set(key)}
-        keyboardType={numeric ? 'numeric' : 'default'}
-        placeholder={placeholder}
-        placeholderTextColor={colors.muted}
+        value={text}
+        onChangeText={setText}
+        onBlur={commit}
+        onSubmitEditing={commit}
+        keyboardType="numeric"
+        returnKeyType="done"
+        accessibilityLabel={label}
       />
     </View>
-  );
-
-  return (
-    <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
-      <Text style={ui.h2}>Goal preset</Text>
-      <View style={ui.row}>
-        {PRESETS.map((p) => (
-          <Button key={p.label} title={p.label} variant="secondary" onPress={() => setForm((f) => ({ ...f, ...p.values }))} />
-        ))}
-      </View>
-
-      <View style={[ui.card, { gap: 12 }]}>
-        {field('Daily calories', 'calories', true)}
-        {field('Daily protein (g)', 'protein', true)}
-        {field('Daily carbs (g)', 'carbs', true)}
-        {field('Daily fat (g)', 'fat', true)}
-        {field('Diet type', 'diet', false, 'none, vegetarian, keto…')}
-        {field('Allergies (comma separated)', 'allergies', false, 'peanut, shellfish')}
-        {field('Dislikes (comma separated)', 'dislikes')}
-      </View>
-
-      <Text style={ui.muted}>
-        Allergies are enforced in code — the assistant can never suggest a recipe containing them.
-      </Text>
-      <Button title="Save" onPress={save} />
-
-      <LearnedTastes />
-    </ScrollView>
   );
 }
 
@@ -113,7 +151,7 @@ function LearnedTastes() {
     <View style={[ui.card, { gap: 6, marginTop: 8 }]}>
       <Text style={ui.h2}>What ReFridge has learned</Text>
       {nothingYet ? (
-        <Text style={ui.muted}>Cook, rate, and ask for recipes and this fills in — suggestions adapt as it does.</Text>
+        <Text style={ui.muted}>Cook, rate, and ask for recipes and this fills in. Suggestions adapt as it does.</Text>
       ) : (
         <>
           {data.cuisines.length > 0 && (

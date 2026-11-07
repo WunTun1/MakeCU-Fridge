@@ -8,7 +8,7 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Stack } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { ScrollView, StyleSheet, Text, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 
 import { InventoryTile } from '@/components/kiosk/InventoryTile';
 import { KioskHeader } from '@/components/kiosk/KioskHeader';
@@ -20,18 +20,16 @@ import { formatAmount } from '@/lib/amount';
 import { api, type InventoryEntry, type ProductUsage } from '@/lib/api';
 import { expiryTone, expiryWord } from '@/lib/expiry';
 import { palettes, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
-import { capitalize, relativeDays } from '@/lib/time';
+import { capitalize, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 3000;
 const GAP = 10;
 /** The one shelf with a scale under it (pi_node HX711_PINS); the rest of the fridge isn't weighed. */
 const WEIGHED_SHELF = 0;
-/** Narrower tiles can't fit "Tomorrow" at glance size; fewer, wider tiles show instead. */
-const MIN_TILE_W = 180;
-/** A short shelf spreads its tiles out, but not into wide empty cards. */
-const MAX_TILE_W = 280;
-/** When a shelf scrolls, this much of the next tile peeks in to show there's more. */
+/** Narrower tiles can't fit "Wednesday" at glance size; fewer, wider tiles show instead. */
+const MIN_TILE_W = { regular: 210, compact: 175 };
+/** This share of one more tile peeks in at the end of every row, so a row that scrolls shows there's more. */
 const PEEK = 0.4;
 /** Below this panel width (the 800x480 screen) everything tightens up. */
 const COMPACT_W = 900;
@@ -143,6 +141,19 @@ function KioskScreen({ mode, onToggleTheme }: { mode: ThemeMode; onToggleTheme: 
   );
 }
 
+/**
+ * One tile width for the whole screen, from the row width alone (never the item count),
+ * so every row lines up: as many tiles as fit at the minimum width, plus a peek.
+ */
+function tileLayout(rowW: number, compact: boolean): { width: number; fit: number } {
+  const min = compact ? MIN_TILE_W.compact : MIN_TILE_W.regular;
+  for (let fit = Math.floor((rowW + GAP) / (min + GAP)); fit > 1; fit--) {
+    const width = (rowW - GAP * fit) / (fit + PEEK);
+    if (width >= min) return { width, fit };
+  }
+  return { width: (rowW - GAP) / (1 + PEEK), fit: 1 };
+}
+
 /** One shelf: a row of tiles you swipe sideways, soonest to go bad on the left. */
 function Shelf({
   title,
@@ -161,14 +172,12 @@ function Shelf({
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [row, setRow] = useState({ width: 0, height: 0 });
+  const [first, setFirst] = useState(0);
 
-  // Fit as many readable tiles as the row allows; if there are more, size them so the next one peeks in.
-  const fit = Math.max(2, Math.floor((row.width + GAP) / (MIN_TILE_W + GAP)));
+  const { width: tileW, fit } = tileLayout(row.width, compact);
   const overflows = items.length > fit;
-  const shown = Math.max(Math.min(items.length, fit), 1);
-  const tileW = overflows
-    ? (row.width - GAP * fit) / (fit + PEEK)
-    : Math.min((row.width - GAP * (shown - 1)) / shown, MAX_TILE_W);
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) =>
+    setFirst(Math.round(e.nativeEvent.contentOffset.x / (tileW + GAP)));
 
   return (
     <View style={[styles.shelf, compact && { padding: 8, gap: 6 }]}>
@@ -191,15 +200,18 @@ function Shelf({
               showsHorizontalScrollIndicator={false}
               snapToInterval={tileW + GAP}
               decelerationRate="fast"
+              onScroll={onScroll}
+              scrollEventThrottle={100}
               contentContainerStyle={{ gap: GAP }}
             >
-              {items.map((item) => (
+              {items.map((item, i) => (
                 <InventoryTile
                   key={item.product_id}
                   item={item}
                   width={tileW}
                   height={row.height}
                   compact={compact}
+                  peek={overflows && i === first + fit}
                   onPress={() => onOpen(item)}
                 />
               ))}
@@ -259,6 +271,12 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
 
   const d = item.expires_in_days;
   const tone = expiryTone(d);
+  const runsOut =
+    item.days_left == null
+      ? 'Not enough history'
+      : d != null && item.days_left > d
+        ? 'After it goes bad'
+        : capitalize(whenWord(item.days_left));
   return (
     <KioskModal visible title={item.name} onClose={onClose}>
       <View style={styles.stats}>
@@ -268,11 +286,7 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
           color={d == null ? colors.muted : tone ? colors[tone] : undefined}
         />
         <Stat label="Have" value={capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))} />
-        <Stat
-          label="Runs out"
-          value={item.days_left != null ? capitalize(relativeDays(item.days_left, true)) : 'Not enough history'}
-          color={item.days_left == null ? colors.muted : undefined}
-        />
+        <Stat label="Runs out" value={runsOut} color={item.days_left == null ? colors.muted : undefined} />
       </View>
       {usage && (
         <>

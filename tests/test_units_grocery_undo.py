@@ -122,3 +122,40 @@ def test_grocery_horizon_persists(db):
     assert grocery_list.build_list(db)["trip_in_days"] == 7
     grocery_list.set_horizon(db, None)
     assert grocery_list.get_horizon(db) is None
+
+
+@pytest.mark.parametrize("text, parsed", [
+    ("apples 6", ("apples", "6")), ("6 apples", ("apples", "6")), ("2 L milk", ("milk", "2 L")),
+    ("milk 2 l", ("milk", "2 L")), ("feta cheese", ("feta cheese", None)), ("2 lemons", ("lemons", "2")),
+])
+def test_grocery_entry_amounts_are_parsed(text, parsed):
+    assert grocery_list.parse_entry(text) == parsed
+
+
+def test_removed_rows_stay_removed_and_come_back_on_undo(db):
+    [apples] = grocery_list.add_entries(db, ["apples 6"], "manual")
+    item = grocery_list.build_list(db)["items"][0]
+    assert (item["name"], item["amount"]) == ("apples", "6")
+    db.set_grocery_hidden(apples, True)
+    assert grocery_list.build_list(db)["items"] == []
+    db.set_grocery_hidden(apples, False)
+    assert [i["id"] for i in grocery_list.build_list(db)["items"]] == [apples]
+
+
+def test_putting_it_in_the_fridge_checks_it_off(db):
+    [eggs] = grocery_list.add_entries(db, ["eggs"], "manual")
+    assert grocery_list.check_off(db, "Eggs") == {"id": eggs, "name": "eggs"}
+    assert grocery_list.build_list(db)["items"][0]["checked"]
+    assert grocery_list.check_off(db, "Eggs") is None  # nothing open left
+
+
+def test_a_removed_plan_row_stays_off_for_that_trip(db):
+    milk = db.get_or_create_product("Milk", is_staple=True, usual_package_size_g=1000)
+    item = inv_events.apply_add(db, milk, 1000)
+    for _ in range(5):
+        inv_events.apply_consume(db, item, 150)
+    grocery_list.set_horizon(db, 3)
+    [row] = [i for i in grocery_list.build_list(db)["items"] if i["source"] == "plan"]
+    db.set_grocery_hidden(row["id"], True)
+    assert grocery_list.build_list(db)["items"] == []
+    assert grocery_list.build_list(db)["covers_until"]

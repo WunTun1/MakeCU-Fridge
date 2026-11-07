@@ -26,6 +26,17 @@ export function calendarDate(isoDate: string): string {
   return localDate(isoDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
+/** "Mon". */
+export function shortWeekday(isoDate: string): string {
+  return localDate(isoDate).toLocaleDateString(undefined, { weekday: 'short' });
+}
+
+/** "Shop by Tue, Nov 10 · covers until Tue, Nov 17": one source for Home and Grocery. */
+export function tripText(tripDate: string | null, coversUntil: string | null): string {
+  if (!tripDate || !coversUntil) return 'No trip needed in the next two weeks';
+  return `Shop by ${calendarDate(tripDate)} · covers until ${calendarDate(coversUntil)}`;
+}
+
 function weeks(days: number): string {
   const n = Math.round(days / 7);
   return n <= 1 ? 'in about a week' : `in about ${n} weeks`;
@@ -53,3 +64,6 @@ export function relativeDays(days: number, approx = false): string {
 }
 
 export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** "baby SPINACH" / "Baby Spinach" -> "Baby spinach". */
+export const sentenceCase = (s: string) => capitalize(s.trim().toLowerCase());

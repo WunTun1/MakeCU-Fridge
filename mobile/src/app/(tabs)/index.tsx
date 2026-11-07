@@ -7,13 +7,12 @@ import { RecipeCardView } from '@/components/recipes/RecipeCardView';
 import { ErrorCard, Loading } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
 import { api, type Alert, type InventoryEntry, type Macros, type Profile } from '@/lib/api';
-import { expiryText, expiryTone } from '@/lib/expiry';
+import { expiryTone, goesBadText, runsOutText, urgency, type ExpiryTone } from '@/lib/expiry';
 import { colors, ui } from '@/lib/theme';
-import { capitalize, daysUntil, relativeDays, whenWord } from '@/lib/time';
+import { capitalize, tripText, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 5000;
-const URGENT: Alert['reason'][] = ['staple_out', 'expiring_soon', 'fridge_temp_high'];
 
 /** Soonest to go bad first; things with no date last, by name. */
 function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
@@ -24,9 +23,10 @@ function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
   const days = alert.days;
   switch (alert.reason) {
     case 'expiring_soon':
+      if (entry) return goesBadText(entry) ?? alert.detail;
       return days == null ? alert.detail : days < 0 ? 'Expired' : `Goes bad ${whenWord(days)}`;
     case 'low_days_left':
-      return days == null ? alert.detail : `Runs out ${whenWord(days)}`;
+      return days == null ? alert.detail : runsOutText({ days_left: days, expires_in_days: null });
     case 'low_fraction':
       return entry ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left` : 'Running low';
     case 'staple_out':
@@ -40,14 +40,13 @@ export default function Home() {
   const summary = useApi(api.summary, POLL_MS);
   const profile = useApi(api.profile);
   // No query: the engine searches by what's in the fridge, expiring items first.
-  const ideas = useApi(() => api.suggestRecipes({ limit: 6 }));
+  const ideas = useApi(api.tonight, undefined, 'tonight');
 
   if (summary.loading && !summary.data) return <Loading />;
 
   const s = summary.data;
   const inventory = s ? [...s.inventory].sort(byExpiry) : [];
   const entryFor = (productId: number | null) => s?.inventory.find((e) => e.product_id === productId);
-  const tripDays = s?.next_trip_date ? daysUntil(s.next_trip_date) : null;
 
   return (
     <ScrollView
@@ -79,7 +78,7 @@ export default function Home() {
         <Link href="/review" asChild>
           <Pressable style={StyleSheet.flatten([ui.card, styles.reviewBanner])}>
             <Text style={ui.text}>
-              {s.review_queue_count} fridge change{s.review_queue_count > 1 ? 's' : ''} need a quick answer
+              {s.review_queue_count === 1 ? '1 fridge change needs' : `${s.review_queue_count} fridge changes need`} an answer
             </Text>
             <FontAwesome name="chevron-right" color={colors.warn} />
           </Pressable>
@@ -95,7 +94,12 @@ export default function Home() {
             </View>
           ) : (
             s.alerts.map((a, i) => (
-              <AlertRow key={`${a.product_id}-${a.reason}-${i}`} alert={a} text={alertText(a, entryFor(a.product_id))} />
+              <AlertRow
+                key={`${a.product_id}-${a.reason}-${i}`}
+                alert={a}
+                text={alertText(a, entryFor(a.product_id))}
+                tone={alertTone(entryFor(a.product_id))}
+              />
             ))
           )}
 
@@ -133,9 +137,10 @@ export default function Home() {
 
           <Link href="/grocery" asChild>
             <Pressable style={StyleSheet.flatten([ui.card, styles.linkCard])}>
-              <Text style={ui.text}>
-                {tripDays == null ? 'No trip needed in the next two weeks' : `Next trip: ${whenWord(tripDays)}`}
-              </Text>
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={[ui.text, { fontWeight: '600' }]}>Grocery list</Text>
+                <Text style={ui.muted}>{tripText(s.next_trip_date, s.covers_until)}</Text>
+              </View>
               <FontAwesome name="chevron-right" color={colors.muted} />
             </Pressable>
           </Link>
@@ -157,12 +162,11 @@ export default function Home() {
   );
 }
 
-function AlertRow({ alert, text }: { alert: Alert; text: string }) {
-  const style = StyleSheet.flatten([
-    ui.card,
-    styles.alert,
-    URGENT.includes(alert.reason) && { borderLeftColor: colors.danger },
-  ]);
+/** Same color the item gets everywhere else; an alert with no item (fridge too warm, out of a staple) is amber. */
+const alertTone = (entry: InventoryEntry | undefined): ExpiryTone => (entry ? urgency(entry) : 'warn');
+
+function AlertRow({ alert, text, tone }: { alert: Alert; text: string; tone: ExpiryTone }) {
+  const style = StyleSheet.flatten([ui.card, styles.alert, { borderLeftColor: tone ? colors[tone] : colors.border }]);
   const body = (
     <Text style={[ui.text, { flex: 1 }]}>
       <Text style={{ fontWeight: '700' }}>{alert.product_name}</Text> · {text}
@@ -206,25 +210,19 @@ function IntakeCard({ totals, profile }: { totals: Macros; profile: Profile | nu
 
 // Children of <Link asChild> must get one style object — expo-router throws on style arrays.
 function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
-  const days = item.expires_in_days;
-  const tone = expiryTone(days);
+  const goesBad = goesBadText(item);
+  const dateTone = expiryTone(item.expires_in_days);
   return (
     <Link href={{ pathname: '/item/[id]', params: { id: item.product_id } }} asChild>
       <Pressable style={StyleSheet.flatten([styles.invRow, !last && ui.divider])}>
         <View style={{ flex: 1, gap: 2 }}>
           <Text style={[ui.text, { fontWeight: '600' }]}>{item.name}</Text>
-          {days != null && (
-            <Text style={[ui.text, { fontSize: 13 }, tone && { color: colors[tone] }]}>
-              {expiryText(days, item.expiry_estimated)}
-            </Text>
-          )}
-          <Text style={ui.muted}>
-            {item.days_left != null ? `Runs out ${relativeDays(item.days_left, true)}` : 'No usage history yet'}
-          </Text>
+          {goesBad && <Text style={[ui.text, { fontSize: 13 }, dateTone && { color: colors[dateTone] }]}>{goesBad}</Text>}
+          <Text style={ui.muted}>{runsOutText(item)}</Text>
         </View>
         <View style={{ width: 96, alignItems: 'flex-end' }}>
           <Text style={ui.text}>{capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))}</Text>
-          {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} tone={tone} />}
+          {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} tone={urgency(item)} />}
         </View>
       </Pressable>
     </Link>
@@ -232,7 +230,7 @@ function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  alert: { borderLeftWidth: 4, borderLeftColor: colors.warn, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  alert: { borderLeftWidth: 4, flexDirection: 'row', alignItems: 'center', gap: 8 },
   reviewBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderColor: colors.warn },
   linkCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   invRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12 },

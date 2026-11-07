@@ -4,6 +4,25 @@ import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { RecipeCard } from '@/lib/api';
 import { colors } from '@/lib/theme';
 
+const firstTwo = (names: string[]) => names.slice(0, 2).join(', ') + (names.length > 2 ? '…' : '');
+
+/**
+ * "You have everything" only when every counted ingredient is there in the amount needed;
+ * otherwise "Need 1 of 6: vidalia onion · Short on spinach".
+ */
+function cardStatus(card: RecipeCard): { text: string; ready: boolean } {
+  const short = card.short ?? []; // cards saved in chat history before "short" existed
+  const total = card.have_count + card.swaps.length + short.length + card.missing.length;
+  if (card.missing.length === 0 && short.length === 0) {
+    const swaps = card.swaps.length;
+    return { text: swaps ? `Ready with ${swaps} swap${swaps > 1 ? 's' : ''}` : 'You have everything', ready: true };
+  }
+  const parts = [];
+  if (card.missing.length) parts.push(`Need ${card.missing.length} of ${total}: ${firstTwo(card.missing)}`);
+  if (short.length) parts.push(`Short on ${firstTwo(short.map((s) => s.name))}`);
+  return { text: parts.join(' · '), ready: false };
+}
+
 /** Compact recipe card for chat and suggestion rows. `large` is the fridge-screen size. */
 export function RecipeCardView({
   card,
@@ -14,9 +33,8 @@ export function RecipeCardView({
   onPress: () => void;
   large?: boolean;
 }) {
-  const total = card.have_count + card.swaps.length + card.missing.length;
-  const ready = card.missing.length === 0;
   const width = large ? 250 : 210;
+  const status = cardStatus(card);
   return (
     <Pressable
       onPress={onPress}
@@ -40,10 +58,8 @@ export function RecipeCardView({
             .filter(Boolean)
             .join(' · ')}
         </Text>
-        <Text style={[styles.status, { color: ready ? colors.accent : colors.warn }]} numberOfLines={1}>
-          {ready
-            ? card.swaps.length ? `Ready with ${card.swaps.length} swap${card.swaps.length > 1 ? 's' : ''}` : 'You have everything'
-            : `Need ${card.missing.length} of ${total}: ${card.missing.slice(0, 2).join(', ')}${card.missing.length > 2 ? '…' : ''}`}
+        <Text style={[styles.status, { color: status.ready ? colors.accent : colors.text }]} numberOfLines={2}>
+          {status.text}
         </Text>
         {card.uses_expiring.length > 0 && (
           <Text style={styles.expiring} numberOfLines={1}>

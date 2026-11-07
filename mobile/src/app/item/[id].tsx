@@ -9,12 +9,13 @@ import { Stepper } from '@/components/Stepper';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount, fromGrams, toGrams } from '@/lib/amount';
 import { api, type ProductUsage, type StockItem } from '@/lib/api';
-import { expiryTone } from '@/lib/expiry';
+import { expiryText, expiryTone } from '@/lib/expiry';
 import { colors, ui } from '@/lib/theme';
-import { calendarDate, capitalize, daysUntil, isoDateIn, relativeDays } from '@/lib/time';
+import { calendarDate, capitalize, daysUntil, isoDateIn, relativeDays, whenWord } from '@/lib/time';
 import { refreshAll, useApi } from '@/lib/useApi';
 
-type Action = 'used' | 'amount' | 'date';
+/** A panel that's open: one of the actions, or Fix date for one package. */
+type Action = 'used' | 'amount' | { date: number };
 
 /** Soonest to go bad first; undated last. Actions start with the item that needs using first. */
 const bySoonest = (items: StockItem[]) =>
@@ -66,13 +67,33 @@ export default function ItemDetail() {
                 }}
               />
               <GridButton title="Fix amount" active={open === 'amount'} onPress={() => setOpen(open === 'amount' ? null : 'amount')} />
-              <GridButton title="Fix date" active={open === 'date'} onPress={() => setOpen(open === 'date' ? null : 'date')} />
             </View>
           )}
 
           {open === 'used' && <UsedSome data={data} onDone={done} />}
           {open === 'amount' && <FixAmount data={data} onDone={done} />}
-          {open === 'date' && <FixDate data={data} onDone={done} />}
+
+          {data.items.length > 0 && (
+            <>
+              <Text style={ui.h2}>{data.items.length === 1 ? 'Package' : `Packages (${data.items.length})`}</Text>
+              <View style={[ui.card, { paddingVertical: 4 }]}>
+                {bySoonest(data.items).map((item, i) => {
+                  const fixing = typeof open === 'object' && open?.date === item.id;
+                  return (
+                    <View key={item.id} style={i > 0 && styles.packageDivider}>
+                      <PackageRow
+                        data={data}
+                        item={item}
+                        fixing={fixing}
+                        onFix={() => setOpen(fixing ? null : { date: item.id })}
+                      />
+                      {fixing && <FixDate data={data} item={item} onDone={done} />}
+                    </View>
+                  );
+                })}
+              </View>
+            </>
+          )}
 
           <Text style={ui.h2}>Used per day, last 4 weeks</Text>
           <View style={ui.card}>
@@ -87,6 +108,12 @@ export default function ItemDetail() {
 function Stats({ data }: { data: ProductUsage }) {
   const days = data.expiration_date ? daysUntil(data.expiration_date) : null;
   const tone = expiryTone(days);
+  const runsOut =
+    data.days_left == null
+      ? 'Not enough history'
+      : days != null && data.days_left > days
+        ? 'After it goes bad'
+        : capitalize(whenWord(data.days_left));
   return (
     <View style={[ui.card, styles.stats]}>
       <Stat
@@ -96,7 +123,7 @@ function Stats({ data }: { data: ProductUsage }) {
         subColor={tone ? colors[tone] : colors.muted}
       />
       <Stat label="Have" value={formatAmount(data.on_hand_g, data.unit, data.grams_per_unit, data.name)} />
-      <Stat label="Runs out" value={data.days_left != null ? capitalize(relativeDays(data.days_left, true)) : 'Not enough history'} />
+      <Stat label="Runs out" value={runsOut} />
     </View>
   );
 }
@@ -125,6 +152,30 @@ function GridButton({ title, onPress, active = false }: { title: string; onPress
 
 type PanelProps = { data: ProductUsage; onDone: (message: string, undo?: () => Promise<unknown>) => void };
 
+/** One package (an add): how much is left of it, when it goes bad, and its own Fix date. */
+function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: StockItem; fixing: boolean; onFix: () => void }) {
+  const days = item.expiration_date ? daysUntil(item.expiration_date) : null;
+  const tone = expiryTone(days);
+  return (
+    <View style={styles.packageRow}>
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text style={ui.text}>{capitalize(formatAmount(item.grams, data.unit, data.grams_per_unit, data.name))}</Text>
+        <Text style={[ui.muted, tone && { color: colors[tone] }]}>
+          {days == null ? 'No date' : `${expiryText(days, item.expiry_estimated)} · ${calendarDate(item.expiration_date!)}`}
+        </Text>
+      </View>
+      <Pressable
+        onPress={onFix}
+        style={styles.textButton}
+        accessibilityRole="button"
+        accessibilityLabel="Fix the date on this package"
+      >
+        <Text style={styles.link}>{fixing ? 'Cancel' : 'Fix date'}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function UsedSome({ data, onDone }: PanelProps) {
   const step = data.unit === 'count' ? data.grams_per_unit : 50;
   const [grams, setGrams] = useState(Math.min(step, data.on_hand_g));
@@ -147,7 +198,8 @@ function UsedSome({ data, onDone }: PanelProps) {
     <View style={[ui.card, { gap: 16 }]}>
       <Text style={ui.text}>How much did you use?</Text>
       <Stepper
-        label="used"
+        minusLabel="Used less"
+        plusLabel="Used more"
         value={amount}
         canMinus={grams - step > 0}
         canPlus={grams + step <= data.on_hand_g + 0.5}
@@ -201,20 +253,22 @@ const DATE_PICKS = [
   { label: 'In a week', days: 7 },
 ];
 
-function FixDate({ data, onDone }: PanelProps) {
-  const [days, setDays] = useState(() => (data.expiration_date ? daysUntil(data.expiration_date) : 3));
+function FixDate({ data, item, onDone }: PanelProps & { item: StockItem }) {
+  const [days, setDays] = useState(() => (item.expiration_date ? daysUntil(item.expiration_date) : 3));
   const date = isoDateIn(days);
 
   async function save() {
-    await api.updateItem(bySoonest(data.items)[0].id, { expiration_date: date });
-    onDone(`${data.name} goes bad ${calendarDate(date)}`);
+    await api.updateItem(item.id, { expiration_date: date });
+    const amount = formatAmount(item.grams, data.unit, data.grams_per_unit, data.name);
+    onDone(`${capitalize(amount)}${data.unit === 'count' ? '' : ` of ${data.name}`} goes bad ${calendarDate(date)}`);
   }
 
   return (
-    <View style={[ui.card, { gap: 16 }]}>
+    <View style={{ gap: 16, paddingBottom: 12 }}>
       <Text style={ui.text}>When does it go bad?</Text>
       <Stepper
-        label="days"
+        minusLabel="A day earlier"
+        plusLabel="A day later"
         value={calendarDate(date)}
         canMinus={days > 0}
         canPlus={days < 365}
@@ -277,6 +331,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   label: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  packageRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, paddingVertical: 8 },
+  packageDivider: { borderTopColor: colors.border, borderTopWidth: 1 },
+  textButton: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
   chip: {
     minHeight: 44,
     paddingHorizontal: 12,

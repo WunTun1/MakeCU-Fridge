@@ -67,7 +67,7 @@ def _singular(word: str) -> str:
 def canonical(text: str) -> str:
     """'2 cups chopped fresh baby spinach' -> 'spinach'; 'Ground Beef' -> 'ground beef'."""
     text = text.lower()
-    text = re.sub(r"\(.*?\)", " ", text)           # "(15 ounce)" asides
+    text = re.sub(r"\(.*?(\)|$)", " ", text)       # "(15 ounce)" asides, even unclosed ones
     text = text.split(",")[0]                         # "onion, chopped" -> "onion"
     words = re.findall(r"[a-z][a-z\-']*", text)
     keep_ground = any(w in KEEP_GROUND_FOR for w in words)
@@ -98,6 +98,32 @@ def is_staple(name: str) -> bool:
     words = name.split()
     return (name in PANTRY_STAPLES or head(name) in {"salt", "oil"}
             or bool(words) and set(words) <= SEASONING_WORDS and ("salt" in words or "pepper" in words))
+
+
+COOKING_LIQUID = re.compile(r"\b(reserved|cooking liquid|cooking water|from the pasta|pasta water)\b", re.I)
+PLAIN_WATER_WORDS = {"boiling", "lukewarm", "filtered", "tap", "cool", "fluid", "pure", "bottled", "ice"}
+
+
+def needs_no_badge(raw_name: str, canon: str) -> bool:
+    """Staples, plus water, ice and cooking liquid ('water from the pasta'): nothing to have or buy.
+    Rose water and coconut water are real ingredients and still count."""
+    words = canon.split()
+    plain_water = bool(words) and words[-1] == "water" and set(words[:-1]) <= PLAIN_WATER_WORDS
+    return (not canon or is_staple(canon) or plain_water or canon == "ice cube"
+            or bool(COOKING_LIQUID.search(raw_name)))
+
+
+def dislike_pattern(dislike: str) -> re.Pattern | None:
+    """'mushrooms' -> matches 'mushroom', 'mushrooms', 'cream of mushroom soup'."""
+    words = re.findall(r"[a-z][a-z\-']*", dislike.lower())
+    if not words:
+        return None
+    last = _singular(words[-1])
+    ending = "(s|es)?"
+    if re.search(r"[^aeiou]y$", last):
+        last, ending = last[:-1], "(y|ies)"
+    phrase = r"\s+".join(re.escape(w) for w in [*words[:-1], last])
+    return re.compile(rf"\b{phrase}{ending}\b", re.I)
 
 
 # A one-word ingredient also matches these more specific forms: 'chicken' ~ 'chicken thigh',

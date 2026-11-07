@@ -121,8 +121,9 @@ CREATE TABLE IF NOT EXISTS grocery_entries (
     recipe_name TEXT,
     trip_date TEXT,              -- plan entries only: the trip they were planned for
     checked INTEGER NOT NULL DEFAULT 0,
-    hidden INTEGER NOT NULL DEFAULT 0,   -- plan entries cleared from the list for that trip
-    added_at TEXT NOT NULL
+    hidden INTEGER NOT NULL DEFAULT 0,   -- removed by you (plan entries: for that trip)
+    added_at TEXT NOT NULL,
+    amount TEXT                  -- "6", "2 L": how much, when you said
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -168,6 +169,9 @@ class Database:
             self._conn.execute(
                 "ALTER TABLE items ADD COLUMN expiration_estimated INTEGER NOT NULL DEFAULT 0"
             )
+        grocery_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(grocery_entries)")}
+        if "amount" not in grocery_columns:
+            self._conn.execute("ALTER TABLE grocery_entries ADD COLUMN amount TEXT")
         product_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(products)")}
         if "unit" not in product_columns:
             self._conn.execute("ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT 'g'")
@@ -592,13 +596,13 @@ class Database:
 
     def add_grocery_entry(
         self, name: str, norm: str, source: str, recipe_id: int | None = None,
-        recipe_name: str | None = None, trip_date: str | None = None,
+        recipe_name: str | None = None, trip_date: str | None = None, amount: str | None = None,
     ) -> int:
         with self.cursor() as cur:
             cur.execute(
-                """INSERT INTO grocery_entries (name, norm, source, recipe_id, recipe_name, trip_date, added_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (name, norm, source, recipe_id, recipe_name, trip_date, now_iso()),
+                """INSERT INTO grocery_entries (name, norm, source, recipe_id, recipe_name, trip_date, added_at, amount)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (name, norm, source, recipe_id, recipe_name, trip_date, now_iso(), amount),
             )
             return cur.lastrowid
 
@@ -606,9 +610,9 @@ class Database:
         with self.cursor() as cur:
             cur.execute("UPDATE grocery_entries SET checked = ? WHERE id = ?", (int(checked), entry_id))
 
-    def delete_grocery_entry(self, entry_id: int) -> None:
+    def set_grocery_hidden(self, entry_id: int, hidden: bool) -> None:
         with self.cursor() as cur:
-            cur.execute("DELETE FROM grocery_entries WHERE id = ?", (entry_id,))
+            cur.execute("UPDATE grocery_entries SET hidden = ? WHERE id = ?", (int(hidden), entry_id))
 
     def clear_checked_grocery(self) -> None:
         """Bought: your own entries go away; plan entries stay hidden for that trip

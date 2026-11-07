@@ -7,7 +7,7 @@ import { Button } from '@/components/Button';
 import { CookSheet, usesAll } from '@/components/recipes/CookSheet';
 import { useSnackbar } from '@/components/Snackbar';
 import { formatAmount } from '@/lib/amount';
-import { api, type CookLine, type RecipeDetail, type RecipeLine } from '@/lib/api';
+import { api, type CookLine, type Made, type RecipeDetail, type RecipeLine } from '@/lib/api';
 import { colors } from '@/lib/theme';
 import { refreshAll } from '@/lib/useApi';
 
@@ -56,7 +56,8 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   if (!recipe) return <ActivityIndicator color={colors.accent} style={{ margin: 24 }} />;
 
   const n = recipe.nutrition;
-  const toBuy = recipe.missing.filter((m) => !onList.has(m));
+  const needed = [...recipe.missing, ...recipe.short.map((s) => s.name)];
+  const toBuy = needed.filter((m) => !onList.has(m));
 
   async function addToList(names: string[]) {
     if (!recipe || names.length === 0) return;
@@ -69,11 +70,11 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     }
   }
 
-  async function log(servings: number) {
+  async function log(made: Made, servingsEaten: number) {
     if (logging.current) return;
     logging.current = true;
     try {
-      const result = await api.cooked(recipeId, servings);
+      const result = await api.cooked(recipeId, made, servingsEaten);
       setSheetOpen(false);
       setLoggedMeal(result.meal_id);
       refreshAll();
@@ -115,7 +116,11 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
         {n.calories != null && <Stat icon="fire" text={`${Math.round(n.calories)} kcal`} />}
         {n.protein_g != null && <Stat icon="bolt" text={`${Math.round(n.protein_g)} g protein`} />}
       </View>
-      <Text style={styles.muted}>Nutrition is per serving, from the recipe source.</Text>
+      <Text style={styles.muted}>
+        {recipe.servings != null
+          ? 'Nutrition per serving, from the recipe source.'
+          : 'Nutrition per serving, from the recipe source. Serving count not listed.'}
+      </Text>
 
       {recipe.reasons.length > 0 && (
         <View style={{ gap: 4 }}>
@@ -138,11 +143,11 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
           />
         ))}
       </View>
-      {recipe.missing.length > 0 && (
+      {needed.length > 0 && (
         <View style={styles.buttonRow}>
           <Button
             variant="secondary"
-            title={toBuy.length === 0 ? 'On your grocery list' : `Add ${toBuy.length} missing to grocery list`}
+            title={toBuy.length === 0 ? 'On your grocery list' : `Add ${toBuy.length} to grocery list`}
             disabled={toBuy.length === 0}
             onPress={() => addToList(toBuy)}
           />
@@ -189,6 +194,8 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
       <CookSheet
         recipeId={recipeId}
         recipeName={recipe.name}
+        servings={recipe.servings}
+        nutrition={recipe.nutrition}
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
         onLog={log}
@@ -197,22 +204,45 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   );
 }
 
-const STATUS: Record<RecipeLine['status'], { label: string; color: string }> = {
-  have: { label: 'Have', color: colors.accent },
-  swap: { label: 'Swap', color: colors.warn },
-  missing: { label: 'Buy', color: colors.danger },
-  staple: { label: 'Pantry', color: colors.muted },
-};
+type Badge = { label: string; color: string; border: string; check?: boolean };
+
+/**
+ * Have is the common case, so it's neutral with a check. Short is amber, Buy is the accent
+ * (it's tappable). Red is never used here: red means "goes bad today or tomorrow".
+ * Staples (salt, oil, water from the pasta) get no badge.
+ */
+function badgeFor(status: RecipeLine['status'], listed: boolean): Badge | null {
+  if (listed && (status === 'missing' || status === 'short')) return { label: 'On list', color: colors.muted, border: colors.border };
+  switch (status) {
+    case 'have':
+      return { label: 'Have', color: colors.muted, border: colors.border, check: true };
+    case 'swap':
+      return { label: 'Swap', color: colors.text, border: colors.muted };
+    case 'short':
+      return { label: 'Short', color: colors.warn, border: colors.warn };
+    case 'missing':
+      return { label: 'Buy', color: colors.accent, border: colors.accent };
+    default:
+      return null;
+  }
+}
 
 function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: boolean; onBuy: () => void }) {
-  const s = line.status === 'missing' && listed ? { label: 'On list', color: colors.muted } : STATUS[line.status];
-  const badge = <Text style={[styles.badge, { color: s.color, borderColor: s.color }]}>{s.label}</Text>;
+  const b = badgeFor(line.status, listed);
+  const badge = b ? (
+    <View style={[styles.badge, { borderColor: b.border }]}>
+      {b.check && <FontAwesome name="check" size={11} color={b.color} />}
+      <Text style={[styles.badgeText, { color: b.color }]}>{b.label}</Text>
+    </View>
+  ) : (
+    <View style={styles.noBadge} />
+  );
   return (
     <View style={styles.ingRow}>
       {line.status === 'missing' && !listed ? (
         <Pressable
           onPress={onBuy}
-          hitSlop={{ top: 10, bottom: 10, left: 8, right: 8 }}
+          hitSlop={{ top: 11, bottom: 11, left: 8, right: 8 }}
           accessibilityRole="button"
           accessibilityLabel={`Add ${line.name} to the grocery list`}
         >
@@ -222,15 +252,16 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
         badge
       )}
       <View style={{ flex: 1 }}>
-        <Text style={styles.text}>
+        <Text style={[styles.text, line.status === 'staple' && { color: colors.muted }]}>
           {line.amount ? <Text style={styles.muted}>{line.amount} </Text> : null}
-          {line.status === 'swap' ? (
+          {line.use ? (
             <>
               <Text style={styles.struck}>{line.name}</Text> → {line.use}
             </>
           ) : (
             line.name
           )}
+          {line.on_hand ? <Text style={{ color: colors.warn }}> · you have {line.on_hand}</Text> : null}
         </Text>
         {line.note && <Text style={styles.muted}>{line.note}</Text>}
       </View>
@@ -257,7 +288,19 @@ const styles = StyleSheet.create({
   reason: { color: colors.accent, fontSize: 15 },
   section: { color: colors.muted, fontSize: 13, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   ingRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
-  badge: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2, fontWeight: '700', fontSize: 12, minWidth: 64, textAlign: 'center' },
+  badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    height: 22,
+    minWidth: 68,
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+  },
+  badgeText: { fontSize: 12, lineHeight: 16, fontWeight: '600' },
+  noBadge: { minWidth: 68 },
   struck: { textDecorationLine: 'line-through', color: colors.muted },
   stepRow: { flexDirection: 'row', gap: 12 },
   stepNum: { color: colors.accent, fontWeight: '700', width: 24, fontSize: 15 },

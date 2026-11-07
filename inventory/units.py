@@ -50,3 +50,36 @@ def default_grams_per_unit(name: str | None, unit: str) -> float:
 
 def to_grams(quantity: float, unit: str, grams_per_unit: float) -> float:
     return quantity if unit == "g" else quantity * grams_per_unit
+
+
+def _count_noun(name: str | None, n: int) -> str:
+    words = re.findall(r"[a-z]+", (name or "").lower())
+    word = words[-1] if words else "piece"
+    if word.endswith("ies"):
+        word = word[:-3] + "y"
+    elif word.endswith("oes"):
+        word = word[:-2]
+    elif word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+    if n == 1:
+        return word
+    if word in ("tomato", "potato", "mango"):
+        return word + "es"
+    return word[:-1] + "ies" if re.search(r"[^aeiou]y$", word) else word + "s"
+
+
+def format_amount(grams: float, unit: str = "g", grams_per_unit: float = 1.0, name: str | None = None) -> str:
+    """Same wording as the app (mobile/src/lib/amount.ts): '6 eggs', 'about 1 egg', '1 L', '150 g'."""
+    if unit == "count":
+        exact = grams / (grams_per_unit or 1)
+        n = round(exact)
+        if n < 1:
+            return f"less than 1 {_count_noun(name, 1)}"
+        about = "about " if abs(exact - n) > 0.15 else ""
+        return f"{about}{n} {_count_noun(name, n)}"
+    amount = grams / (grams_per_unit or 1) if unit == "ml" else grams
+    small, big = ("ml", "L") if unit == "ml" else ("g", "kg")
+    if amount >= 1000:
+        return f"{round(amount / 1000, 1):g} {big}"
+    rounded = round(amount / 10) * 10 if unit == "ml" and amount >= 100 else round(amount)
+    return f"{rounded} {small}"

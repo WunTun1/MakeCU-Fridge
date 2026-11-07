@@ -206,7 +206,8 @@ class NutritionistChatbot:
         return {"recipes": [
             {"id": m.recipe.id, "name": m.recipe.name, "cuisine": m.recipe.cuisine, "minutes": m.recipe.minutes,
              "protein_g": m.recipe.nutrition.get("protein_g"), "calories": m.recipe.nutrition.get("calories"),
-             "have": len(m.have), "missing": m.missing, "swaps": [f"{s.missing} -> {s.use}" for s in m.swaps],
+             "have": len(m.have), "missing": m.missing,
+             "short": [f"{s['name']} (you have {s['on_hand']})" for s in m.short], "swaps": [f"{s.missing} -> {s.use}" for s in m.swaps],
              "uses_expiring": m.uses_expiring, "why": m.reasons}
             for m in matches
         ]}
@@ -219,7 +220,7 @@ class NutritionistChatbot:
         return recipe
 
     def _cooked_recipe(self, recipe_id: int, servings_eaten: float = 1.0) -> dict:
-        return self.engine.cooked(int(recipe_id), servings_eaten) or {"error": f"no recipe {recipe_id}"}
+        return self.engine.cooked(int(recipe_id), servings_eaten=servings_eaten) or {"error": f"no recipe {recipe_id}"}
 
     # --------------------------------------------------------------- tools
     def _get_inventory(self) -> dict:

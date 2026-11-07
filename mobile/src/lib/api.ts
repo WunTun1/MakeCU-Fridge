@@ -66,6 +66,8 @@ export type InventoryEntry = Measured & {
   expires_in_days: number | null;
   /** True when that date is an estimated shelf life, not printed on the package. */
   expiry_estimated: boolean;
+  /** The package(s) that go bad first; less than `grams` when newer packages are there too. */
+  soonest_batch: { grams: number; expiration_date: string } | null;
   location: 'fridge' | 'pantry' | 'freezer';
   /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
   shelf: number | null;
@@ -84,6 +86,8 @@ export type Conditions = {
 export type Summary = {
   alerts: Alert[];
   next_trip_date: string | null;
+  /** What the grocery list buys lasts until this date. */
+  covers_until: string | null;
   today_intake: { period: string; totals: Macros; meal_count: number };
   inventory: InventoryEntry[];
   review_queue_count: number;
@@ -134,6 +138,8 @@ export type GroceryPlan = {
 export type GroceryEntry = Measured & {
   id: number;
   name: string;
+  /** "6", "2 L": how much, when the person said so. */
+  amount: string | null;
   source: 'plan' | 'manual' | 'recipe';
   recipe_id: number | null;
   recipe_name: string | null;
@@ -143,7 +149,12 @@ export type GroceryEntry = Measured & {
 
 export type Horizon = 1 | 3 | 7 | null;
 
-export type GroceryList = { trip_in_days: Horizon; trip_date: string | null; items: GroceryEntry[] };
+export type GroceryList = {
+  trip_in_days: Horizon;
+  trip_date: string | null;
+  covers_until: string | null;
+  items: GroceryEntry[];
+};
 
 export type ReviewItem = {
   id: number;
@@ -176,6 +187,9 @@ export type Nutrition = {
 
 export type Swap = { missing: string; use: string; note: string };
 
+/** "fresh spinach" with on_hand "150 g"; `use` when it's a swap you're short of. */
+export type ShortLine = { name: string; on_hand: string; use?: string };
+
 /** A real recipe from the library, scored against what's in your fridge. */
 export type RecipeCard = {
   id: number;
@@ -186,6 +200,8 @@ export type RecipeCard = {
   image_url: string | null;
   nutrition: Nutrition;
   have_count: number;
+  /** Some on hand, not enough for the recipe. */
+  short: ShortLine[];
   missing: string[];
   swaps: Swap[];
   uses_expiring: string[];
@@ -195,7 +211,9 @@ export type RecipeCard = {
 export type RecipeLine = {
   name: string;
   amount: string | null;
-  status: 'have' | 'swap' | 'missing' | 'staple';
+  status: 'have' | 'short' | 'swap' | 'missing' | 'staple';
+  /** Short lines: how much you have, e.g. "150 g". */
+  on_hand?: string;
   use?: string;
   note?: string;
 };
@@ -204,12 +222,15 @@ export type RecipeDetail = RecipeCard & {
   ingredients: RecipeLine[];
   steps: string[];
   description: string | null;
-  /** Missing ingredients that are already on the grocery list. */
+  /** Missing or short ingredients that are already on the grocery list. */
   on_grocery_list: string[];
 };
 
 /** One product an "I made this" takes from. */
 export type CookLine = Measured & { product_id: number; item: string; grams_used: number; grams_on_hand: number };
+
+/** How much of the recipe was cooked: all of it or half. */
+export type Made = 1 | 0.5;
 
 export type ChatReply = { reply: string; recipes: RecipeCard[] };
 
@@ -225,6 +246,8 @@ export const api = {
   addToGrocery: (body: { names: string[]; source?: 'manual' | 'recipe'; recipe_id?: number; recipe_name?: string }) =>
     post<{ ids: number[] }>('/api/grocery/items', body),
   checkGrocery: (id: number, checked: boolean) => patch<{ ok: true }>(`/api/grocery/items/${id}`, { checked }),
+  /** Removes a row (or brings it back); an automatic row stays off for this trip. */
+  hideGrocery: (id: number, hidden: boolean) => patch<{ ok: true }>(`/api/grocery/items/${id}`, { hidden }),
   clearCheckedGrocery: () => post<{ ok: true }>('/api/grocery/clear-checked', {}),
   unlock: () => request<UnlockSuggestion[]>('/api/grocery/unlock'),
   review: () => request<ReviewItem[]>('/api/review'),
@@ -236,7 +259,10 @@ export const api = {
       | { action: 'add_confirmed'; product_name: string; grams?: number },
   ) => post<{ ok: true }>(`/api/review/${id}`, body),
   addItem: (body: { name: string; quantity: number; unit: Unit; location: string }) =>
-    post<Measured & { item_id: number; product_id: number; grams: number }>('/api/items', body),
+    post<Measured & { item_id: number; product_id: number; grams: number; checked_off: { id: number; name: string } | null }>(
+      '/api/items',
+      body,
+    ),
   undoAdd: (itemId: number) => post<{ ok: true }>(`/api/items/${itemId}/undo-add`, {}),
   updateItem: (itemId: number, body: { grams?: number; expiration_date?: string }) => patch<{ ok: true }>(`/api/items/${itemId}`, body),
   consume: (itemId: number, grams: number) => post<{ event_id: number | null }>('/api/items/consume', { item_id: itemId, grams }),
@@ -248,17 +274,15 @@ export const api = {
   chat: (message: string) => post<ChatReply>('/api/chat', { message }),
   clearChat: () => del<{ ok: true }>('/api/chat/history'),
   taste: () => request<{ cuisines: string[]; ingredients: string[] }>('/api/taste'),
-  suggestRecipes: (params: { q?: string; cuisine?: string; high_protein?: boolean; max_minutes?: number; limit?: number }) => {
-    const qs = Object.entries(params)
-      .filter(([, v]) => v !== undefined && v !== '' && v !== false)
-      .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
-      .join('&');
-    return request<RecipeCard[]>(`/api/recipes/suggest${qs ? `?${qs}` : ''}`);
-  },
+  /** Cook tonight: dinner-sized main dishes from what you have (cached on the server). */
+  tonight: () => request<RecipeCard[]>('/api/recipes/tonight'),
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
-  cookPreview: (id: number, servings: number) => request<CookLine[]>(`/api/recipes/${id}/cooked/preview?servings=${servings}`),
-  cooked: (id: number, servings: number) =>
-    post<{ recipe: string; meal_id: number; consumptions: CookLine[] }>(`/api/recipes/${id}/cooked`, { servings_eaten: servings }),
+  cookPreview: (id: number, made: Made) => request<CookLine[]>(`/api/recipes/${id}/cooked/preview?made=${made}`),
+  cooked: (id: number, made: Made, servingsEaten: number) =>
+    post<{ recipe: string; meal_id: number; consumptions: CookLine[] }>(`/api/recipes/${id}/cooked`, {
+      made,
+      servings_eaten: servingsEaten,
+    }),
   undoMeal: (mealId: number) => post<{ ok: true }>(`/api/meals/${mealId}/undo`, {}),
   rate: (id: number, liked: boolean) => post<{ ok: true }>(`/api/recipes/${id}/rate`, { liked }),
 };

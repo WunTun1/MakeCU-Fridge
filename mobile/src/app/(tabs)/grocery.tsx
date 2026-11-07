@@ -5,11 +5,12 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, 
 
 import { Button } from '@/components/Button';
 import { Segmented } from '@/components/Segmented';
+import { useSnackbar } from '@/components/Snackbar';
 import { ErrorCard } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
 import { api, type GroceryEntry, type GroceryList, type Horizon } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
-import { daysUntil, whenWord } from '@/lib/time';
+import { sentenceCase, tripText, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const HORIZONS: { value: Horizon; label: string }[] = [
@@ -21,18 +22,29 @@ const HORIZONS: { value: Horizon; label: string }[] = [
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-/** Why it's on the list, in words: "Runs out Monday. You use about 250 ml a day." */
+/** Why it's on the list, in words: "Runs out Monday · You use about 250 ml a day". */
 function reasonFor(entry: GroceryEntry): string {
   const p = entry.plan;
-  const parts = [entry.source === 'manual' ? 'Added by you.' : entry.source === 'recipe' ? `For ${entry.recipe_name ?? 'a recipe'}.` : ''];
+  const parts = [entry.source === 'manual' ? 'Added by you' : entry.source === 'recipe' ? `For ${entry.recipe_name ?? 'a recipe'}` : ''];
   if (p) {
     const rate = formatAmount(p.rate_g_per_day, entry.unit, entry.grams_per_unit, entry.name).replace(/^about /, '');
     parts.push(
-      p.on_hand_g <= 0 || p.runs_out_in_days == null ? "You're out." : `Runs out ${whenWord(p.runs_out_in_days)}.`,
-      `You use about ${rate} a day.`,
+      p.on_hand_g <= 0 || p.runs_out_in_days == null ? "You're out" : `Runs out ${whenWord(p.runs_out_in_days)}`,
+      `You use about ${rate} a day`,
     );
   }
-  return parts.filter(Boolean).join(' ');
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** "Apples · 6", "Milk · 2 L"; plan rows show what the plan wants to buy. */
+function titleFor(entry: GroceryEntry): string {
+  const p = entry.plan;
+  const amount = !p
+    ? entry.amount
+    : entry.unit === 'count'
+      ? String(Math.round(p.buy_grams / entry.grams_per_unit))
+      : formatAmount(p.buy_grams, entry.unit, entry.grams_per_unit, entry.name);
+  return amount ? `${sentenceCase(entry.name)} · ${amount}` : sentenceCase(entry.name);
 }
 
 export default function Grocery() {
@@ -40,6 +52,7 @@ export default function Grocery() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const unlock = useApi(api.unlock);
+  const showSnack = useSnackbar();
 
   const run = useCallback(async (request: () => Promise<GroceryList>) => {
     setBusy(true);
@@ -77,19 +90,31 @@ export default function Grocery() {
     api.checkGrocery(entry.id, !entry.checked).catch(() => run(api.grocery));
   };
 
+  const remove = (entry: GroceryEntry) => {
+    setList({ ...list, items: list.items.filter((i) => i.id !== entry.id) });
+    const name = sentenceCase(entry.name);
+    api.hideGrocery(entry.id, true).then(
+      () =>
+        showSnack({
+          message: entry.source === 'plan' ? `Removed ${name} for this trip` : `Removed ${name}`,
+          action: { label: 'Undo', onPress: () => run(() => api.hideGrocery(entry.id, false).then(api.grocery)) },
+        }),
+      () => run(api.grocery),
+    );
+  };
+
   const add = (names: string[], extra?: { recipe_id: number; recipe_name: string }) =>
     run(() => api.addToGrocery({ names, source: extra ? 'recipe' : 'manual', ...extra }).then(api.grocery));
 
   const open = list.items.filter((i) => !i.checked);
   const inCart = list.items.filter((i) => i.checked);
-  const tripDays = list.trip_date ? daysUntil(list.trip_date) : null;
 
   return (
     <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
       <View style={{ gap: 8 }}>
         <Segmented label="When you shop" options={HORIZONS} value={list.trip_in_days} onChange={setHorizon} />
         <View style={styles.progressTrack}>{busy && <View style={styles.progress} />}</View>
-        <Text style={ui.text}>{tripDays == null ? 'No trip needed soon.' : `Next trip: ${whenWord(tripDays)}`}</Text>
+        <Text style={ui.text}>{tripText(list.trip_date, list.covers_until)}</Text>
       </View>
 
       {error && <ErrorCard message={error} />}
@@ -98,7 +123,7 @@ export default function Grocery() {
         <AddRow onAdd={(name) => add([name])} />
         {open.length === 0 && inCart.length === 0 && <Text style={[ui.muted, styles.row]}>Nothing to buy yet.</Text>}
         {open.map((entry) => (
-          <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} />
+          <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} onRemove={() => remove(entry)} />
         ))}
         {inCart.length > 0 && (
           <>
@@ -109,7 +134,7 @@ export default function Grocery() {
               </Pressable>
             </View>
             {inCart.map((entry) => (
-              <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} />
+              <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} onRemove={() => remove(entry)} />
             ))}
           </>
         )}
@@ -117,14 +142,14 @@ export default function Grocery() {
 
       {unlock.data && unlock.data.length > 0 && (
         <>
-          <Text style={ui.h2}>Unlock recipes</Text>
-          <Text style={ui.muted}>One or two buys that complete recipes you&apos;re likely to cook.</Text>
+          <Text style={ui.h2}>One item away</Text>
+          <Text style={ui.muted}>Buying one of these completes recipes you&apos;d likely cook</Text>
           {unlock.data.map((u) => {
             const onList = u.buy.every((b) => list.items.some((i) => sameName(i.name, b)));
             const label = u.buy.join(' and ');
             return (
               <View key={u.buy.join('+')} style={[ui.card, { gap: 8 }]}>
-                <Text style={[ui.text, { fontWeight: '700', textTransform: 'capitalize' }]}>{label}</Text>
+                <Text style={[ui.text, { fontWeight: '700' }]}>{sentenceCase(label)}</Text>
                 <Text style={ui.muted}>
                   Completes {u.unlocks} recipe{u.unlocks === 1 ? '' : 's'}: {u.examples.join(', ')}
                 </Text>
@@ -178,8 +203,9 @@ function AddRow({ onAdd }: { onAdd: (name: string) => void }) {
   );
 }
 
-function GroceryRow({ entry, onToggle }: { entry: GroceryEntry; onToggle: () => void }) {
+function GroceryRow({ entry, onToggle, onRemove }: { entry: GroceryEntry; onToggle: () => void; onRemove: () => void }) {
   const done = entry.checked;
+  const name = sentenceCase(entry.name);
   return (
     <Pressable
       onPress={onToggle}
@@ -189,12 +215,17 @@ function GroceryRow({ entry, onToggle }: { entry: GroceryEntry; onToggle: () => 
     >
       <FontAwesome name={done ? 'check-square' : 'square-o'} size={22} color={done ? colors.accent : colors.muted} />
       <View style={{ flex: 1 }}>
-        <Text style={[ui.text, done && { textDecorationLine: 'line-through' }]}>{entry.name}</Text>
+        <Text style={[ui.text, done && { textDecorationLine: 'line-through' }]}>{titleFor(entry)}</Text>
         <Text style={ui.muted}>{reasonFor(entry)}</Text>
       </View>
-      {entry.plan && (
-        <Text style={ui.text}>{formatAmount(entry.plan.buy_grams, entry.unit, entry.grams_per_unit, entry.name)}</Text>
-      )}
+      <Pressable
+        onPress={onRemove}
+        style={styles.remove}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${name}`}
+      >
+        <FontAwesome name="close" size={20} color={colors.muted} />
+      </Pressable>
     </Pressable>
   );
 }
@@ -210,6 +241,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
     paddingTop: 4,
   },
+  remove: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   textButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
   link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
   addButton: {

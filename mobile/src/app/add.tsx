@@ -8,6 +8,7 @@ import { useSnackbar } from '@/components/Snackbar';
 import { formatAmount, guessUnit, type Unit } from '@/lib/amount';
 import { api } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
+import { sentenceCase } from '@/lib/time';
 import { refreshAll } from '@/lib/useApi';
 
 const LOCATIONS = [
@@ -53,9 +54,13 @@ export default function AddItem() {
       const amount = formatAmount(added.grams, added.unit, added.grams_per_unit, trimmed);
       const what = added.unit === 'count' ? amount : `${amount} of ${trimmed}`;
       const where = LOCATIONS.find((l) => l.value === location)!.label;
+      const checked = added.checked_off;
+      // Bought it, so it comes off the grocery list too; Undo puts both back.
+      const undo = () =>
+        Promise.all([api.undoAdd(added.item_id), checked && api.checkGrocery(checked.id, false)]).then(refreshAll, () => {});
       showSnack({
-        message: `Added ${what} to ${where}`,
-        action: { label: 'Undo', onPress: () => api.undoAdd(added.item_id).then(refreshAll, () => {}) },
+        message: `Added ${what} to ${where}${checked ? ` · checked off ${sentenceCase(checked.name)} on your list` : ''}`,
+        action: { label: 'Undo', onPress: undo },
       });
       if (router.canGoBack()) router.back();
       else router.replace('/');

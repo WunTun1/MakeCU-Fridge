@@ -10,21 +10,23 @@ export function Stepper({
   onPlus,
   canMinus,
   canPlus,
-  label,
+  minusLabel,
+  plusLabel,
 }: {
   value: string;
   onMinus: () => void;
   onPlus: () => void;
   canMinus: boolean;
   canPlus: boolean;
-  /** What is being changed, for screen readers ("servings"). */
-  label: string;
+  /** For screen readers: "Fewer servings", "More servings". */
+  minusLabel: string;
+  plusLabel: string;
 }) {
   return (
     <View style={styles.row}>
-      <StepButton icon="minus" label={`Less ${label}`} disabled={!canMinus} onPress={onMinus} />
+      <StepButton icon="minus" label={minusLabel} disabled={!canMinus} onPress={onMinus} />
       <Text style={styles.value}>{value}</Text>
-      <StepButton icon="plus" label={`More ${label}`} disabled={!canPlus} onPress={onPlus} />
+      <StepButton icon="plus" label={plusLabel} disabled={!canPlus} onPress={onPlus} />
     </View>
   );
 }
