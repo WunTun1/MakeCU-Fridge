@@ -257,14 +257,17 @@ class RecipeEngine:
         return {**card(m), "ingredients": lines, "steps": steps, "description": recipe.description}
 
     # ------------------------------------------------------- "I made this"
-    def cooked(self, recipe_id: int, servings_eaten: float = 1.0) -> dict | None:
-        """Subtract what the recipe used from the fridge/pantry, log the meal you ate,
-        and teach the taste profile."""
+    def planned_use(self, recipe_id: int, servings: float = 1.0) -> list[dict] | None:
+        """What logging `servings` of this recipe would take from the fridge and pantry,
+        without changing anything. Amounts scale with servings over the recipe's yield.
+        Each entry: item row, product display name, grams to take."""
         recipe = self.store.get(recipe_id)
         if recipe is None:
             return None
+        scale = servings / recipe.servings if recipe.servings else 1.0
         pantry = self.pantry()
-        used: list[dict] = []
+        taken: dict[int, float] = {}
+        plan: list[dict] = []
         for ing in recipe.ingredients:
             canon = ing.get("canon") or canonical(ing["name"])
             if not canon or is_staple(canon):
@@ -275,25 +278,70 @@ class RecipeEngine:
                 have = next((c for c, d in pantry.items.items() if swap and d == swap.use), None)
             if have is None:
                 continue
-            remaining = quantity_to_grams(ing.get("quantity"), ing.get("unit"))
+            remaining = quantity_to_grams(ing.get("quantity"), ing.get("unit")) * scale
             for item in pantry.item_rows.get(have, []):
-                take = min(item["grams"], remaining)
+                left = item["grams"] - taken.get(item["id"], 0.0)
+                take = min(left, remaining)
                 if take > 0:
-                    inv_events.apply_consume(self.db, item["id"], take)
-                    used.append({"item": pantry.items[have], "grams": round(take)})
+                    taken[item["id"]] = taken.get(item["id"], 0.0) + take
+                    plan.append({"item": item, "name": pantry.items[have], "grams": take})
                     remaining -= take
                 if remaining <= 0:
                     break
+        return plan
 
+    def preview_cooked(self, recipe_id: int, servings: float = 1.0) -> list[dict] | None:
+        """Per product: grams used and grams on hand, for the confirm sheet."""
+        plan = self.planned_use(recipe_id, servings)
+        if plan is None:
+            return None
+        on_hand: dict[int, float] = {}
+        for item in self.db.active_items():
+            on_hand[item["product_id"]] = on_hand.get(item["product_id"], 0.0) + item["grams"]
+        lines: dict[int, dict] = {}
+        for p in plan:
+            pid = p["item"]["product_id"]
+            if pid not in lines:
+                product = self.db.get_product(pid)
+                lines[pid] = {
+                    "product_id": pid, "item": p["name"], "grams_used": 0.0, "grams_on_hand": on_hand.get(pid, 0.0),
+                    "unit": product["unit"], "grams_per_unit": product["grams_per_unit"],
+                }
+            lines[pid]["grams_used"] += p["grams"]
+        return [{**line, "grams_used": round(line["grams_used"], 1)} for line in lines.values()]
+
+    def cooked(self, recipe_id: int, servings_eaten: float = 1.0) -> dict | None:
+        """Subtract what the recipe used from the fridge/pantry, log the meal you ate,
+        and teach the taste profile. Every consumption is tagged with the meal id
+        so the whole thing can be undone (undo_meal)."""
+        recipe = self.store.get(recipe_id)
+        if recipe is None:
+            return None
+        preview = self.preview_cooked(recipe_id, servings_eaten)
+        plan = self.planned_use(recipe_id, servings_eaten)
         n = recipe.nutrition
-        self.db.log_meal(
+        meal_id = self.db.log_meal(
             recipe.name, servings_eaten,
             *(n.get(k) * servings_eaten if n.get(k) is not None else None
               for k in ("calories", "protein_g", "carbs_g", "fat_g")),
             source="recipe",
         )
+        for p in plan:
+            inv_events.apply_consume(self.db, p["item"]["id"], p["grams"], meta={"meal_id": meal_id})
         taste.record_recipe(self.db, "cooked", recipe)
-        return {"recipe": recipe.name, "used": used, "servings_eaten": servings_eaten}
+        return {
+            "recipe": recipe.name, "meal_id": meal_id, "servings_eaten": servings_eaten,
+            "used": [{"item": line["item"], "grams": round(line["grams_used"])} for line in preview],
+            "consumptions": preview,
+        }
+
+    def undo_meal(self, meal_id: int) -> bool:
+        """Take back an "I made this": the grams go back and the meal is deleted."""
+        if self.db.get_meal(meal_id) is None:
+            return False
+        inv_events.undo_events(self.db, [e["id"] for e in self.db.events_for_meal(meal_id)])
+        self.db.delete_meal(meal_id)
+        return True
 
     def rate(self, recipe_id: int, liked: bool) -> bool:
         recipe = self.store.get(recipe_id)

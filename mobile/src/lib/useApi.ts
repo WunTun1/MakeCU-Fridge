@@ -1,6 +1,13 @@
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+const reloaders = new Set<() => void>();
+
+/** Reload every screen's data now, e.g. after an Undo changed the inventory. */
+export function refreshAll() {
+  reloaders.forEach((reload) => reload());
+}
+
 /** Loads data when the screen gains focus, and optionally re-polls while focused. */
 export function useApi<T>(fetcher: () => Promise<T>, pollMs?: number) {
   const [data, setData] = useState<T | null>(null);
@@ -21,6 +28,13 @@ export function useApi<T>(fetcher: () => Promise<T>, pollMs?: number) {
       setLoading(false);
     }
   }, []);
+
+  useEffect(() => {
+    reloaders.add(reload);
+    return () => {
+      reloaders.delete(reload);
+    };
+  }, [reload]);
 
   useFocusEffect(
     useCallback(() => {

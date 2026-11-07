@@ -36,21 +36,23 @@ def apply_remove(db: Database, item_id: int) -> None:
     db.mark_item_removed(item_id)
 
 
-def apply_consume(db: Database, item_id: int, grams: float) -> None:
-    """Some of an item was used up but it's still there (poured milk, took 2 eggs)."""
+def apply_consume(db: Database, item_id: int, grams: float, meta: dict | None = None) -> int | None:
+    """Some of an item was used up but it's still there (poured milk, took 2 eggs).
+    Returns the event id, so the change can be undone."""
     item = db.get_item(item_id)
     if item is None or item["status"] != "active":
-        return
+        return None
     grams = min(grams, item["grams"])
     remaining = item["grams"] - grams
-    db.log_event(
+    event_id = db.log_event(
         "consume", product_id=item["product_id"], item_id=item_id,
-        grams_delta=-grams, shelf=item["shelf"],
+        grams_delta=-grams, shelf=item["shelf"], meta=meta,
     )
     if remaining <= 0:
         db.mark_item_removed(item_id)
     else:
         db.update_item_grams(item_id, remaining)
+    return event_id
 
 
 def apply_move(
@@ -70,15 +72,15 @@ def apply_return(db: Database, item_id: int, grams: float) -> None:
     db.log_event("return", product_id=item["product_id"], item_id=item_id, grams_delta=grams, shelf=item["shelf"])
 
 
-def apply_waste(db: Database, item_id: int, grams: float | None = None) -> None:
+def apply_waste(db: Database, item_id: int, grams: float | None = None) -> int | None:
     """Spoiled / thrown out food — logged separately so it isn't counted as eaten."""
     item = db.get_item(item_id)
     if item is None or item["status"] != "active":
-        return
+        return None
     wasted = grams if grams is not None else item["grams"]
     wasted = min(wasted, item["grams"])
     remaining = item["grams"] - wasted
-    db.log_event(
+    event_id = db.log_event(
         "waste", product_id=item["product_id"], item_id=item_id,
         grams_delta=-wasted, shelf=item["shelf"],
     )
@@ -86,6 +88,34 @@ def apply_waste(db: Database, item_id: int, grams: float | None = None) -> None:
         db.mark_item_removed(item_id)
     else:
         db.update_item_grams(item_id, remaining)
+    return event_id
+
+
+UNDOABLE = {"consume", "waste"}
+
+
+def undo_events(db: Database, event_ids: list[int]) -> None:
+    """Put back what consume/waste events took, as if they never happened:
+    the grams return (reactivating emptied items) and the events are deleted,
+    so usage rates don't change either."""
+    for event_id in event_ids:
+        event = db.get_event(event_id)
+        if event is None or event["event_type"] not in UNDOABLE or event["item_id"] is None:
+            continue
+        item = db.get_item(event["item_id"])
+        if item is not None:
+            db.reactivate_item(item["id"], item["grams"] - event["grams_delta"])
+        db.delete_event(event_id)
+
+
+def undo_add(db: Database, item_id: int) -> bool:
+    """Take back an item that was just added. Refuses once anything else has
+    happened to it, so history is never silently rewritten."""
+    events = db.events_for_item(item_id)
+    if [e["event_type"] for e in events] != ["add"]:
+        return False
+    db.delete_item(item_id)
+    return True
 
 
 def apply_needs_review(

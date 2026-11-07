@@ -1,15 +1,39 @@
-import { useCallback, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { api, type RecipeCard } from '@/lib/api';
 
 export type ChatMessage = { id: number; role: 'user' | 'assistant'; text: string; recipes?: RecipeCard[] };
 
-/** Conversation state shared by the phone's Chat tab and the fridge screen. */
+const STORAGE_KEY = 'refridge.chat.v1';
+const KEEP_MESSAGES = 50;
+
+/** The phone's chat, kept across tab switches and reloads (last 50 messages, recipe cards included). */
 export function useChat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
+  const restored = useRef(false);
   const nextId = useRef(1);
   const busy = useRef(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(STORAGE_KEY)
+      .then((raw) => {
+        const saved: ChatMessage[] = raw ? JSON.parse(raw) : [];
+        nextId.current = Math.max(0, ...saved.map((m) => m.id)) + 1;
+        // Anything sent before the restore finished goes after the saved history.
+        setMessages((current) => [...saved, ...current.map((m) => ({ ...m, id: nextId.current++ }))]);
+      })
+      .catch(() => {})
+      .finally(() => {
+        restored.current = true;
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!restored.current) return;
+    AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(messages.slice(-KEEP_MESSAGES))).catch(() => {});
+  }, [messages]);
 
   const send = useCallback(async (text: string) => {
     const message = text.trim();
@@ -29,7 +53,11 @@ export function useChat() {
     }
   }, []);
 
-  const reset = useCallback(() => setMessages([]), []);
+  /** Starts over on the screen and in the assistant's memory, so the next reply doesn't lean on the old chat. */
+  const reset = useCallback(async () => {
+    setMessages([]);
+    await Promise.all([AsyncStorage.removeItem(STORAGE_KEY), api.clearChat()]).catch(() => {});
+  }, []);
 
   return { messages, sending, send, reset };
 }

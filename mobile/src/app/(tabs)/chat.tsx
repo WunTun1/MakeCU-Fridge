@@ -1,8 +1,9 @@
-import { router } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -23,7 +24,7 @@ const SUGGESTIONS = [
 ];
 
 export default function Chat() {
-  const { messages, sending, send } = useChat();
+  const { messages, sending, send, reset } = useChat();
   const [input, setInput] = useState('');
   const scrollRef = useRef<ScrollViewInstance>(null);
 
@@ -38,6 +39,16 @@ export default function Chat() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={90}
     >
+      <Stack.Screen
+        options={{
+          headerRight: () =>
+            messages.length > 0 ? (
+              <Pressable onPress={reset} style={styles.newChat} accessibilityRole="button">
+                <Text style={styles.newChatLabel}>New chat</Text>
+              </Pressable>
+            ) : null,
+        }}
+      />
       <ScrollView
         ref={scrollRef}
         contentContainerStyle={[ui.content, { flexGrow: 1 }]}
@@ -75,7 +86,7 @@ export default function Chat() {
             )}
           </View>
         ))}
-        {sending && <Text style={ui.muted}>…finding recipes</Text>}
+        {sending && <Text style={ui.muted}>Finding recipes…</Text>}
       </ScrollView>
 
       <View style={[ui.row, { padding: 12, borderTopColor: colors.border, borderTopWidth: 1 }]}>
@@ -97,6 +108,8 @@ export default function Chat() {
 }
 
 const styles = StyleSheet.create({
+  newChat: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 16 },
+  newChatLabel: { color: colors.accent, fontSize: 15, fontWeight: '600' },
   bubble: { padding: 12, borderRadius: 14, maxWidth: '85%' },
   user: { alignSelf: 'flex-end', backgroundColor: colors.accent },
   assistant: { alignSelf: 'flex-start', backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 },

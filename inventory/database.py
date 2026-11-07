@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from inventory.units import default_grams_per_unit, guess_unit
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,7 +32,9 @@ CREATE TABLE IF NOT EXISTS products (
     sugar_g_per_100g REAL,
     sodium_mg_per_100g REAL,
     nutrition_source TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    unit TEXT NOT NULL DEFAULT 'g',             -- g | count | ml: how amounts are entered and shown
+    grams_per_unit REAL NOT NULL DEFAULT 1      -- grams in one egg / one ml; 1 for g
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -108,6 +112,24 @@ CREATE TABLE IF NOT EXISTS fridge_conditions (
     light_raw REAL
 );
 
+CREATE TABLE IF NOT EXISTS grocery_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    norm TEXT NOT NULL,          -- normalized name, for de-duplication
+    source TEXT NOT NULL,        -- plan | manual | recipe
+    recipe_id INTEGER,
+    recipe_name TEXT,
+    trip_date TEXT,              -- plan entries only: the trip they were planned for
+    checked INTEGER NOT NULL DEFAULT 0,
+    hidden INTEGER NOT NULL DEFAULT 0,   -- plan entries cleared from the list for that trip
+    added_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_items_product ON items(product_id);
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status);
 CREATE INDEX IF NOT EXISTS idx_events_product ON events(product_id);
@@ -146,6 +168,16 @@ class Database:
             self._conn.execute(
                 "ALTER TABLE items ADD COLUMN expiration_estimated INTEGER NOT NULL DEFAULT 0"
             )
+        product_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(products)")}
+        if "unit" not in product_columns:
+            self._conn.execute("ALTER TABLE products ADD COLUMN unit TEXT NOT NULL DEFAULT 'g'")
+            self._conn.execute("ALTER TABLE products ADD COLUMN grams_per_unit REAL NOT NULL DEFAULT 1")
+            for row in self._conn.execute("SELECT id, name FROM products").fetchall():
+                unit = guess_unit(row["name"])
+                self._conn.execute(
+                    "UPDATE products SET unit = ?, grams_per_unit = ? WHERE id = ?",
+                    (unit, default_grams_per_unit(row["name"], unit), row["id"]),
+                )
 
     def _ensure_profile_row(self) -> None:
         cur = self._conn.execute("SELECT id FROM profile WHERE id = 1")
@@ -199,21 +231,24 @@ class Database:
         barcode: str | None = None,
         nutrition_per_100g: dict[str, float] | None = None,
         nutrition_source: str | None = None,
+        unit: str | None = None,
     ) -> int:
+        """`unit` defaults to a guess from the name (eggs are counted, milk is poured)."""
         n = nutrition_per_100g or {}
+        unit = unit or guess_unit(name)
         with self.cursor() as cur:
             cur.execute(
                 """INSERT INTO products
                    (name, category, usual_package_size_g, is_staple, barcode,
                     calories_per_100g, protein_g_per_100g, carbs_g_per_100g, fat_g_per_100g,
                     fiber_g_per_100g, sugar_g_per_100g, sodium_mg_per_100g,
-                    nutrition_source, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    nutrition_source, created_at, unit, grams_per_unit)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     name, category, usual_package_size_g, int(is_staple), barcode,
                     n.get("calories"), n.get("protein_g"), n.get("carbs_g"), n.get("fat_g"),
                     n.get("fiber_g"), n.get("sugar_g"), n.get("sodium_mg"),
-                    nutrition_source, now_iso(),
+                    nutrition_source, now_iso(), unit, default_grams_per_unit(name, unit),
                 ),
             )
             return cur.lastrowid
@@ -227,13 +262,14 @@ class Database:
         barcode: str | None = None,
         nutrition_per_100g: dict[str, float] | None = None,
         nutrition_source: str | None = None,
+        unit: str | None = None,
     ) -> int:
         existing = self.find_product_by_name(name)
         if existing:
             return existing["id"]
         return self.create_product(
             name, category, usual_package_size_g, is_staple, barcode,
-            nutrition_per_100g, nutrition_source,
+            nutrition_per_100g, nutrition_source, unit,
         )
 
     # ------------------------------------------------------------------- items
@@ -284,6 +320,25 @@ class Database:
                 "UPDATE items SET grams = ?, last_seen = ? WHERE id = ?",
                 (max(grams, 0.0), now_iso(), item_id),
             )
+
+    def update_item(self, item_id: int, grams: float | None = None, expiration_date: str | None = None) -> None:
+        """A person's correction. A date they give is treated as printed, not estimated."""
+        with self.cursor() as cur:
+            if grams is not None:
+                cur.execute(
+                    "UPDATE items SET grams = ?, last_seen = ? WHERE id = ?", (max(grams, 0.0), now_iso(), item_id)
+                )
+            if expiration_date is not None:
+                cur.execute(
+                    "UPDATE items SET expiration_date = ?, expiration_estimated = 0 WHERE id = ?",
+                    (expiration_date, item_id),
+                )
+
+    def delete_item(self, item_id: int) -> None:
+        """Forget an item entirely, with its history. Only for undoing an add."""
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE item_id = ?", (item_id,))
+            cur.execute("DELETE FROM items WHERE id = ?", (item_id,))
 
     def update_item_location(
         self, item_id: int, shelf: int | None = None, position: tuple[float, float] | None = None
@@ -364,6 +419,20 @@ class Database:
             )
             return cur.fetchall()
 
+    def events_for_item(self, item_id: int) -> list[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM events WHERE item_id = ? ORDER BY id", (item_id,))
+            return cur.fetchall()
+
+    def events_for_meal(self, meal_id: int) -> list[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM events WHERE json_extract(meta, '$.meal_id') = ? ORDER BY id", (meal_id,))
+            return cur.fetchall()
+
+    def delete_event(self, event_id: int) -> None:
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM events WHERE id = ?", (event_id,))
+
     def get_event(self, event_id: int) -> Optional[sqlite3.Row]:
         with self.cursor() as cur:
             cur.execute("SELECT * FROM events WHERE id = ?", (event_id,))
@@ -402,6 +471,15 @@ class Database:
             )
             return cur.lastrowid
 
+    def get_meal(self, meal_id: int) -> Optional[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM meals WHERE id = ?", (meal_id,))
+            return cur.fetchone()
+
+    def delete_meal(self, meal_id: int) -> None:
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
+
     def meals_since(self, since: str) -> list[sqlite3.Row]:
         with self.cursor() as cur:
             cur.execute("SELECT * FROM meals WHERE occurred_at >= ? ORDER BY occurred_at ASC", (since,))
@@ -438,6 +516,10 @@ class Database:
                 "SELECT * FROM chat_memory ORDER BY id DESC LIMIT ?", (limit,)
             )
             return list(reversed(cur.fetchall()))
+
+    def clear_chat(self) -> None:
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM chat_memory")
 
     # ------------------------------------------------------------ taste_events
     def log_taste(self, signal: str, features: list[tuple[str, float]], occurred_at: str | None = None) -> None:
@@ -482,6 +564,58 @@ class Database:
                 "SELECT * FROM fridge_conditions WHERE occurred_at >= ? ORDER BY occurred_at ASC", (since,)
             )
             return cur.fetchall()
+
+    # ----------------------------------------------------------------- settings
+    def get_setting(self, key: str) -> str | None:
+        with self.cursor() as cur:
+            cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str | None) -> None:
+        with self.cursor() as cur:
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+
+    # ---------------------------------------------------------- grocery_entries
+    def grocery_entries(self) -> list[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM grocery_entries ORDER BY id")
+            return cur.fetchall()
+
+    def get_grocery_entry(self, entry_id: int) -> Optional[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM grocery_entries WHERE id = ?", (entry_id,))
+            return cur.fetchone()
+
+    def add_grocery_entry(
+        self, name: str, norm: str, source: str, recipe_id: int | None = None,
+        recipe_name: str | None = None, trip_date: str | None = None,
+    ) -> int:
+        with self.cursor() as cur:
+            cur.execute(
+                """INSERT INTO grocery_entries (name, norm, source, recipe_id, recipe_name, trip_date, added_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (name, norm, source, recipe_id, recipe_name, trip_date, now_iso()),
+            )
+            return cur.lastrowid
+
+    def set_grocery_checked(self, entry_id: int, checked: bool) -> None:
+        with self.cursor() as cur:
+            cur.execute("UPDATE grocery_entries SET checked = ? WHERE id = ?", (int(checked), entry_id))
+
+    def delete_grocery_entry(self, entry_id: int) -> None:
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM grocery_entries WHERE id = ?", (entry_id,))
+
+    def clear_checked_grocery(self) -> None:
+        """Bought: your own entries go away; plan entries stay hidden for that trip
+        so the plan doesn't put them straight back."""
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM grocery_entries WHERE checked = 1 AND source != 'plan'")
+            cur.execute("UPDATE grocery_entries SET hidden = 1 WHERE checked = 1 AND source = 'plan'")
 
 
 _db: Database | None = None

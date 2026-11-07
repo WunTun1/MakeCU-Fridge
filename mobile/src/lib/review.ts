@@ -1,5 +1,5 @@
 import type { ReviewItem } from '@/lib/api';
-import { formatGrams } from '@/lib/theme';
+import { formatAmount } from '@/lib/amount';
 
 export type ReviewMeta = {
   note?: string;
@@ -25,11 +25,11 @@ export function candidateName(r: ReviewItem): string | null {
 
 export function describeReview(r: ReviewItem): string {
   const meta = metaOf(r);
-  if (isUnnamedAdd(r)) return `New item, ${formatGrams(meta.grams!)} — what is it?`;
+  if (isUnnamedAdd(r)) return `New item, ${formatAmount(meta.grams!)} — what is it?`;
   const grams = meta.grams ?? meta.total_grams;
   const parts = [
     meta.note ?? meta.reason,
-    grams != null && formatGrams(grams),
+    grams != null && formatAmount(grams),
     r.shelf != null && `shelf ${r.shelf}`,
   ].filter(Boolean);
   return parts.length ? parts.join(' · ') : 'Uncertain fridge change';

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { ScrollView, Text, TextInput, View } from 'react-native';
 
 import { Button } from '@/components/Button';
+import { useSnackbar } from '@/components/Snackbar';
 import { ErrorCard, Loading } from '@/components/States';
 import { api, type Profile } from '@/lib/api';
 import { colors, ui } from '@/lib/theme';
@@ -39,7 +40,7 @@ export default function ProfileScreen() {
 
 function ProfileForm({ initial }: { initial: Profile }) {
   const [form, setForm] = useState<Form>(() => toForm(initial));
-  const [status, setStatus] = useState<string | null>(null);
+  const showSnack = useSnackbar();
 
   const set = (key: keyof Form) => (v: string) => setForm((f) => ({ ...f, [key]: v }));
 
@@ -54,9 +55,9 @@ function ProfileForm({ initial }: { initial: Profile }) {
         allergies: toList(form.allergies),
         dislikes: toList(form.dislikes),
       });
-      setStatus('Saved.');
+      showSnack({ message: 'Saved' });
     } catch (e) {
-      setStatus(`Save failed: ${(e as Error).message}`);
+      showSnack({ message: `Couldn't save: ${(e as Error).message}` });
     }
   }
 
@@ -97,7 +98,6 @@ function ProfileForm({ initial }: { initial: Profile }) {
         Allergies are enforced in code — the assistant can never suggest a recipe containing them.
       </Text>
       <Button title="Save" onPress={save} />
-      {status && <Text style={ui.muted}>{status}</Text>}
 
       <LearnedTastes />
     </ScrollView>

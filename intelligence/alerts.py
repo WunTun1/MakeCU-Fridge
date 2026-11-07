@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from inventory.database import Database
 from intelligence.consumption import days_left
-from intelligence.expiry import describe_expiry
+from intelligence.expiry import days_until, describe_expiry
 
 DAYS_LEFT_THRESHOLD = 3
 LOW_PACKAGE_FRACTION = 0.20
@@ -15,12 +15,17 @@ FRIDGE_TEMP_ALERT_C = 7.0          # above this, food safety is at risk
 CONDITION_STALE_MINUTES = 30       # a reading older than this isn't trusted
 
 
+# Most urgent first; each product keeps only its most urgent alert.
+URGENCY = ["fridge_temp_high", "expiring_soon", "staple_out", "low_days_left", "low_fraction"]
+
+
 @dataclass
 class Alert:
     product_id: int | None
     product_name: str
     reason: str   # low_days_left|low_fraction|staple_out|expiring_soon|fridge_temp_high
     detail: str
+    days: float | None = None   # days until it goes bad (expiring_soon) or runs out (low_days_left)
 
 
 def _expiring_soon_items(db: Database):
@@ -48,7 +53,7 @@ def low_stock_alerts(db: Database) -> list[Alert]:
         dl = days_left(db, product_id)
         if dl is not None and dl <= DAYS_LEFT_THRESHOLD:
             alerts.append(Alert(product_id, product["name"], "low_days_left",
-                                 f"runs out in ~{dl:.1f} days"))
+                                 f"runs out in about {max(round(dl), 1)} days" if dl >= 1 else "runs out today", dl))
             seen_products.add(product_id)
         if product["usual_package_size_g"] and on_hand < product["usual_package_size_g"] * LOW_PACKAGE_FRACTION:
             if product_id not in seen_products:
@@ -70,13 +75,27 @@ def low_stock_alerts(db: Database) -> list[Alert]:
         if product is None:
             continue
         alerts.append(Alert(product["id"], product["name"], "expiring_soon",
-                             describe_expiry(item["expiration_date"], bool(item["expiration_estimated"]))))
+                             describe_expiry(item["expiration_date"], bool(item["expiration_estimated"])),
+                             days_until(item["expiration_date"])))
 
     temp_alert = _fridge_temp_alert(db)
     if temp_alert:
         alerts.append(temp_alert)
 
-    return alerts
+    return _most_urgent_per_product(alerts)
+
+
+def _most_urgent_per_product(alerts: list[Alert]) -> list[Alert]:
+    ranked = sorted(alerts, key=lambda a: (URGENCY.index(a.reason), a.days if a.days is not None else 0))
+    kept: list[Alert] = []
+    seen: set[int] = set()
+    for alert in ranked:
+        if alert.product_id is not None:
+            if alert.product_id in seen:
+                continue
+            seen.add(alert.product_id)
+        kept.append(alert)
+    return kept
 
 
 def _fridge_temp_alert(db: Database) -> Alert | None:

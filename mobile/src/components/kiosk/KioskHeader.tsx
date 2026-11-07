@@ -50,12 +50,9 @@ export function KioskHeader({
           tone={doorOpen ? 'warn' : 'ok'}
           compact={compact}
         />
-        <Chip
-          icon="thermometer-half"
-          label={temp != null ? `${temp.toFixed(1)}°C` : '—'}
-          tone={warm ? 'danger' : 'ok'}
-          compact={compact}
-        />
+        {temp != null && (
+          <Chip icon="thermometer-half" label={`${temp.toFixed(1)}°C`} tone={warm ? 'danger' : 'ok'} compact={compact} />
+        )}
         {conditions?.humidity_pct != null && (
           <Chip icon="tint" label={`${Math.round(conditions.humidity_pct)}%`} tone="ok" compact={compact} />
         )}
@@ -67,11 +64,12 @@ export function KioskHeader({
             styles.chip,
             styles.toggle,
             compact && styles.chipCompact,
-            compact && { width: 40 },
+            compact && { minHeight: 40 },
             pressed && { opacity: 0.6 },
           ]}
         >
-          <FontAwesome name={mode === 'dark' ? 'sun-o' : 'moon-o'} size={compact ? 17 : 20} color={colors.text} />
+          <FontAwesome name={mode === 'dark' ? 'sun-o' : 'moon-o'} size={compact ? 15 : 18} color={colors.text} />
+          <Text style={[styles.chipText, compact && { fontSize: 14 }]}>{mode === 'dark' ? 'Light' : 'Dark'}</Text>
         </Pressable>
       </View>
     </View>
@@ -139,6 +137,6 @@ const makeStyles = (colors: Palette) =>
       backgroundColor: colors.card,
     },
     chipCompact: { paddingHorizontal: 10, paddingVertical: 7, gap: 6 },
-    toggle: { width: 48, justifyContent: 'center', paddingHorizontal: 0 },
+    toggle: { minHeight: 48, borderColor: colors.muted },
     chipText: { color: colors.text, fontSize: 16, fontWeight: '600' },
   });

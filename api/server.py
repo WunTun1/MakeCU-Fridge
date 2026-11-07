@@ -10,20 +10,24 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+from datetime import date
 from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from inventory import events as inv_events
 from inventory.database import get_db
-from intelligence import taste
+from inventory.units import default_grams_per_unit, to_grams
+from intelligence import grocery_list, taste
 from intelligence.alerts import low_stock_alerts
-from intelligence.consumption import daily_usage, days_left, grams_on_hand
+from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
 from intelligence.expiry import days_until, resolve_expiration
-from intelligence.grocery import grocery_plan, next_trip_date, unlock_suggestions
+from intelligence.grocery import next_trip_date, unlock_suggestions
 from intelligence.search import search as fuzzy_search
 from nutrition.chatbot import NutritionistChatbot
 from nutrition.intake import get_intake
@@ -34,6 +38,7 @@ from vision.debug import view as vision_view
 
 log = logging.getLogger("refridge.api")
 MAX_CHAT_CHARS = 1000
+UNLOCK_CACHE_SECONDS = 60
 
 app = FastAPI(title="ReFridge API")
 app.add_middleware(
@@ -73,14 +78,25 @@ class EventIn(BaseModel):
     category: str | None = None
 
 
+Unit = Literal["g", "count", "ml"]
+
+
 class ItemIn(BaseModel):
+    """An amount as grams, or as quantity + unit (12, "count")."""
     name: str
-    grams: float
+    grams: float | None = Field(None, gt=0)
+    quantity: float | None = Field(None, gt=0)
+    unit: Unit | None = None
     location: str = "pantry"
     category: str | None = None
     usual_package_size_g: float | None = None
     is_staple: bool = False
     expiration_date: str | None = None
+
+
+class ItemPatchIn(BaseModel):
+    grams: float | None = Field(None, ge=0)
+    expiration_date: date | None = None
 
 
 class ConsumeIn(BaseModel):
@@ -90,6 +106,29 @@ class ConsumeIn(BaseModel):
 
 class ItemIdIn(BaseModel):
     item_id: int
+
+
+class ItemIdsIn(BaseModel):
+    item_ids: list[int]
+
+
+class EventIdsIn(BaseModel):
+    event_ids: list[int]
+
+
+class GroceryAddIn(BaseModel):
+    names: list[str] = Field(min_length=1)
+    source: Literal["manual", "recipe"] = "manual"
+    recipe_id: int | None = None
+    recipe_name: str | None = None
+
+
+class GroceryCheckIn(BaseModel):
+    checked: bool
+
+
+class HorizonIn(BaseModel):
+    trip_in_days: Literal[1, 3, 7] | None = None
 
 
 class BarcodeIn(BaseModel):
@@ -202,6 +241,7 @@ def get_summary():
         entry = by_product.setdefault(product["id"], {
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
+            "unit": product["unit"], "grams_per_unit": product["grams_per_unit"],
             "expires_in_days": None, "expiry_estimated": False,
             "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0,
         })
@@ -253,24 +293,81 @@ def get_product_usage(product_id: int, days: int = 28):
     product = db.get_product(product_id)
     if product is None:
         raise HTTPException(404, "product not found")
+    items = [i for i in db.active_items() if i["product_id"] == product_id]
+    dated = sorted((i for i in items if i["expiration_date"]), key=lambda i: i["expiration_date"])
     return {
         "product_id": product_id,
         "name": product["name"],
+        "unit": product["unit"],
+        "grams_per_unit": product["grams_per_unit"],
         "daily_usage_g": daily_usage(db, product_id, days=days),
         "on_hand_g": grams_on_hand(db, product_id),
         "days_left": days_left(db, product_id),
+        "rate_g_per_day": usage_rate_g_per_day(db, product_id),
+        "expiration_date": dated[0]["expiration_date"] if dated else None,
+        "expiry_estimated": bool(dated[0]["expiration_estimated"]) if dated else False,
+        "items": [
+            {"id": i["id"], "grams": i["grams"], "location": i["location"],
+             "expiration_date": i["expiration_date"], "expiry_estimated": bool(i["expiration_estimated"])}
+            for i in items
+        ],
     }
 
 
+# ------------------------------------------------------------------- grocery
 @app.get("/api/grocery")
-def get_grocery(trip_in_days: int | None = None):
-    plan = grocery_plan(db, trip_in_days)
-    trip = next_trip_date(db)
-    return {
-        "trip_date": trip.isoformat() if trip else None,
-        "items": [i.__dict__ for i in plan],
-        "unlock": [u.__dict__ for u in unlock_suggestions(db, chatbot.engine)],
-    }
+def get_grocery():
+    return grocery_list.build_list(db)
+
+
+@app.put("/api/grocery/horizon")
+def put_grocery_horizon(body: HorizonIn):
+    grocery_list.set_horizon(db, body.trip_in_days)
+    return grocery_list.build_list(db)
+
+
+@app.post("/api/grocery/items")
+def add_grocery_items(body: GroceryAddIn):
+    ids = grocery_list.add_entries(db, body.names, body.source, body.recipe_id, body.recipe_name)
+    return {"ids": ids}
+
+
+@app.patch("/api/grocery/items/{entry_id}")
+def check_grocery_item(entry_id: int, body: GroceryCheckIn):
+    if db.get_grocery_entry(entry_id) is None:
+        raise HTTPException(404, "not on the list")
+    db.set_grocery_checked(entry_id, body.checked)
+    return {"ok": True}
+
+
+@app.delete("/api/grocery/items/{entry_id}")
+def delete_grocery_item(entry_id: int):
+    db.delete_grocery_entry(entry_id)
+    return {"ok": True}
+
+
+@app.post("/api/grocery/clear-checked")
+def clear_checked_grocery():
+    db.clear_checked_grocery()
+    return {"ok": True}
+
+
+_unlock_cache: dict = {"key": None, "at": 0.0, "value": []}
+
+
+@app.get("/api/grocery/unlock")
+def get_grocery_unlock():
+    """Slow (searches the recipe library), so it's cached until the fridge or
+    allergies change, or for a minute."""
+    key = (
+        tuple((i["id"], round(i["grams"])) for i in db.active_items()),
+        db.get_profile()["allergies"],
+    )
+    cache = _unlock_cache
+    if cache["key"] != key or time.monotonic() - cache["at"] > UNLOCK_CACHE_SECONDS:
+        cache.update(key=key, at=time.monotonic(),
+                     value=[u.__dict__ for u in unlock_suggestions(db, chatbot.engine)])
+    return cache["value"]
 
 
 # -------------------------------------------------------------------- review
@@ -330,21 +427,60 @@ def resolve_review(review_id: int, resolution: ReviewResolutionIn):
 # ---------------------------------------------------------- manual / pantry
 @app.post("/api/items")
 def create_item(item: ItemIn):
+    if item.grams is None and item.quantity is None:
+        raise HTTPException(422, "give grams, or quantity and unit")
     product_id = db.get_or_create_product(
         item.name, category=item.category, usual_package_size_g=item.usual_package_size_g,
-        is_staple=item.is_staple,
+        is_staple=item.is_staple, unit=item.unit,
     )
+    product = db.get_product(product_id)
+    if item.quantity is not None:
+        unit = item.unit or product["unit"]
+        per = product["grams_per_unit"] if unit == product["unit"] else default_grams_per_unit(item.name, unit)
+        grams = to_grams(item.quantity, unit, per)
+    else:
+        grams = item.grams
     expires, estimated = _expiry_for(item.location, printed_date=item.expiration_date, name=item.name, category=item.category)
     item_id = inv_events.apply_add(
-        db, product_id, item.grams, location=item.location,
+        db, product_id, grams, location=item.location,
         expiration_date=expires, expiration_estimated=estimated,
     )
-    return {"item_id": item_id, "product_id": product_id}
+    return {"item_id": item_id, "product_id": product_id, "grams": grams,
+            "unit": product["unit"], "grams_per_unit": product["grams_per_unit"]}
+
+
+@app.post("/api/items/{item_id}/undo-add")
+def undo_add_item(item_id: int):
+    if not inv_events.undo_add(db, item_id):
+        raise HTTPException(409, "this item has changed since it was added")
+    return {"ok": True}
+
+
+@app.patch("/api/items/{item_id}")
+def patch_item(item_id: int, body: ItemPatchIn):
+    item = db.get_item(item_id)
+    if item is None or item["status"] != "active":
+        raise HTTPException(404, "item not found")
+    expires = body.expiration_date.isoformat() if body.expiration_date else None
+    db.update_item(item_id, grams=body.grams, expiration_date=expires)
+    return {"ok": True}
 
 
 @app.post("/api/items/consume")
 def consume_item(body: ConsumeIn):
-    inv_events.apply_consume(db, body.item_id, body.grams)
+    return {"ok": True, "event_id": inv_events.apply_consume(db, body.item_id, body.grams)}
+
+
+@app.post("/api/items/waste")
+def waste_items(body: ItemIdsIn):
+    """Thrown out: logged as waste, so it never counts toward how fast you use it."""
+    ids = [inv_events.apply_waste(db, item_id) for item_id in body.item_ids]
+    return {"event_ids": [i for i in ids if i is not None]}
+
+
+@app.post("/api/events/undo")
+def undo_events(body: EventIdsIn):
+    inv_events.undo_events(db, body.event_ids)
     return {"ok": True}
 
 
@@ -402,6 +538,12 @@ def post_chat(body: ChatIn):
     return chatbot.chat(message[:MAX_CHAT_CHARS])
 
 
+@app.delete("/api/chat/history")
+def clear_chat_history():
+    db.clear_chat()
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------- recipes
 @app.get("/api/recipes/suggest")
 def suggest_recipes(q: str | None = None, cuisine: str | None = None, max_minutes: int | None = None,
@@ -415,7 +557,18 @@ def get_recipe(recipe_id: int):
     recipe = chatbot.engine.adapted(recipe_id)
     if recipe is None:
         raise HTTPException(404, "recipe not found")
+    listed = grocery_list.listed_norms(db)
+    recipe["on_grocery_list"] = [n for n in recipe["missing"] if grocery_list.normalize(n) in listed]
     return recipe
+
+
+@app.get("/api/recipes/{recipe_id}/cooked/preview")
+def recipe_cooked_preview(recipe_id: int, servings: float = Query(1.0, gt=0, le=20)):
+    """Dry run of "I made this": what would be taken, before anything changes."""
+    lines = chatbot.engine.preview_cooked(recipe_id, servings)
+    if lines is None:
+        raise HTTPException(404, "recipe not found")
+    return lines
 
 
 @app.post("/api/recipes/{recipe_id}/cooked")
@@ -450,6 +603,13 @@ def post_meal(body: MealIn):
         protein_g=body.protein_g, carbs_g=body.carbs_g, fat_g=body.fat_g, source=body.source,
     )
     return {"meal_id": meal_id}
+
+
+@app.post("/api/meals/{meal_id}/undo")
+def undo_meal(meal_id: int):
+    if not chatbot.engine.undo_meal(meal_id):
+        raise HTTPException(404, "meal not found")
+    return {"ok": True}
 
 
 # ------------------------------------------------------- Raspberry Pi pushes

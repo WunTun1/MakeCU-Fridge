@@ -10,30 +10,31 @@ import { Stack } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 
-import { InventoryTile, type TileFlag } from '@/components/kiosk/InventoryTile';
+import { InventoryTile } from '@/components/kiosk/InventoryTile';
 import { KioskHeader } from '@/components/kiosk/KioskHeader';
 import { KioskModal } from '@/components/kiosk/KioskModal';
 import { ReviewPrompt } from '@/components/kiosk/ReviewPrompt';
 import { ScreenSimulator } from '@/components/kiosk/ScreenSimulator';
 import { UsageChart } from '@/components/UsageChart';
+import { formatAmount } from '@/lib/amount';
 import { api, type InventoryEntry, type ProductUsage } from '@/lib/api';
-import { expiryText } from '@/lib/expiry';
-import { formatGrams, palettes, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
+import { expiryTone, expiryWord } from '@/lib/expiry';
+import { palettes, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
+import { capitalize, relativeDays } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 3000;
 const GAP = 10;
 /** The one shelf with a scale under it (pi_node HX711_PINS); the rest of the fridge isn't weighed. */
 const WEIGHED_SHELF = 0;
-/** Tiles narrower than this get cramped names; fewer, wider tiles show instead. */
-const MIN_TILE_W = 150;
+/** Narrower tiles can't fit "Tomorrow" at glance size; fewer, wider tiles show instead. */
+const MIN_TILE_W = 180;
+/** A short shelf spreads its tiles out, but not into wide empty cards. */
+const MAX_TILE_W = 280;
 /** When a shelf scrolls, this much of the next tile peeks in to show there's more. */
 const PEEK = 0.4;
 /** Below this panel width (the 800x480 screen) everything tightens up. */
 const COMPACT_W = 900;
-/** Goes bad within this many days: red. Within WARN_DAYS: amber. */
-const DANGER_DAYS = 1;
-const WARN_DAYS = 3;
 const THEME_KEY = 'refridge.kiosk.theme';
 
 // The kiosk runs in a browser; localStorage may be missing (native) or blocked.
@@ -72,9 +73,6 @@ export default function Kiosk() {
   );
 }
 
-/** An inventory entry with how urgently it needs attention. */
-type Ranked = { item: InventoryEntry; flag: TileFlag; note?: string };
-
 function KioskScreen({ mode, onToggleTheme }: { mode: ThemeMode; onToggleTheme: () => void }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
@@ -89,7 +87,7 @@ function KioskScreen({ mode, onToggleTheme }: { mode: ThemeMode; onToggleTheme: 
   const s = summary.data;
   const compact = screenW > 0 && screenW < COMPACT_W;
   const openReviews = reviews.data ?? [];
-  const shelves = useMemo(() => groupRows(rankItems(s?.inventory ?? [])), [s?.inventory]);
+  const shelves = useMemo(() => groupRows(bySoonest(s?.inventory ?? [])), [s?.inventory]);
 
   return (
     <View style={styles.screen} onLayout={(e: LayoutChangeEvent) => setScreenW(e.nativeEvent.layout.width)}>
@@ -156,7 +154,7 @@ function Shelf({
   title: string;
   /** Shown when the row has nothing in it. */
   empty: string;
-  items: Ranked[];
+  items: InventoryEntry[];
   compact: boolean;
   onOpen: (item: InventoryEntry) => void;
 }) {
@@ -167,14 +165,17 @@ function Shelf({
   // Fit as many readable tiles as the row allows; if there are more, size them so the next one peeks in.
   const fit = Math.max(2, Math.floor((row.width + GAP) / (MIN_TILE_W + GAP)));
   const overflows = items.length > fit;
-  const tileW = overflows ? (row.width - GAP * fit) / (fit + PEEK) : (row.width - GAP * (fit - 1)) / fit;
+  const shown = Math.max(Math.min(items.length, fit), 1);
+  const tileW = overflows
+    ? (row.width - GAP * fit) / (fit + PEEK)
+    : Math.min((row.width - GAP * (shown - 1)) / shown, MAX_TILE_W);
 
   return (
     <View style={[styles.shelf, compact && { padding: 8, gap: 6 }]}>
       <View style={styles.shelfHeader}>
         <Text style={styles.section}>{title}</Text>
         <Text style={styles.shelfCount}>
-          {items.length} {items.length === 1 ? 'item' : 'items'}
+          {items.length === 0 ? '' : items.length === 1 ? '1 item' : `${items.length} items, soonest to go bad first`}
           {overflows ? '  ·  swipe for more ›' : ''}
         </Text>
       </View>
@@ -192,14 +193,13 @@ function Shelf({
               decelerationRate="fast"
               contentContainerStyle={{ gap: GAP }}
             >
-              {items.map(({ item, flag, note }) => (
+              {items.map((item) => (
                 <InventoryTile
                   key={item.product_id}
                   item={item}
                   width={tileW}
                   height={row.height}
-                  flag={flag}
-                  note={note}
+                  compact={compact}
                   onPress={() => onOpen(item)}
                 />
               ))}
@@ -212,41 +212,32 @@ function Shelf({
 }
 
 /** Soonest to go bad first; things with no known expiry after, by name. */
-function rankItems(inventory: InventoryEntry[]): Ranked[] {
-  return inventory
-    .map((item): Ranked => {
-      const d = item.expires_in_days;
-      if (d == null) return { item, flag: null };
-      const flag: TileFlag = d <= DANGER_DAYS ? 'danger' : d <= WARN_DAYS ? 'warn' : null;
-      return { item, flag, note: expiryText(d, item.expiry_estimated) };
-    })
-    .sort(
-      (a, b) =>
-        (a.item.expires_in_days ?? Infinity) - (b.item.expires_in_days ?? Infinity) ||
-        a.item.name.localeCompare(b.item.name),
-    );
+function bySoonest(inventory: InventoryEntry[]): InventoryEntry[] {
+  return [...inventory].sort(
+    (a, b) => (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity) || a.name.localeCompare(b.name),
+  );
 }
 
-type Row = { key: string; title: string; empty: string; items: Ranked[] };
+type Row = { key: string; title: string; empty: string; items: InventoryEntry[] };
 
 /**
  * Two rows, both always shown: what's on the weighed shelf, and everything
  * else in the fridge. Pantry items aren't in the fridge, so they're left off.
  */
-function groupRows(ranked: Ranked[]): Row[] {
-  const inFridge = ranked.filter((r) => r.item.location === 'fridge');
+function groupRows(ranked: InventoryEntry[]): Row[] {
+  const inFridge = ranked.filter((item) => item.location === 'fridge');
   return [
     {
       key: 'shelf',
       title: 'Shelf',
       empty: 'Empty — put something on the shelf.',
-      items: inFridge.filter((r) => r.item.shelf === WEIGHED_SHELF),
+      items: inFridge.filter((item) => item.shelf === WEIGHED_SHELF),
     },
     {
       key: 'rest',
       title: 'Rest of the fridge',
       empty: 'Nothing else in the fridge.',
-      items: inFridge.filter((r) => r.item.shelf !== WEIGHED_SHELF),
+      items: inFridge.filter((item) => item.shelf !== WEIGHED_SHELF),
     },
   ];
 }
@@ -267,22 +258,33 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
   }, [item.product_id]);
 
   const d = item.expires_in_days;
-  const expiresColor = d == null ? undefined : d <= DANGER_DAYS ? colors.danger : d <= WARN_DAYS ? colors.warn : undefined;
+  const tone = expiryTone(d);
   return (
     <KioskModal visible title={item.name} onClose={onClose}>
       <View style={styles.stats}>
-        <Stat label="In the fridge" value={formatGrams(item.grams)} />
         <Stat
           label={item.expiry_estimated ? 'Goes bad (estimate)' : 'Goes bad'}
-          value={d == null ? '—' : expiryText(d, item.expiry_estimated).replace(/^Expires /, '')}
-          color={expiresColor}
+          value={d == null ? 'No date' : expiryWord(d)}
+          color={d == null ? colors.muted : tone ? colors[tone] : undefined}
         />
-        <Stat label="Runs out" value={item.days_left != null ? `${item.days_left.toFixed(1)} days` : '—'} />
+        <Stat label="Have" value={capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))} />
+        <Stat
+          label="Runs out"
+          value={item.days_left != null ? capitalize(relativeDays(item.days_left, true)) : 'Not enough history'}
+          color={item.days_left == null ? colors.muted : undefined}
+        />
       </View>
       {usage && (
         <>
-          <Text style={styles.muted}>How much you&apos;ve used, last two weeks</Text>
-          <UsageChart dailyUsage={usage.daily_usage_g} days={14} height={110} />
+          <Text style={styles.muted}>Used per day, last 2 weeks</Text>
+          <UsageChart
+            dailyUsage={usage.daily_usage_g}
+            days={14}
+            height={110}
+            unit={usage.unit}
+            gramsPerUnit={usage.grams_per_unit}
+            name={usage.name}
+          />
         </>
       )}
     </KioskModal>

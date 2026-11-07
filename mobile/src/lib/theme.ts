@@ -24,9 +24,9 @@ export const lightColors: Palette = {
   border: '#e5e2d9',
   text: '#141413',
   muted: '#6f6e69',
-  accent: '#c96442',
+  accent: '#ad5233',
   onAccent: '#ffffff',
-  warn: '#b7791f',
+  warn: '#a15c07',
   danger: '#b53333',
   input: '#f0eee6',
 };
@@ -65,7 +65,3 @@ export const ui = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   divider: { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth },
 });
-
-export function formatGrams(g: number): string {
-  return g >= 1000 ? `${(g / 1000).toFixed(1)} kg` : `${Math.round(g)} g`;
-}

@@ -1,7 +1,9 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs } from 'expo-router';
 import type { ComponentProps } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { TAB_BAR_HEIGHT } from '@/components/Snackbar';
 import { colors } from '@/lib/theme';
 
 type IconName = ComponentProps<typeof FontAwesome>['name'];
@@ -12,12 +14,14 @@ function TabIcon({ name, color }: { name: IconName; color: unknown }) {
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
   return (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: colors.accent,
         tabBarInactiveTintColor: colors.muted,
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border },
+        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border, height: TAB_BAR_HEIGHT + insets.bottom },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 4 },
         headerStyle: { backgroundColor: colors.bg },
         headerTintColor: colors.text,
         sceneStyle: { backgroundColor: colors.bg },
@@ -41,7 +45,7 @@ export default function TabLayout() {
       />
       <Tabs.Screen
         name="chat"
-        options={{ title: 'Nutritionist', tabBarLabel: 'Chat', tabBarIcon: ({ color }) => <TabIcon name="comments" color={color} /> }}
+        options={{ title: 'Chat', tabBarIcon: ({ color }) => <TabIcon name="comments" color={color} /> }}
       />
       <Tabs.Screen
         name="profile"

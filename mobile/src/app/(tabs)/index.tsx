@@ -5,14 +5,36 @@ import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'r
 import { FillBar } from '@/components/FillBar';
 import { RecipeCardView } from '@/components/recipes/RecipeCardView';
 import { ErrorCard, Loading } from '@/components/States';
+import { formatAmount } from '@/lib/amount';
 import { api, type Alert, type InventoryEntry, type Macros, type Profile } from '@/lib/api';
-import { expiryColor, expiryText } from '@/lib/expiry';
-import { colors, formatGrams, ui } from '@/lib/theme';
-import { shortDate } from '@/lib/time';
+import { expiryText, expiryTone } from '@/lib/expiry';
+import { colors, ui } from '@/lib/theme';
+import { capitalize, daysUntil, relativeDays, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
 const POLL_MS = 5000;
 const URGENT: Alert['reason'][] = ['staple_out', 'expiring_soon', 'fridge_temp_high'];
+
+/** Soonest to go bad first; things with no date last, by name. */
+function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
+  return (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity) || a.name.localeCompare(b.name);
+}
+
+function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
+  const days = alert.days;
+  switch (alert.reason) {
+    case 'expiring_soon':
+      return days == null ? alert.detail : days < 0 ? 'Expired' : `Goes bad ${whenWord(days)}`;
+    case 'low_days_left':
+      return days == null ? alert.detail : `Runs out ${whenWord(days)}`;
+    case 'low_fraction':
+      return entry ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left` : 'Running low';
+    case 'staple_out':
+      return "You're out";
+    default:
+      return alert.detail;
+  }
+}
 
 export default function Home() {
   const summary = useApi(api.summary, POLL_MS);
@@ -23,6 +45,10 @@ export default function Home() {
   if (summary.loading && !summary.data) return <Loading />;
 
   const s = summary.data;
+  const inventory = s ? [...s.inventory].sort(byExpiry) : [];
+  const entryFor = (productId: number | null) => s?.inventory.find((e) => e.product_id === productId);
+  const tripDays = s?.next_trip_date ? daysUntil(s.next_trip_date) : null;
+
   return (
     <ScrollView
       style={ui.screen}
@@ -34,7 +60,13 @@ export default function Home() {
       <Stack.Screen
         options={{
           headerRight: () => (
-            <Pressable onPress={() => router.push('/add')} hitSlop={12} style={{ paddingHorizontal: 16 }}>
+            <Pressable
+              onPress={() => router.push('/add')}
+              hitSlop={12}
+              style={{ paddingHorizontal: 16 }}
+              accessibilityRole="button"
+              accessibilityLabel="Add an item"
+            >
               <FontAwesome name="plus" size={20} color={colors.accent} />
             </Pressable>
           ),
@@ -63,14 +95,7 @@ export default function Home() {
             </View>
           ) : (
             s.alerts.map((a, i) => (
-              <View
-                key={`${a.product_id}-${a.reason}-${i}`}
-                style={[ui.card, styles.alert, URGENT.includes(a.reason) && { borderLeftColor: colors.danger }]}
-              >
-                <Text style={ui.text}>
-                  <Text style={{ fontWeight: '700' }}>{a.product_name}</Text> — {a.detail}
-                </Text>
-              </View>
+              <AlertRow key={`${a.product_id}-${a.reason}-${i}`} alert={a} text={alertText(a, entryFor(a.product_id))} />
             ))
           )}
 
@@ -96,39 +121,61 @@ export default function Home() {
             </View>
           )}
 
-          {s.conditions && (
+          {s.conditions?.temperature_c != null && (
             <View style={[ui.card, ui.row, { justifyContent: 'space-between' }]}>
               <Text style={ui.muted}>Fridge</Text>
               <Text style={ui.text}>
-                {s.conditions.temperature_c != null ? `${s.conditions.temperature_c.toFixed(1)}°C` : '—'}
+                {`${s.conditions.temperature_c.toFixed(1)}°C`}
                 {s.conditions.humidity_pct != null ? `  ·  ${Math.round(s.conditions.humidity_pct)}% RH` : ''}
               </Text>
             </View>
           )}
 
-          <Text style={ui.h2}>Next trip</Text>
-          <View style={ui.card}>
-            <Text style={ui.text}>
-              {s.next_trip_date ? `Shop ${shortDate(s.next_trip_date)}` : 'No trip needed in the next two weeks.'}
-            </Text>
-          </View>
+          <Link href="/grocery" asChild>
+            <Pressable style={StyleSheet.flatten([ui.card, styles.linkCard])}>
+              <Text style={ui.text}>
+                {tripDays == null ? 'No trip needed in the next two weeks' : `Next trip: ${whenWord(tripDays)}`}
+              </Text>
+              <FontAwesome name="chevron-right" color={colors.muted} />
+            </Pressable>
+          </Link>
 
           <Text style={ui.h2}>Today</Text>
           <IntakeCard totals={s.today_intake.totals} profile={profile.data} />
 
           <Text style={ui.h2}>Inventory</Text>
           <View style={ui.card}>
-            {s.inventory.length === 0 ? (
-              <Text style={ui.muted}>Nothing tracked yet — add something with the + button.</Text>
+            {inventory.length === 0 ? (
+              <Text style={ui.muted}>Nothing tracked yet. Add something with the + button.</Text>
             ) : (
-              s.inventory.map((item, i) => (
-                <InventoryRow key={item.product_id} item={item} last={i === s.inventory.length - 1} />
-              ))
+              inventory.map((item, i) => <InventoryRow key={item.product_id} item={item} last={i === inventory.length - 1} />)
             )}
           </View>
         </>
       )}
     </ScrollView>
+  );
+}
+
+function AlertRow({ alert, text }: { alert: Alert; text: string }) {
+  const style = StyleSheet.flatten([
+    ui.card,
+    styles.alert,
+    URGENT.includes(alert.reason) && { borderLeftColor: colors.danger },
+  ]);
+  const body = (
+    <Text style={[ui.text, { flex: 1 }]}>
+      <Text style={{ fontWeight: '700' }}>{alert.product_name}</Text> · {text}
+    </Text>
+  );
+  if (alert.product_id == null) return <View style={style}>{body}</View>;
+  return (
+    <Link href={{ pathname: '/item/[id]', params: { id: alert.product_id } }} asChild>
+      <Pressable style={style}>
+        {body}
+        <FontAwesome name="chevron-right" color={colors.muted} />
+      </Pressable>
+    </Link>
   );
 }
 
@@ -159,23 +206,25 @@ function IntakeCard({ totals, profile }: { totals: Macros; profile: Profile | nu
 
 // Children of <Link asChild> must get one style object — expo-router throws on style arrays.
 function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
+  const days = item.expires_in_days;
+  const tone = expiryTone(days);
   return (
     <Link href={{ pathname: '/item/[id]', params: { id: item.product_id } }} asChild>
       <Pressable style={StyleSheet.flatten([styles.invRow, !last && ui.divider])}>
-        <View style={{ flex: 1 }}>
-          <Text style={ui.text}>{item.name}</Text>
-          <Text style={ui.muted}>
-            {item.days_left != null ? `Runs out in ${item.days_left.toFixed(1)} days` : 'No usage history yet'}
-          </Text>
-          {item.expires_in_days != null && (
-            <Text style={[ui.muted, { color: expiryColor(item.expires_in_days) }]}>
-              {expiryText(item.expires_in_days, item.expiry_estimated)}
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={[ui.text, { fontWeight: '600' }]}>{item.name}</Text>
+          {days != null && (
+            <Text style={[ui.text, { fontSize: 13 }, tone && { color: colors[tone] }]}>
+              {expiryText(days, item.expiry_estimated)}
             </Text>
           )}
+          <Text style={ui.muted}>
+            {item.days_left != null ? `Runs out ${relativeDays(item.days_left, true)}` : 'No usage history yet'}
+          </Text>
         </View>
-        <View style={{ width: 90, alignItems: 'flex-end' }}>
-          <Text style={ui.text}>{formatGrams(item.grams)}</Text>
-          {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} />}
+        <View style={{ width: 96, alignItems: 'flex-end' }}>
+          <Text style={ui.text}>{capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))}</Text>
+          {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} tone={tone} />}
         </View>
       </Pressable>
     </Link>
@@ -183,7 +232,8 @@ function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
 }
 
 const styles = StyleSheet.create({
-  alert: { borderLeftWidth: 4, borderLeftColor: colors.warn },
+  alert: { borderLeftWidth: 4, borderLeftColor: colors.warn, flexDirection: 'row', alignItems: 'center', gap: 8 },
   reviewBanner: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderColor: colors.warn },
+  linkCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   invRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12 },
 });

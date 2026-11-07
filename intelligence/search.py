@@ -18,6 +18,8 @@ class SearchResult:
     on_hand_g: float
     days_left: float | None
     answer: str
+    unit: str = "g"
+    grams_per_unit: float = 1.0
 
 
 def _plain_language(product_name: str, on_hand_g: float, dl: float | None) -> str:
@@ -31,7 +33,7 @@ def _plain_language(product_name: str, on_hand_g: float, dl: float | None) -> st
 
 def search(db: Database, query: str, limit: int = 5) -> list[SearchResult]:
     with db.cursor() as cur:
-        cur.execute("SELECT id, name, category FROM products")
+        cur.execute("SELECT id, name, category, unit, grams_per_unit FROM products")
         products = cur.fetchall()
 
     if not products:
@@ -53,5 +55,7 @@ def search(db: Database, query: str, limit: int = 5) -> list[SearchResult]:
             on_hand_g=on_hand,
             days_left=dl,
             answer=_plain_language(product["name"], on_hand, dl),
+            unit=product["unit"],
+            grams_per_unit=product["grams_per_unit"],
         ))
     return results

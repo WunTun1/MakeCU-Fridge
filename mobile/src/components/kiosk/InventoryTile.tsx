@@ -2,58 +2,65 @@ import { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { FillBar } from '@/components/FillBar';
+import { formatAmount } from '@/lib/amount';
 import type { InventoryEntry } from '@/lib/api';
-import { formatGrams, type Palette, useColors } from '@/lib/theme';
+import { expiryTone, expiryWord } from '@/lib/expiry';
+import { type Palette, useColors } from '@/lib/theme';
+import { capitalize } from '@/lib/time';
 
-export type TileFlag = 'danger' | 'warn' | null;
-
+/**
+ * One item on the fridge screen. The biggest text answers "when does it go
+ * bad?"; the amount and fill bar come second.
+ */
 export function InventoryTile({
   item,
   width,
   height,
-  flag,
-  note,
+  compact,
   onPress,
 }: {
   item: InventoryEntry;
   width: number;
   height: number;
-  /** Highlights the tile when the item needs attention. */
-  flag: TileFlag;
-  /** Replaces the "days left" line, e.g. an alert's detail. */
-  note?: string;
+  /** The 800x480 panel. */
+  compact: boolean;
   onPress: () => void;
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const tone = flag ? colors[flag] : null;
-  const compact = height < 120;
-  const roomy = height >= 170;
+  const days = item.expires_in_days;
+  const tone = expiryTone(days);
+  const toneColor = tone ? colors[tone] : null;
 
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
       style={({ pressed }) => [
         styles.tile,
         { width, height, padding: compact ? 10 : 14 },
-        tone && { borderColor: tone, borderWidth: 2 },
+        toneColor && { borderColor: toneColor, borderWidth: 2 },
         pressed && { opacity: 0.7 },
       ]}
     >
-      <View>
-        <Text style={styles.name} numberOfLines={roomy ? 2 : 1}>
-          {item.name}
-        </Text>
-        <Text style={[styles.amount, compact && { fontSize: 19 }, roomy && { fontSize: 30, marginTop: 4 }]}>
-          {formatGrams(item.grams)}
-        </Text>
-      </View>
-      <View>
-        {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} />}
-        <Text style={[styles.days, tone && { color: tone, fontWeight: '600' }]} numberOfLines={1}>
-          {note ?? (item.days_left != null ? `${item.days_left.toFixed(1)} days left` : 'new')}
-        </Text>
-      </View>
+      <Text style={[styles.name, compact && { fontSize: 16 }]} numberOfLines={compact ? 1 : 2}>
+        {item.name}
+      </Text>
+      <Text
+        style={[
+          styles.glance,
+          compact && { fontSize: 24, lineHeight: 28 },
+          days == null ? { color: colors.muted } : toneColor && { color: toneColor },
+        ]}
+        numberOfLines={2}
+      >
+        {days == null ? 'No date' : expiryWord(days)}
+      </Text>
+      <View style={{ flex: 1 }} />
+      <Text style={[styles.amount, compact && { fontSize: 15 }]} numberOfLines={1}>
+        {capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))}
+      </Text>
+      {item.fill_fraction != null && <FillBar fraction={item.fill_fraction} tone={tone} />}
     </Pressable>
   );
 }
@@ -64,10 +71,9 @@ const makeStyles = (colors: Palette) =>
       backgroundColor: colors.card,
       borderColor: colors.border,
       borderWidth: 1,
-      borderRadius: 16,
-      justifyContent: 'space-between',
+      borderRadius: 12,
     },
-    name: { color: colors.text, fontSize: 17, fontWeight: '700' },
-    amount: { color: colors.text, fontSize: 22, fontWeight: '300' },
-    days: { color: colors.muted, fontSize: 13, marginTop: 4 },
+    name: { color: colors.text, fontSize: 18, fontWeight: '700' },
+    glance: { color: colors.text, fontSize: 30, lineHeight: 34, fontWeight: '700', marginTop: 4 },
+    amount: { color: colors.muted, fontSize: 17, fontWeight: '500' },
   });

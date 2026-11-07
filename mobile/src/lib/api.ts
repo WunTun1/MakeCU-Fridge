@@ -1,6 +1,8 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
+import type { Unit } from '@/lib/amount';
+
 const BACKEND_PORT = 8000;
 const EXPO_DEV_PORTS = new Set(['8081', '19006']);
 
@@ -37,15 +39,22 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const post = <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+const patch = <T>(path: string, body: unknown) => request<T>(path, { method: 'PATCH', body: JSON.stringify(body) });
+const del = <T>(path: string) => request<T>(path, { method: 'DELETE' });
 
 export type Alert = {
   product_id: number | null;
   product_name: string;
   reason: 'low_days_left' | 'low_fraction' | 'staple_out' | 'expiring_soon' | 'fridge_temp_high';
   detail: string;
+  /** Days until it goes bad (expiring_soon) or runs out (low_days_left). */
+  days: number | null;
 };
 
-export type InventoryEntry = {
+/** How a product is counted; stock is always stored in grams. */
+export type Measured = { unit: Unit; grams_per_unit: number };
+
+export type InventoryEntry = Measured & {
   product_id: number;
   name: string;
   category: string | null;
@@ -82,7 +91,7 @@ export type Summary = {
   door_open: boolean;
 };
 
-export type SearchResult = {
+export type SearchResult = Measured & {
   product_id: number;
   product_name: string;
   on_hand_g: number;
@@ -90,21 +99,51 @@ export type SearchResult = {
   answer: string;
 };
 
-export type ProductUsage = {
+export type StockItem = {
+  id: number;
+  grams: number;
+  location: string;
+  expiration_date: string | null;
+  expiry_estimated: boolean;
+};
+
+export type ProductUsage = Measured & {
   product_id: number;
   name: string;
   daily_usage_g: Record<string, number>;
   on_hand_g: number;
   days_left: number | null;
+  rate_g_per_day: number;
+  /** Soonest YYYY-MM-DD among this product's items. */
+  expiration_date: string | null;
+  expiry_estimated: boolean;
+  items: StockItem[];
 };
 
-export type GroceryItem = {
+/** Why the restock plan wants something. */
+export type GroceryPlan = {
   product_id: number;
   product_name: string;
   buy_grams: number;
   buy_packages: number | null;
-  reason: string;
+  on_hand_g: number;
+  rate_g_per_day: number;
+  runs_out_in_days: number | null;
 };
+
+export type GroceryEntry = Measured & {
+  id: number;
+  name: string;
+  source: 'plan' | 'manual' | 'recipe';
+  recipe_id: number | null;
+  recipe_name: string | null;
+  checked: boolean;
+  plan: GroceryPlan | null;
+};
+
+export type Horizon = 1 | 3 | 7 | null;
+
+export type GroceryList = { trip_in_days: Horizon; trip_date: string | null; items: GroceryEntry[] };
 
 export type ReviewItem = {
   id: number;
@@ -165,7 +204,12 @@ export type RecipeDetail = RecipeCard & {
   ingredients: RecipeLine[];
   steps: string[];
   description: string | null;
+  /** Missing ingredients that are already on the grocery list. */
+  on_grocery_list: string[];
 };
+
+/** One product an "I made this" takes from. */
+export type CookLine = Measured & { product_id: number; item: string; grams_used: number; grams_on_hand: number };
 
 export type ChatReply = { reply: string; recipes: RecipeCard[] };
 
@@ -176,10 +220,13 @@ export const api = {
   commonProducts: (limit = 8) => request<{ id: number; name: string }[]>(`/api/products/common?limit=${limit}`),
   search: (q: string) => request<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
   usage: (productId: number) => request<ProductUsage>(`/api/products/${productId}/usage`),
-  grocery: (tripInDays?: number) =>
-    request<{ trip_date: string | null; items: GroceryItem[]; unlock: UnlockSuggestion[] }>(
-      `/api/grocery${tripInDays != null ? `?trip_in_days=${tripInDays}` : ''}`,
-    ),
+  grocery: () => request<GroceryList>('/api/grocery'),
+  setHorizon: (tripInDays: Horizon) => request<GroceryList>('/api/grocery/horizon', { method: 'PUT', body: JSON.stringify({ trip_in_days: tripInDays }) }),
+  addToGrocery: (body: { names: string[]; source?: 'manual' | 'recipe'; recipe_id?: number; recipe_name?: string }) =>
+    post<{ ids: number[] }>('/api/grocery/items', body),
+  checkGrocery: (id: number, checked: boolean) => patch<{ ok: true }>(`/api/grocery/items/${id}`, { checked }),
+  clearCheckedGrocery: () => post<{ ok: true }>('/api/grocery/clear-checked', {}),
+  unlock: () => request<UnlockSuggestion[]>('/api/grocery/unlock'),
   review: () => request<ReviewItem[]>('/api/review'),
   resolveReview: (
     id: number,
@@ -188,11 +235,18 @@ export const api = {
       | { action: 'remove'; item_id: number }
       | { action: 'add_confirmed'; product_name: string; grams?: number },
   ) => post<{ ok: true }>(`/api/review/${id}`, body),
-  addItem: (body: { name: string; grams: number; location: string }) => post<{ item_id: number }>('/api/items', body),
+  addItem: (body: { name: string; quantity: number; unit: Unit; location: string }) =>
+    post<Measured & { item_id: number; product_id: number; grams: number }>('/api/items', body),
+  undoAdd: (itemId: number) => post<{ ok: true }>(`/api/items/${itemId}/undo-add`, {}),
+  updateItem: (itemId: number, body: { grams?: number; expiration_date?: string }) => patch<{ ok: true }>(`/api/items/${itemId}`, body),
+  consume: (itemId: number, grams: number) => post<{ event_id: number | null }>('/api/items/consume', { item_id: itemId, grams }),
+  waste: (itemIds: number[]) => post<{ event_ids: number[] }>('/api/items/waste', { item_ids: itemIds }),
+  undoEvents: (eventIds: number[]) => post<{ ok: true }>('/api/events/undo', { event_ids: eventIds }),
   barcode: (barcode: string, location = 'pantry') => post<{ item_id: number }>('/api/barcode', { barcode, location }),
   profile: () => request<Profile>('/api/profile'),
   saveProfile: (p: Partial<Profile>) => request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
   chat: (message: string) => post<ChatReply>('/api/chat', { message }),
+  clearChat: () => del<{ ok: true }>('/api/chat/history'),
   taste: () => request<{ cuisines: string[]; ingredients: string[] }>('/api/taste'),
   suggestRecipes: (params: { q?: string; cuisine?: string; high_protein?: boolean; max_minutes?: number; limit?: number }) => {
     const qs = Object.entries(params)
@@ -202,7 +256,9 @@ export const api = {
     return request<RecipeCard[]>(`/api/recipes/suggest${qs ? `?${qs}` : ''}`);
   },
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
-  cooked: (id: number, servingsEaten: number) =>
-    post<{ recipe: string; used: { item: string; grams: number }[] }>(`/api/recipes/${id}/cooked`, { servings_eaten: servingsEaten }),
+  cookPreview: (id: number, servings: number) => request<CookLine[]>(`/api/recipes/${id}/cooked/preview?servings=${servings}`),
+  cooked: (id: number, servings: number) =>
+    post<{ recipe: string; meal_id: number; consumptions: CookLine[] }>(`/api/recipes/${id}/cooked`, { servings_eaten: servings }),
+  undoMeal: (mealId: number) => post<{ ok: true }>(`/api/meals/${mealId}/undo`, {}),
   rate: (id: number, liked: boolean) => post<{ ok: true }>(`/api/recipes/${id}/rate`, { liked }),
 };

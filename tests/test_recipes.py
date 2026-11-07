@@ -151,3 +151,29 @@ def test_unlock_suggestions_name_purchases_that_complete_recipes(engine):
     bought = [tuple(p.buy) for p in picks]
     assert ("mozzarella cheese", "tomato sauce") in bought or ("salsa", "tortilla") in bought
     assert all(p.unlocks >= 1 and p.examples for p in picks)
+
+
+def test_cook_preview_changes_nothing_and_undo_restores_everything(engine):
+    db = engine.db
+
+    def snapshot():
+        return sorted((i["id"], i["status"], i["grams"]) for i in db.active_items())
+
+    before, meals_before = snapshot(), len(db.meals_since("2000-01-01"))
+
+    preview = engine.preview_cooked(1, servings=2)  # serves 2 -> the whole recipe
+    assert snapshot() == before
+    spinach = next(line for line in preview if line["item"] == "Baby Spinach")
+    assert spinach["grams_used"] == 150 and spinach["grams_on_hand"] == 150  # 1 cup wants 200 g; all 150 g
+
+    result = engine.cooked(1, servings_eaten=2)
+    assert result["meal_id"] and snapshot() != before
+    assert engine.undo_meal(result["meal_id"])
+    assert snapshot() == before
+    assert len(db.meals_since("2000-01-01")) == meals_before
+
+
+def test_cooking_scales_with_servings(engine):
+    half = {line["item"]: line["grams_used"] for line in engine.preview_cooked(2, servings=1)}
+    full = {line["item"]: line["grams_used"] for line in engine.preview_cooked(2, servings=2)}
+    assert full["Chicken Breast"] == 2 * half["Chicken Breast"]

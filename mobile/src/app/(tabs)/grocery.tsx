@@ -1,115 +1,225 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { router } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { ErrorCard, Loading } from '@/components/States';
-import { api } from '@/lib/api';
-import { colors, formatGrams, ui } from '@/lib/theme';
+import { Button } from '@/components/Button';
+import { Segmented } from '@/components/Segmented';
+import { ErrorCard } from '@/components/States';
+import { formatAmount } from '@/lib/amount';
+import { api, type GroceryEntry, type GroceryList, type Horizon } from '@/lib/api';
+import { colors, ui } from '@/lib/theme';
+import { daysUntil, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
-const TRIP_OPTIONS: (number | undefined)[] = [undefined, 1, 3, 7];
+const HORIZONS: { value: Horizon; label: string }[] = [
+  { value: null, label: 'Auto' },
+  { value: 1, label: '1 day' },
+  { value: 3, label: '3 days' },
+  { value: 7, label: '7 days' },
+];
+
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Why it's on the list, in words: "Runs out Monday. You use about 250 ml a day." */
+function reasonFor(entry: GroceryEntry): string {
+  const p = entry.plan;
+  const parts = [entry.source === 'manual' ? 'Added by you.' : entry.source === 'recipe' ? `For ${entry.recipe_name ?? 'a recipe'}.` : ''];
+  if (p) {
+    const rate = formatAmount(p.rate_g_per_day, entry.unit, entry.grams_per_unit, entry.name).replace(/^about /, '');
+    parts.push(
+      p.on_hand_g <= 0 || p.runs_out_in_days == null ? "You're out." : `Runs out ${whenWord(p.runs_out_in_days)}.`,
+      `You use about ${rate} a day.`,
+    );
+  }
+  return parts.filter(Boolean).join(' ');
+}
 
 export default function Grocery() {
-  const [tripInDays, setTripInDays] = useState<number | undefined>(undefined);
+  const [list, setList] = useState<GroceryList | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const unlock = useApi(api.unlock);
+
+  const run = useCallback(async (request: () => Promise<GroceryList>) => {
+    setBusy(true);
+    try {
+      setList(await request());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      run(api.grocery);
+    }, [run]),
+  );
+
+  if (!list) {
+    return (
+      <View style={[ui.screen, ui.content]}>
+        {error ? <ErrorCard message={error} /> : <ActivityIndicator color={colors.accent} style={{ marginTop: 48 }} />}
+      </View>
+    );
+  }
+
+  const setHorizon = (h: Horizon) => {
+    setList({ ...list, trip_in_days: h });
+    run(() => api.setHorizon(h));
+  };
+
+  const toggle = (entry: GroceryEntry) => {
+    setList({ ...list, items: list.items.map((i) => (i.id === entry.id ? { ...i, checked: !i.checked } : i)) });
+    api.checkGrocery(entry.id, !entry.checked).catch(() => run(api.grocery));
+  };
+
+  const add = (names: string[], extra?: { recipe_id: number; recipe_name: string }) =>
+    run(() => api.addToGrocery({ names, source: extra ? 'recipe' : 'manual', ...extra }).then(api.grocery));
+
+  const open = list.items.filter((i) => !i.checked);
+  const inCart = list.items.filter((i) => i.checked);
+  const tripDays = list.trip_date ? daysUntil(list.trip_date) : null;
 
   return (
-    <ScrollView style={ui.screen} contentContainerStyle={ui.content}>
-      <View style={ui.row}>
-        {TRIP_OPTIONS.map((d) => {
-          const active = d === tripInDays;
-          return (
-            <Pressable
-              key={String(d)}
-              onPress={() => setTripInDays(d)}
-              style={[ui.card, { flex: 1, padding: 8, alignItems: 'center' }, active && { borderColor: colors.accent }]}
-            >
-              <Text style={[ui.muted, active && { color: colors.accent }]}>{d == null ? 'Auto' : `${d}d`}</Text>
-            </Pressable>
-          );
-        })}
+    <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
+      <View style={{ gap: 8 }}>
+        <Segmented label="When you shop" options={HORIZONS} value={list.trip_in_days} onChange={setHorizon} />
+        <View style={styles.progressTrack}>{busy && <View style={styles.progress} />}</View>
+        <Text style={ui.text}>{tripDays == null ? 'No trip needed soon.' : `Next trip: ${whenWord(tripDays)}`}</Text>
       </View>
-      {/* Keyed so changing the trip date remounts and refetches. */}
-      <GroceryList key={String(tripInDays)} tripInDays={tripInDays} />
+
+      {error && <ErrorCard message={error} />}
+
+      <View style={[ui.card, { paddingVertical: 4 }, busy && { opacity: 0.6 }]}>
+        <AddRow onAdd={(name) => add([name])} />
+        {open.length === 0 && inCart.length === 0 && <Text style={[ui.muted, styles.row]}>Nothing to buy yet.</Text>}
+        {open.map((entry) => (
+          <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} />
+        ))}
+        {inCart.length > 0 && (
+          <>
+            <View style={styles.cartHeader}>
+              <Text style={[ui.muted, { fontWeight: '600' }]}>In the cart ({inCart.length})</Text>
+              <Pressable onPress={() => run(() => api.clearCheckedGrocery().then(api.grocery))} hitSlop={8} style={styles.textButton}>
+                <Text style={styles.link}>Clear checked</Text>
+              </Pressable>
+            </View>
+            {inCart.map((entry) => (
+              <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} />
+            ))}
+          </>
+        )}
+      </View>
+
+      {unlock.data && unlock.data.length > 0 && (
+        <>
+          <Text style={ui.h2}>Unlock recipes</Text>
+          <Text style={ui.muted}>One or two buys that complete recipes you&apos;re likely to cook.</Text>
+          {unlock.data.map((u) => {
+            const onList = u.buy.every((b) => list.items.some((i) => sameName(i.name, b)));
+            const label = u.buy.join(' and ');
+            return (
+              <View key={u.buy.join('+')} style={[ui.card, { gap: 8 }]}>
+                <Text style={[ui.text, { fontWeight: '700', textTransform: 'capitalize' }]}>{label}</Text>
+                <Text style={ui.muted}>
+                  Completes {u.unlocks} recipe{u.unlocks === 1 ? '' : 's'}: {u.examples.join(', ')}
+                </Text>
+                <View style={[ui.row, { gap: 16 }]}>
+                  <Button
+                    title={onList ? 'On your list' : `Add ${label} to list`}
+                    disabled={onList || busy}
+                    onPress={() => add(u.buy, { recipe_id: u.recipe_ids[0], recipe_name: u.examples[0] })}
+                  />
+                  {u.recipe_ids[0] != null && (
+                    <Pressable
+                      onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: u.recipe_ids[0] } })}
+                      style={styles.textButton}
+                    >
+                      <Text style={styles.link}>See recipe</Text>
+                    </Pressable>
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </>
+      )}
     </ScrollView>
   );
 }
 
-function GroceryList({ tripInDays }: { tripInDays: number | undefined }) {
-  const { data, error, loading } = useApi(() => api.grocery(tripInDays));
-  const [checked, setChecked] = useState<Set<number>>(new Set());
-
-  const toggle = (id: number) =>
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  if (loading && !data) return <Loading />;
-  if (error) return <ErrorCard message={error} />;
-  if (!data) return null;
-
+function AddRow({ onAdd }: { onAdd: (name: string) => void }) {
+  const [text, setText] = useState('');
+  const submit = () => {
+    if (!text.trim()) return;
+    onAdd(text.trim());
+    setText('');
+  };
   return (
-    <>
-      <View style={ui.card}>
-        <Text style={ui.text}>
-          {tripInDays != null
-            ? `Trip in ${tripInDays} day${tripInDays > 1 ? 's' : ''}`
-            : data.trip_date
-              ? `Suggested trip: ${data.trip_date}`
-              : 'No trip needed soon.'}
-        </Text>
-      </View>
-
-      <View style={ui.card}>
-        {data.items.length === 0 && <Text style={ui.muted}>Nothing to buy yet.</Text>}
-        {data.items.map((item, i) => {
-          const done = checked.has(item.product_id);
-          return (
-            <Pressable
-              key={item.product_id}
-              onPress={() => toggle(item.product_id)}
-              style={[ui.row, { paddingVertical: 10 }, i < data.items.length - 1 && ui.divider]}
-            >
-              <FontAwesome name={done ? 'check-square' : 'square-o'} size={22} color={done ? colors.accent : colors.muted} />
-              <View style={{ flex: 1 }}>
-                <Text style={[ui.text, done && { textDecorationLine: 'line-through', color: colors.muted }]}>
-                  {item.product_name}
-                </Text>
-                <Text style={ui.muted}>{item.reason}</Text>
-              </View>
-              <Text style={ui.text}>
-                {item.buy_packages ? `${item.buy_packages} pkg` : formatGrams(item.buy_grams)}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {data.unlock.length > 0 && (
-        <>
-          <Text style={ui.h2}>Unlock recipes</Text>
-          <Text style={ui.muted}>Small buys that complete recipes you&apos;d probably like, based on what you cook.</Text>
-          {data.unlock.map((u) => (
-            <View key={u.buy.join('+')} style={[ui.card, { gap: 6 }]}>
-              <Text style={[ui.text, { fontWeight: '700', textTransform: 'capitalize' }]}>{u.buy.join(' + ')}</Text>
-              <Text style={ui.muted}>
-                Unlocks {u.unlocks} recipe{u.unlocks === 1 ? '' : 's'}: {u.examples.join(', ')}
-              </Text>
-              {u.recipe_ids[0] != null && (
-                <Text
-                  style={[ui.text, { color: colors.accent }]}
-                  onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: u.recipe_ids[0] } })}
-                >
-                  See {u.examples[0]} →
-                </Text>
-              )}
-            </View>
-          ))}
-        </>
-      )}
-    </>
+    <View style={[styles.row, ui.divider]}>
+      <TextInput
+        style={[ui.input, { flex: 1 }]}
+        placeholder="Add an item"
+        placeholderTextColor={colors.muted}
+        value={text}
+        onChangeText={setText}
+        onSubmitEditing={submit}
+        returnKeyType="done"
+        accessibilityLabel="Add an item"
+      />
+      <Pressable onPress={submit} style={styles.addButton} accessibilityRole="button" accessibilityLabel="Add to list">
+        <FontAwesome name="plus" size={20} color={colors.onAccent} />
+      </Pressable>
+    </View>
   );
 }
+
+function GroceryRow({ entry, onToggle }: { entry: GroceryEntry; onToggle: () => void }) {
+  const done = entry.checked;
+  return (
+    <Pressable
+      onPress={onToggle}
+      role="checkbox"
+      aria-checked={done}
+      style={[styles.row, done && { opacity: 0.6 }]}
+    >
+      <FontAwesome name={done ? 'check-square' : 'square-o'} size={22} color={done ? colors.accent : colors.muted} />
+      <View style={{ flex: 1 }}>
+        <Text style={[ui.text, done && { textDecorationLine: 'line-through' }]}>{entry.name}</Text>
+        <Text style={ui.muted}>{reasonFor(entry)}</Text>
+      </View>
+      {entry.plan && (
+        <Text style={ui.text}>{formatAmount(entry.plan.buy_grams, entry.unit, entry.grams_per_unit, entry.name)}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  row: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 48, paddingVertical: 8 },
+  cartHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopColor: colors.border,
+    borderTopWidth: 1,
+    marginTop: 4,
+    paddingTop: 4,
+  },
+  textButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
+  link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
+  addButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 8,
+    backgroundColor: colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  progressTrack: { height: 2, overflow: 'hidden' },
+  progress: { height: 2, backgroundColor: colors.accent },
+});

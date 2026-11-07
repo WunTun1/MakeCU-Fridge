@@ -32,6 +32,9 @@ class GroceryItem:
     buy_grams: float
     buy_packages: int | None
     reason: str
+    on_hand_g: float = 0.0
+    rate_g_per_day: float = 0.0
+    runs_out_in_days: float | None = None
 
 
 def next_trip_date(db: Database) -> date | None:
@@ -97,7 +100,10 @@ def grocery_plan(
             product_name=product["name"],
             buy_grams=buy_grams,
             buy_packages=buy_packages,
-            reason=f"~{on_hand_at_trip:.0f}g left by {trip_date.isoformat()}, uses ~{rate:.0f}g/day",
+            reason=f"Runs out in about {round(on_hand / rate)} days. You use about {rate:.0f} g a day.",
+            on_hand_g=on_hand,
+            rate_g_per_day=rate,
+            runs_out_in_days=on_hand / rate,
         ))
     return plan
 

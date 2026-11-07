@@ -19,6 +19,8 @@ export function Button({
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !!disabled }}
       style={({ pressed }) => [
         styles.base,
         styles[variant],
@@ -31,7 +33,7 @@ export function Button({
 }
 
 const styles = StyleSheet.create({
-  base: { borderRadius: 10, paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center', flex: 1 },
+  base: { borderRadius: 8, minHeight: 48, paddingVertical: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center', flex: 1 },
   primary: { backgroundColor: colors.accent },
   secondary: { backgroundColor: colors.border },
   danger: { backgroundColor: colors.danger },
