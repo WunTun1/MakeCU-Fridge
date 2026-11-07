@@ -11,3 +11,5 @@ node_modules/
 .DS_Store
 # per-device load-cell calibration, written on the Pi
 pi_node/calibration.json
+# recordings from software/vision/capture.py
+captures/
