@@ -193,9 +193,8 @@ def main() -> None:
     real_camera = args.camera is not None
     camera_index = resolve_camera(args.camera) if real_camera else 0
 
-    # A real camera on a desk sees one area, so treat it as one shelf (whole image = shelf 0).
-    num_shelves = "1" if real_camera else "2"
-    base_env = {**os.environ, "PYTHONUNBUFFERED": "1", "DATABASE_PATH": args.db, "NUM_SHELVES": num_shelves}
+    # One weighed shelf (the real fridge has one scale); the rest of the fridge isn't weighed.
+    base_env = {**os.environ, "PYTHONUNBUFFERED": "1", "DATABASE_PATH": args.db, "NUM_SHELVES": "1"}
 
     if args.seed:
         db_path = ROOT / args.db

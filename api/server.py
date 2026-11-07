@@ -202,11 +202,15 @@ def get_summary():
         entry = by_product.setdefault(product["id"], {
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
-            "expires_in_days": None, "expiry_estimated": False, "location": item["location"],
+            "expires_in_days": None, "expiry_estimated": False,
+            "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0,
         })
         entry["grams"] += item["grams"]
         if item["location"] == "fridge":
             entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
+        # A product split across shelves is shown on the shelf holding most of it.
+        if item["shelf"] is not None and item["grams"] > entry["_shelf_grams"]:
+            entry["shelf"], entry["_shelf_grams"] = item["shelf"], item["grams"]
         if item["expiration_date"]:
             d = days_until(item["expiration_date"])
             if entry["expires_in_days"] is None or d < entry["expires_in_days"]:
@@ -215,6 +219,7 @@ def get_summary():
 
     inventory = []
     for entry in by_product.values():
+        entry.pop("_shelf_grams")
         dl = days_left(db, entry["product_id"])
         fill = (entry["grams"] / entry["package_size_g"]) if entry["package_size_g"] else None
         inventory.append({**entry, "days_left": dl, "fill_fraction": fill})

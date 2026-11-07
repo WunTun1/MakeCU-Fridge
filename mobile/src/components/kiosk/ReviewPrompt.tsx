@@ -1,10 +1,10 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { api, type ReviewItem } from '@/lib/api';
 import { candidateName, describeReview, isUnnamedAdd } from '@/lib/review';
-import { colors } from '@/lib/theme';
+import { type Palette, useColors } from '@/lib/theme';
 
 const MAX_CHOICES = 7;
 
@@ -24,6 +24,8 @@ export function ReviewPrompt({
   commonNames: string[];
   onResolved: () => void;
 }) {
+  const colors = useColors();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
   const [busy, setBusy] = useState(false);
   const unnamed = isUnnamedAdd(review);
   const guess = candidateName(review);
@@ -81,30 +83,31 @@ export function ReviewPrompt({
   );
 }
 
-const styles = StyleSheet.create({
-  card: {
-    backgroundColor: colors.card,
-    borderColor: colors.warn,
-    borderWidth: 2,
-    borderRadius: 18,
-    padding: 16,
-    gap: 12,
-  },
-  titleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  title: { color: colors.text, fontSize: 20, fontWeight: '700', flex: 1 },
-  more: { color: colors.muted, fontSize: 14 },
-  choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  choice: {
-    minHeight: 52,
-    paddingHorizontal: 20,
-    justifyContent: 'center',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.input,
-  },
-  guess: { backgroundColor: colors.accent, borderColor: colors.accent },
-  dismiss: { backgroundColor: 'transparent' },
-  choiceText: { color: colors.text, fontSize: 18, fontWeight: '600' },
-  hint: { color: colors.muted, fontSize: 13 },
-});
+const makeStyles = (colors: Palette) =>
+  StyleSheet.create({
+    card: {
+      backgroundColor: colors.card,
+      borderColor: colors.warn,
+      borderWidth: 2,
+      borderRadius: 18,
+      padding: 16,
+      gap: 12,
+    },
+    titleRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+    title: { color: colors.text, fontSize: 20, fontWeight: '700', flex: 1 },
+    more: { color: colors.muted, fontSize: 14 },
+    choices: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+    choice: {
+      minHeight: 52,
+      paddingHorizontal: 20,
+      justifyContent: 'center',
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.input,
+    },
+    guess: { backgroundColor: colors.accent, borderColor: colors.accent },
+    dismiss: { backgroundColor: 'transparent' },
+    choiceText: { color: colors.text, fontSize: 18, fontWeight: '600' },
+    hint: { color: colors.muted, fontSize: 13 },
+  });

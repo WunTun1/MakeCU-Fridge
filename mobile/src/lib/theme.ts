@@ -1,6 +1,7 @@
+import { createContext, useContext } from 'react';
 import { StyleSheet } from 'react-native';
 
-export const colors = {
+export const darkColors = {
   bg: '#0f1115',
   card: '#1a1d24',
   border: '#2a2e37',
@@ -12,6 +13,32 @@ export const colors = {
   danger: '#f87171',
   input: '#11131a',
 };
+
+export type Palette = typeof darkColors;
+export type ThemeMode = 'dark' | 'light';
+
+/** Warm ivory and clay, after Claude's light theme. */
+export const lightColors: Palette = {
+  bg: '#faf9f5',
+  card: '#ffffff',
+  border: '#e5e2d9',
+  text: '#141413',
+  muted: '#6f6e69',
+  accent: '#c96442',
+  onAccent: '#ffffff',
+  warn: '#b7791f',
+  danger: '#b53333',
+  input: '#f0eee6',
+};
+
+export const palettes: Record<ThemeMode, Palette> = { dark: darkColors, light: lightColors };
+
+/** Static palette for screens that don't support switching (the phone app). */
+export const colors = darkColors;
+
+/** Live palette. Defaults to dark, so components outside a provider look as before. */
+export const ThemeContext = createContext<Palette>(darkColors);
+export const useColors = () => useContext(ThemeContext);
 
 export const ui = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },

@@ -36,8 +36,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-const post = <T>(path: string, body: unknown) =>
-  request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+const post = <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) });
 
 export type Alert = {
   product_id: number | null;
@@ -59,6 +58,8 @@ export type InventoryEntry = {
   /** True when that date is an estimated shelf life, not printed on the package. */
   expiry_estimated: boolean;
   location: 'fridge' | 'pantry' | 'freezer';
+  /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
+  shelf: number | null;
 };
 
 export type Macros = { calories: number; protein_g: number; carbs_g: number; fat_g: number };
@@ -187,13 +188,10 @@ export const api = {
       | { action: 'remove'; item_id: number }
       | { action: 'add_confirmed'; product_name: string; grams?: number },
   ) => post<{ ok: true }>(`/api/review/${id}`, body),
-  addItem: (body: { name: string; grams: number; location: string }) =>
-    post<{ item_id: number }>('/api/items', body),
-  barcode: (barcode: string, location = 'pantry') =>
-    post<{ item_id: number }>('/api/barcode', { barcode, location }),
+  addItem: (body: { name: string; grams: number; location: string }) => post<{ item_id: number }>('/api/items', body),
+  barcode: (barcode: string, location = 'pantry') => post<{ item_id: number }>('/api/barcode', { barcode, location }),
   profile: () => request<Profile>('/api/profile'),
-  saveProfile: (p: Partial<Profile>) =>
-    request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
+  saveProfile: (p: Partial<Profile>) => request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
   chat: (message: string) => post<ChatReply>('/api/chat', { message }),
   taste: () => request<{ cuisines: string[]; ingredients: string[] }>('/api/taste'),
   suggestRecipes: (params: { q?: string; cuisine?: string; high_protein?: boolean; max_minutes?: number; limit?: number }) => {

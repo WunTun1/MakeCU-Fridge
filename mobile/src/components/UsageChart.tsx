@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { colors, formatGrams, ui } from '@/lib/theme';
+import { formatGrams, ui, useColors } from '@/lib/theme';
 
 function lastNDays(n: number): string[] {
   const today = new Date();
@@ -20,6 +20,8 @@ export function UsageChart({
   days?: number;
   height?: number;
 }) {
+  const c = useColors();
+  const muted = [ui.muted, { color: c.muted }];
   const labels = lastNDays(days);
   const values = labels.map((d) => dailyUsage[d] ?? 0);
   const max = Math.max(...values, 1);
@@ -29,14 +31,14 @@ export function UsageChart({
       <View style={[styles.chart, { height }]}>
         {values.map((v, i) => (
           <View key={labels[i]} style={styles.slot}>
-            <View style={[styles.bar, { height: (v / max) * height }]} />
+            <View style={[styles.bar, { height: (v / max) * height, backgroundColor: c.accent }]} />
           </View>
         ))}
       </View>
       <View style={[ui.row, { justifyContent: 'space-between', marginTop: 6 }]}>
-        <Text style={ui.muted}>{labels[0].slice(5)}</Text>
-        <Text style={ui.muted}>peak {formatGrams(max)}/day</Text>
-        <Text style={ui.muted}>today</Text>
+        <Text style={muted}>{labels[0].slice(5)}</Text>
+        <Text style={muted}>peak {formatGrams(max)}/day</Text>
+        <Text style={muted}>today</Text>
       </View>
     </View>
   );
@@ -49,5 +51,5 @@ export function averagePerDay(dailyUsage: Record<string, number>, days = 28): nu
 const styles = StyleSheet.create({
   chart: { flexDirection: 'row', alignItems: 'flex-end', gap: 2 },
   slot: { flex: 1, height: '100%', justifyContent: 'flex-end' },
-  bar: { backgroundColor: colors.accent, borderRadius: 2, minHeight: 1 },
+  bar: { borderRadius: 2, minHeight: 1 },
 });
