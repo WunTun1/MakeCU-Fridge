@@ -46,9 +46,29 @@ Always run with the project's `.venv` Python — other Pythons may be missing pa
 
 | Open | What |
 |---|---|
-| **Simulated fridge** — http://localhost:8001 | Open the door, put items in, pour some out, take them out. With `--camera`, press "Put in" then place a real item in view. |
-| **Fridge screen** — http://localhost:8000/kiosk | Touch-only display (best at 1024×600): what's in the fridge, how much, and when it goes bad — soonest first. Tap an item for details. |
+| **Simulated fridge** — http://127.0.0.1:8001 | Open the door, put items in, pour some out, take them out. With `--camera`, press "Put in" then place a real item in view. |
+| **Fridge screen** — http://127.0.0.1:8000/kiosk | Touch-only display (best at 1024×600): what's in the fridge, how much, and when it goes bad — soonest first. Tap an item for details. |
 | **Phone app** — `cd mobile && npx expo start` | Everything else: recipe chat, "Cook tonight" ideas, grocery list, profile. Scan the QR code with Expo Go (same Wi-Fi; on iPhone, sign in to the same Expo account with `npx expo login`), or press `w` for a browser. |
+
+Use `127.0.0.1` rather than `localhost` — on Windows, `localhost` adds ~0.2 s to every request.
+
+## How the camera sees a trip
+
+1. **Door opens** → wait for a few steady frames, then take the *before* photo.
+2. **Someone reaches in** — MediaPipe finds hands (21-joint skeleton) and people
+   (selfie segmentation) in ~45 ms a frame. Shadows, exposure changes and the items
+   themselves don't count as a hand. Needs 2 frames in a row to start a trip.
+3. **Hand gone for 0.6 s** → take **one** *after* photo (median of the last steady
+   frames), weigh every shelf, and compare.
+4. **Compare** — exposure/white balance are matched first, then colors are compared in
+   LAB with a noise-adaptive threshold, so only the item that moved shows up.
+5. **New item** → that crop goes to Gemini (`--identify`; off by default while testing,
+   when the crop is saved to `data/snapshots/` instead and the fridge screen asks "what is this?").
+
+The simulated fridge window shows it live: orange outline + white skeleton = person and
+hands, cyan = what changed, green flash = the photo that goes to Gemini. The two models
+(~10 MB) download to `data/models/` on first run; without them it falls back to motion
+detection (`HAND_DETECTOR=motion`, also used for the simulator's cartoon hand).
 
 ## Recipes, swaps, and learning your taste
 

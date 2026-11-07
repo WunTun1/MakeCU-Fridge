@@ -4,7 +4,7 @@ The fridge loop reports into the shared `view`; the backend serves the latest
 annotated frame at GET /api/vision/frame.jpg, and the simulated fridge's
 control page shows it.
 
-  orange  motion — your hand
+  orange  you — person outline + hand skeleton (MediaPipe), or motion boxes
   cyan    what changed after the hand left (the item put in / taken out)
   green   the picture sent to Gemini, then Gemini's answer
 """
@@ -45,11 +45,12 @@ class VisionView:
         self._last_status = ""
 
     # ------------------------------------------------------------ reporting
-    def frame(self, frame: np.ndarray, *, door_open: bool, hand_boxes: list[Box], status: str) -> None:
-        """Called every loop tick with the current camera frame."""
+    def frame(self, frame: np.ndarray, *, door_open: bool, hand_boxes: list[Box], status: str, people=None) -> None:
+        """Called every loop tick with the current camera frame. `people` (vision.people.People)
+        draws person outlines and hand skeletons; otherwise `hand_boxes` are drawn as boxes."""
         with self._lock:
             self._last_frame, self._last_status = frame, status
-            self._render(frame, door_open, hand_boxes, status)
+            self._render(frame, door_open, hand_boxes, status, people)
 
     def changes(self, boxes: list[Box]) -> None:
         with self._lock:
@@ -81,14 +82,17 @@ class VisionView:
             return self._jpeg
 
     # ------------------------------------------------------------- drawing
-    def _render(self, frame: np.ndarray, door_open: bool, hand_boxes: list[Box], status: str) -> None:
+    def _render(self, frame: np.ndarray, door_open: bool, hand_boxes: list[Box], status: str, people=None) -> None:
         img = frame.copy()
         now = time.monotonic()
         if not door_open:
             img = (img * 0.35).astype(np.uint8)
             _banner(img, "Door closed - open it on the control page", WHITE, top=True)
-        for box in hand_boxes:
-            _box(img, box, ORANGE, "hand")
+        if people is not None:
+            _draw_people(img, people)
+        else:
+            for box in hand_boxes:
+                _box(img, box, ORANGE, "hand")
         if now < self._changes_until:
             for box in self._changes:
                 _box(img, box, CYAN, "changed")
@@ -114,14 +118,36 @@ class VisionView:
             self._jpeg = buf.tobytes()
 
 
+def _draw_people(img: np.ndarray, people) -> None:
+    """Tinted person outline (arms, sleeves, anyone in view) plus each hand's joint skeleton."""
+    from vision.people import HAND_CONNECTIONS
+
+    if people.present and people.person_outlines:
+        tint = img.copy()
+        cv2.drawContours(tint, people.person_outlines, -1, ORANGE, -1)
+        cv2.addWeighted(tint, 0.25, img, 0.75, 0, dst=img)
+        cv2.drawContours(img, people.person_outlines, -1, ORANGE, 2)
+        x, y, _, _ = cv2.boundingRect(max(people.person_outlines, key=cv2.contourArea))
+        _box_label(img, x, y, "person" if not people.hands else f"hand{'s' if len(people.hands) > 1 else ''}", ORANGE)
+    for points in people.hands:
+        for a, b in HAND_CONNECTIONS:
+            cv2.line(img, points[a], points[b], WHITE, 2, cv2.LINE_AA)
+        for p in points:
+            cv2.circle(img, p, 3, ORANGE, -1, cv2.LINE_AA)
+
+
+def _box_label(img: np.ndarray, x: int, y: int, label: str, color) -> None:
+    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+    ty = max(y - 6, th + 4)
+    cv2.rectangle(img, (x, ty - th - 4), (x + tw + 8, ty + 4), color, -1)
+    cv2.putText(img, label, (x + 4, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+
+
 def _box(img: np.ndarray, box: Box, color, label: str, thickness: int = 2) -> None:
     x, y, w, h = box
     cv2.rectangle(img, (x, y), (x + w, y + h), color, thickness)
     if label:
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-        ty = max(y - 6, th + 4)
-        cv2.rectangle(img, (x, ty - th - 4), (x + tw + 8, ty + 4), color, -1)
-        cv2.putText(img, label, (x + 4, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
+        _box_label(img, x, y, label, color)
 
 
 def _banner(img: np.ndarray, text: str, color, top: bool) -> None:

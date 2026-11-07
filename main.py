@@ -171,59 +171,80 @@ def _weights_text(scale) -> str:
     return "  ".join(f"shelf {s}: {g:.0f} g" for s, g in sorted(scale.snapshot().items()))
 
 
+QUIET_FRAMES = 5  # recent hand-free frames, median-combined into the "before"/"after" photos
+
+
 def run_fridge_loop(stop_event: threading.Event) -> None:
+    from collections import deque
+
     from inventory.database import get_db
     from sensors.scale import get_scale_reader
     from vision.camera import make_camera
+    from vision.change import steady_frame
     from vision.debug import view
     from vision.hands import TripDetector
+    from vision.people import make_detector
 
     db = get_db(os.getenv("DATABASE_PATH", "refridge.db"))
     scale = get_scale_reader()  # same instance the /api/pi/* endpoints feed
-    trip_detector = TripDetector()
+    # HAND_DETECTOR=motion for the simulator's drawn hand, which MediaPipe rightly doesn't see as a hand.
+    people = make_detector() if os.getenv("HAND_DETECTOR", "mediapipe").lower() == "mediapipe" else None
+    trip_detector = TripDetector(people)
 
     with make_camera() as cam:
-        reference_frame = reference_weights = last_quiet_frame = None
+        reference_frame = reference_weights = None
+        quiet: deque = deque(maxlen=QUIET_FRAMES)  # hand-free frames since the last time someone was in view
         door_was_open = False
-        log.info("Fridge loop started (scale source: %s, camera: %s)", scale.source, type(cam).__name__)
+        log.info("Fridge loop started (scale: %s, camera: %s, hands: %s)",
+                 scale.source, type(cam).__name__, trip_detector.method)
 
         while not stop_event.is_set():
             try:
                 door_open = scale.door_is_open()
                 frame = cam.read_frame()
-                hand_boxes: list = []
 
                 if door_open and not door_was_open:
                     trip_detector.on_door_open()
-                    reference_frame = last_quiet_frame = frame
+                    quiet.clear()
+                    reference_frame = None  # taken once the scene is steady (below)
                     reference_weights = scale.snapshot()
                     status = "Door opened - learning the scene"
 
                 elif door_open:
                     signal = trip_detector.process_frame(frame)
-                    hand_boxes = trip_detector.motion_boxes
-                    if not signal["hand_present"]:
-                        last_quiet_frame = frame
+                    if signal["hand_present"] or trip_detector.motion_boxes:
+                        quiet.clear()
+                    else:
+                        quiet.append(frame)
+                    if reference_frame is None and len(quiet) == QUIET_FRAMES:
+                        reference_frame = steady_frame(list(quiet))
                     status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
                               else "Ready - put something in or take something out")
                     if signal["hand_left"]:
-                        view.frame(frame, door_open=True, hand_boxes=[],
+                        # The one photo for this trip: the steady view once the hand is gone.
+                        after = steady_frame(list(quiet)) if quiet else frame
+                        view.frame(after, door_open=True, hand_boxes=[],
                                    status="Hand left - weighing and comparing photos...")
                         reference_frame, reference_weights = _measure_trip(
-                            db, cam, scale, reference_frame, reference_weights
+                            db, cam, scale, reference_frame if reference_frame is not None else after,
+                            reference_weights, after_frame=after,
                         )
                         status = "Done - ready for the next one"
 
                 elif door_was_open and reference_frame is not None:
                     # Door just closed: final weight check. The camera is inside a now-dark
-                    # fridge, so compare against the last hand-free frame from while it was open.
-                    _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=last_quiet_frame)
-                    reference_frame = reference_weights = last_quiet_frame = None
+                    # fridge, so compare against the last steady view from while it was open.
+                    if quiet:
+                        _measure_trip(db, cam, scale, reference_frame, reference_weights,
+                                      after_frame=steady_frame(list(quiet)))
+                    reference_frame = reference_weights = None
+                    quiet.clear()
                     status = "Door closed - final check done"
                 else:
                     status = "Door closed"
 
-                view.frame(frame, door_open=door_open, hand_boxes=hand_boxes,
+                view.frame(frame, door_open=door_open, hand_boxes=trip_detector.motion_boxes if door_open else [],
+                           people=trip_detector.last_people if door_open else None,
                            status=f"{status}   |   {_weights_text(scale)}")
                 door_was_open = door_open
             except Exception:

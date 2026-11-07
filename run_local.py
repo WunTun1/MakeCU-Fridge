@@ -21,7 +21,7 @@ right, and the phone app below it if there's room. They close on Ctrl+C.
   python run_local.py --identify             # also send new-item snapshots to Gemini (off by default)
   python run_local.py --no-windows           # just the servers
 
-The simulated fridge window shows the live vision view: orange = your hand,
+The simulated fridge window shows the live vision view: orange = you (outline + hand skeleton),
 cyan = what changed, green flash = the snapshot that goes (or would go) to Gemini.
 
 With a real camera, the scale is still simulated: on the control page, press
@@ -211,6 +211,9 @@ def main() -> None:
         "ENABLE_FRIDGE_LOOP": "true",
         "API_PORT": str(BACKEND_PORT),
         "IDENTIFY_ITEMS": "on" if args.identify else "off",
+        # Real camera: MediaPipe finds real hands/arms. The synthetic feed draws a cartoon hand that
+        # MediaPipe (correctly) doesn't recognize, so it uses motion detection instead.
+        "HAND_DETECTOR": "mediapipe" if real_camera else "motion",
     }
     pi_env = {
         **base_env,

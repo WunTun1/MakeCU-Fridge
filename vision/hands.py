@@ -1,14 +1,14 @@
-"""Hand / motion detection -> trip start/end. Section 2.
+"""Hand trips: someone reaches in, then leaves -> measure once. Section 2.
 
-"Hand present" = significant motion between consecutive frames. We use
-frame-to-frame differencing rather than a learned background model (MOG2):
-a background model treats a freshly placed item as foreground until it
-slowly learns it (tens of seconds), which would keep "hand present" stuck on
-after every add. A static new item produces no frame-to-frame motion.
+Primary signal: MediaPipe people detection (vision/people.py) — a hand or an arm
+in view. It ignores camera noise, auto-exposure drift, and the items themselves,
+which frame-to-frame motion can't tell apart from a hand.
 
-"Hand gone" = no significant motion for HAND_GONE_DEBOUNCE_S. Swap in
-MediaPipe Hands later if shadows / door-light cause false triggers; nothing
-outside this module needs to change (same TripDetector interface).
+Fallback (MediaPipe unavailable, or the simulator's drawn "hand"): motion
+between consecutive frames.
+
+"Hand arrived" needs ENTER_FRAMES consecutive frames, so a one-frame flicker
+can't start a trip; "hand left" needs HAND_GONE_DEBOUNCE_S with nobody in view.
 """
 from __future__ import annotations
 
@@ -17,27 +17,39 @@ import time
 import cv2
 import numpy as np
 
-HAND_GONE_DEBOUNCE_S = 0.5
+HAND_GONE_DEBOUNCE_S = 0.6
 DOOR_OPEN_RELEARN_S = 1.0       # ignore the door-light flicker right after opening
-MIN_MOTION_AREA = 4000          # px of changed pixels between frames that counts as a hand
+ENTER_FRAMES = 2
+MIN_MOTION_AREA = 4000          # motion fallback: px of changed pixels between frames that counts as a hand
 MOTION_PIXEL_THRESHOLD = 25
 MIN_MOTION_BOX_AREA = 1500      # ignore specks when reporting where the motion is
 
+Box = tuple[int, int, int, int]
+
 
 class TripDetector:
-    def __init__(self, min_motion_area: int = MIN_MOTION_AREA):
+    def __init__(self, people=None, min_motion_area: int = MIN_MOTION_AREA):
+        """`people`: a vision.people.PeopleDetector, or None to use motion."""
+        self.people = people
         self.min_motion_area = min_motion_area
         self._prev_gray: np.ndarray | None = None
         self._hand_present = False
-        self._last_motion_ts: float | None = None
+        self._present_streak = 0
+        self._last_seen_ts: float | None = None
         self._ignore_until: float = 0.0
-        # Where the latest motion was (x, y, w, h) — for the live vision view.
-        self.motion_boxes: list[tuple[int, int, int, int]] = []
+        # For the live vision view: where the hand/person/motion is in the latest frame.
+        self.motion_boxes: list[Box] = []
+        self.last_people = None  # vision.people.People from the latest frame, when MediaPipe is in use
+
+    @property
+    def method(self) -> str:
+        return "mediapipe" if self.people is not None else "motion"
 
     def on_door_open(self) -> None:
         self._ignore_until = time.monotonic() + DOOR_OPEN_RELEARN_S
         self._hand_present = False
-        self._last_motion_ts = None
+        self._present_streak = 0
+        self._last_seen_ts = None
         self._prev_gray = None
 
     def motion_area(self, frame: np.ndarray) -> int:
@@ -56,21 +68,33 @@ class TripDetector:
             self.motion_boxes = []
         return area
 
+    def _someone_in_view(self, frame: np.ndarray) -> bool:
+        if self.people is None:
+            return self.motion_area(frame) >= self.min_motion_area
+        found = self.people.detect(frame)
+        self.last_people = found
+        # Below the presence threshold, outlines are segmenter speckle (shiny packaging, shadows).
+        self.motion_boxes = (found.hand_boxes + [cv2.boundingRect(c) for c in found.person_outlines]
+                             if found.present else [])
+        return found.present
+
     def process_frame(self, frame: np.ndarray) -> dict:
         """Returns {"hand_entered", "hand_left", "hand_present"} for this frame;
         hand_left fires once, after the debounce window."""
         now = time.monotonic()
-        area = self.motion_area(frame)
+        seen = self._someone_in_view(frame)
         if now < self._ignore_until:
             return {"hand_entered": False, "hand_left": False, "hand_present": False}
 
         hand_entered = hand_left = False
-        if area >= self.min_motion_area:
-            self._last_motion_ts = now
-            hand_entered = not self._hand_present
-            self._hand_present = True
-        elif self._hand_present and self._last_motion_ts is not None:
-            if now - self._last_motion_ts >= HAND_GONE_DEBOUNCE_S:
+        if seen:
+            self._last_seen_ts = now
+            self._present_streak += 1
+            if not self._hand_present and self._present_streak >= ENTER_FRAMES:
+                self._hand_present = hand_entered = True
+        else:
+            self._present_streak = 0
+            if self._hand_present and self._last_seen_ts is not None and now - self._last_seen_ts >= HAND_GONE_DEBOUNCE_S:
                 hand_left = True
                 self._hand_present = False
 
