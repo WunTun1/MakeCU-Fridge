@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,10 +111,15 @@ def now_iso() -> str:
 
 class Database:
     """Wraps a single SQLite file. Not thread-safe across processes by design —
-    the fridge loop and API server share one file via check_same_thread=False."""
+    the fridge loop and API server share one file via check_same_thread=False.
+
+    Within a process, one connection is shared by the fridge loop and every API
+    request thread, so each `cursor()` block holds a lock: concurrent use of a
+    single sqlite3 connection mixes up rows or fails with "API misuse"."""
 
     def __init__(self, path: str | Path = "refridge.db"):
         self.path = str(path)
+        self._lock = threading.RLock()  # re-entrant: a cursor() block may call other methods
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
@@ -134,15 +140,16 @@ class Database:
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:
-        cur = self._conn.cursor()
-        try:
-            yield cur
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
-        finally:
-            cur.close()
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                yield cur
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+            finally:
+                cur.close()
 
     def close(self) -> None:
         self._conn.close()

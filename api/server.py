@@ -21,6 +21,7 @@ from inventory.database import get_db
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand
 from intelligence.grocery import grocery_plan, next_trip_date
+from intelligence.recipes import suggested_recipes
 from intelligence.search import search as fuzzy_search
 from nutrition.chatbot import NutritionistChatbot
 from nutrition.intake import get_intake
@@ -176,11 +177,16 @@ def get_summary():
         entry = by_product.setdefault(product["id"], {
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
+            "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0,
         })
         entry["grams"] += item["grams"]
+        # A product split across shelves is shown on the shelf holding most of it.
+        if item["shelf"] is not None and item["grams"] > entry["_shelf_grams"]:
+            entry["shelf"], entry["_shelf_grams"] = item["shelf"], item["grams"]
 
     inventory = []
     for entry in by_product.values():
+        entry.pop("_shelf_grams")
         dl = days_left(db, entry["product_id"])
         fill = (entry["grams"] / entry["package_size_g"]) if entry["package_size_g"] else None
         inventory.append({**entry, "days_left": dl, "fill_fraction": fill})
@@ -197,6 +203,11 @@ def get_summary():
         "conditions": _condition_dict(db.latest_condition()),
         "door_open": scale.door_is_open(),
     }
+
+
+@app.get("/api/recipes/suggested")
+def get_suggested_recipes(limit: int = 2):
+    return [r.__dict__ for r in suggested_recipes(db, min(max(limit, 1), 5))]
 
 
 @app.get("/api/activity")

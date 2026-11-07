@@ -35,7 +35,7 @@ def main() -> None:
     parser.add_argument("--db", default="refridge.db")
     args = parser.parse_args()
 
-    base_env = {**os.environ, "PYTHONUNBUFFERED": "1", "DATABASE_PATH": args.db, "NUM_SHELVES": "2"}
+    base_env = {**os.environ, "PYTHONUNBUFFERED": "1", "DATABASE_PATH": args.db, "NUM_SHELVES": "1"}  # one weighed shelf
 
     if args.seed:
         db_path = ROOT / args.db

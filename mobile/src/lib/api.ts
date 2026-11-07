@@ -26,8 +26,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-const post = <T>(path: string, body: unknown) =>
-  request<T>(path, { method: 'POST', body: JSON.stringify(body) });
+const post = <T>(path: string, body: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body) });
 
 export type Alert = {
   product_id: number | null;
@@ -44,6 +43,9 @@ export type InventoryEntry = {
   package_size_g: number | null;
   days_left: number | null;
   fill_fraction: number | null;
+  location: string;
+  /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
+  shelf: number | null;
 };
 
 export type Macros = { calories: number; protein_g: number; carbs_g: number; fat_g: number };
@@ -118,8 +120,16 @@ export type Activity = {
   product_name: string;
 };
 
+export type RecipeSuggestion = {
+  name: string;
+  /** Product names the recipe uses, the ones expiring soon first. */
+  uses: string[];
+  uses_soon: string[];
+};
+
 export const api = {
   summary: () => request<Summary>('/api/summary'),
+  suggestedRecipes: (limit = 2) => request<RecipeSuggestion[]>(`/api/recipes/suggested?limit=${limit}`),
   activity: (limit = 8) => request<Activity[]>(`/api/activity?limit=${limit}`),
   commonProducts: (limit = 8) => request<{ id: number; name: string }[]>(`/api/products/common?limit=${limit}`),
   search: (q: string) => request<SearchResult[]>(`/api/search?q=${encodeURIComponent(q)}`),
@@ -136,12 +146,9 @@ export const api = {
       | { action: 'remove'; item_id: number }
       | { action: 'add_confirmed'; product_name: string; grams?: number },
   ) => post<{ ok: true }>(`/api/review/${id}`, body),
-  addItem: (body: { name: string; grams: number; location: string }) =>
-    post<{ item_id: number }>('/api/items', body),
-  barcode: (barcode: string, location = 'pantry') =>
-    post<{ item_id: number }>('/api/barcode', { barcode, location }),
+  addItem: (body: { name: string; grams: number; location: string }) => post<{ item_id: number }>('/api/items', body),
+  barcode: (barcode: string, location = 'pantry') => post<{ item_id: number }>('/api/barcode', { barcode, location }),
   profile: () => request<Profile>('/api/profile'),
-  saveProfile: (p: Partial<Profile>) =>
-    request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
+  saveProfile: (p: Partial<Profile>) => request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
   chat: (message: string) => post<{ reply: string }>('/api/chat', { message }),
 };

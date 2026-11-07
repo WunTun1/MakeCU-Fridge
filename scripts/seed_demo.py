@@ -44,16 +44,18 @@ def seed(db: Database) -> None:
     start = now - timedelta(days=DAYS_OF_HISTORY)
 
     for location, product_defs in (("fridge", PRODUCTS), ("pantry", PANTRY_PRODUCTS)):
-        for name, category, package_g, is_staple, cal, protein, carbs, fat, daily_use in product_defs:
+        for i, (name, category, package_g, is_staple, cal, protein, carbs, fat, daily_use) in enumerate(product_defs):
+            # Half the fridge sits on the weighed shelf (0); the rest is elsewhere in the fridge.
+            shelf = 0 if location == "fridge" and i % 2 == 0 else None
             product_id = db.get_or_create_product(
                 name, category=category, usual_package_size_g=package_g, is_staple=is_staple,
                 nutrition_per_100g={"calories": cal, "protein_g": protein, "carbs_g": carbs, "fat_g": fat},
                 nutrition_source="seed",
             )
 
-            item_id = db.create_item(product_id, grams=package_g, location=location)
+            item_id = db.create_item(product_id, grams=package_g, location=location, shelf=shelf)
             db.log_event("add", product_id=product_id, item_id=item_id, grams_delta=package_g,
-                         occurred_at=start.isoformat())
+                         shelf=shelf, occurred_at=start.isoformat())
             remaining = float(package_g)
             t = start
 

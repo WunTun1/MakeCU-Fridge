@@ -75,3 +75,32 @@ def test_waste_excludes_item_from_active_list(db):
     item_id = inv_events.apply_add(db, pid, grams=150)
     inv_events.apply_waste(db, item_id)
     assert db.get_item(item_id)["status"] == "removed"
+
+
+def test_shared_connection_is_safe_across_threads(tmp_path):
+    # The API's request threads and the fridge loop share one Database.
+    import threading
+
+    from inventory.database import Database
+
+    db = Database(tmp_path / "t.db")
+    pid = db.get_or_create_product("Milk", usual_package_size_g=1000)
+    for _ in range(20):
+        db.create_item(pid, grams=500)
+    errors: list[BaseException] = []
+
+    def reader():
+        try:
+            for _ in range(200):
+                for item in db.active_items():
+                    assert item["grams"] == 500
+                    assert db.get_product(item["product_id"])["name"] == "Milk"
+        except BaseException as e:  # noqa: BLE001 - surface any failure from the thread
+            errors.append(e)
+
+    threads = [threading.Thread(target=reader) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors[0]
