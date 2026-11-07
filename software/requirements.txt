@@ -1,0 +1,7 @@
+ultralytics
+opencv-python
+requests
+openai
+python-dotenv
+pillow
+pillow-heif
