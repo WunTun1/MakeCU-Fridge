@@ -93,6 +93,40 @@ def identify_item(
     return result
 
 
+WHICH_PROMPT = (
+    "Something was just taken out of a fridge. The first photo is a crop of where it sat, from "
+    "before it was taken; the second is the whole shelf before. Which of the listed items is it? "
+    'Respond with ONLY compact JSON: {"index": int or null, "confidence": 0-1}. index is the '
+    "item's number in the list; null if none of them fits."
+)
+
+
+def which_item(crop: np.ndarray, shelf_context: np.ndarray | None, names: list[str]) -> int | None:
+    """Which of `names` the crop shows (an index into it), or None if Gemini is off, unsure, or
+    sees none of them."""
+    client = make_client()
+    if client is None or not names:
+        return None
+    listing = "\n".join(f"{i}: {n}" for i, n in enumerate(names))
+    parts = [f"Items on the shelf:\n{listing}\nCrop of where it was:",
+             types.Part.from_bytes(data=_encode_jpeg(crop), mime_type="image/jpeg")]
+    if shelf_context is not None:
+        parts += ["Whole shelf, before:", types.Part.from_bytes(data=_encode_jpeg(shelf_context), mime_type="image/jpeg")]
+    try:
+        response = client.models.generate_content(
+            model=model_name(), contents=parts,
+            config=types.GenerateContentConfig(system_instruction=WHICH_PROMPT, response_mime_type="application/json"),
+        )
+        result = json.loads(response.text)
+        index, confidence = result.get("index"), float(result.get("confidence", 0))
+    except Exception:
+        log.exception("Gemini couldn't say which item was taken out; asking the user instead")
+        return None
+    if isinstance(index, int) and 0 <= index < len(names) and confidence >= LOW_CONFIDENCE_THRESHOLD:
+        return index
+    return None
+
+
 def _unknown_item_fallback() -> dict:
     return {
         "item_name": "Unknown Item",

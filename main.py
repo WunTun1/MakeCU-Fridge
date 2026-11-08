@@ -44,6 +44,32 @@ def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
 MIN_FOOD_FRACTION = 0.01
 
 
+def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int]) -> int | None:
+    """Which item was where `region` is, in the before photo: one whose saved spot is inside it,
+    else the one Gemini picks from the shelf's items, else the only one there could be."""
+    from vision import tracking
+    from vision.camera import crop
+    from vision.classifier import which_item
+
+    candidates = [i for i in db.active_items(location="fridge")
+                  if i["shelf"] in (shelf, None) and i["id"] not in exclude]
+    if not candidates:
+        return None
+    x, y, w, h = region.bbox
+    fh, fw = before_frame.shape[:2]
+    cx, cy = (x + w / 2) / fw, (y + h / 2) / fh
+    inside = [i for i in candidates if i["position_x"] is not None
+              and x <= i["position_x"] * fw <= x + w and y <= i["position_y"] * fh <= y + h]
+    if inside:
+        return min(inside, key=lambda i: (i["position_x"] - cx) ** 2 + (i["position_y"] - cy) ** 2)["id"]
+    if identify_items_enabled():
+        names = [db.get_product(i["product_id"])["name"] for i in candidates]
+        picked = which_item(crop(before_frame, region.bbox), before_frame, names)
+        if picked is not None:
+            return candidates[picked]["id"]
+    return candidates[0]["id"] if len(candidates) == 1 else None
+
+
 def _in_band(bbox, frame_h: int, band: tuple[float, float]) -> bool:
     _, y, _, h = bbox
     center = (y + h / 2) / frame_h
@@ -73,7 +99,7 @@ def _handle_trip(
     from inventory import events as inv_events
     from vision import tracking
     from vision.camera import crop
-    from vision.change import detect_changes
+    from vision.change import appeared, detect_changes
     from vision import snapshots
     from vision.classifier import identify_item
 
@@ -86,8 +112,27 @@ def _handle_trip(
         view.changes([r.bbox for r in regions])
     known = _known_items_for_shelf(db, shelf, before_frame)
     result = tracking.match(known, regions, before_frame, after_frame)
+    # Each changed region not explained by a known item: something put in, or something taken out.
+    # Taken out, the before photo shows what it was.
     min_area = MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]
-    result.new_regions = [r for r in result.new_regions if r.bbox[2] * r.bbox[3] >= min_area]
+    sized = [r for r in result.new_regions if r.bbox[2] * r.bbox[3] >= min_area]
+    result.new_regions = [r for r in sized if appeared(before_frame, after_frame, r.bbox)]
+    accounted = set(result.vanished_item_ids) | {item_id for item_id, _ in result.moved}
+    for r in sized:
+        if r in result.new_regions:
+            continue
+        photo = snapshots.save(crop(before_frame, r.bbox), grams=None)
+        item_id = _what_was_there(db, shelf, r, before_frame, accounted)
+        if item_id is None:
+            snapshots.record_removed(photo, None)
+            inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": "taken out, not sure what",
+                                                                 "photo": photo.name})
+            continue
+        accounted.add(item_id)
+        result.vanished_item_ids.append(item_id)
+        name = db.get_product(db.get_item(item_id)["product_id"])["name"]
+        snapshots.record_removed(photo, name)
+        log.info("Taken out: %s (item %d)", name, item_id)
 
     observation = CameraObservation(
         moved=[MovedItem(item_id, tracking.normalized_position(r.bbox, after_frame.shape))

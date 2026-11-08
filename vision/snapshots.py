@@ -44,6 +44,13 @@ def record(path: Path, info: dict) -> None:
     _write(path, meta)
 
 
+def record_removed(path: Path, item_name: str | None) -> None:
+    """A photo of what was taken out (from before): which item it was, or None if not known."""
+    meta = _read(path)
+    meta.update(status="removed", item_name=item_name, needs_confirmation=item_name is None)
+    _write(path, meta)
+
+
 def recent(limit: int = 12) -> list[dict]:
     """Newest first: {"name", "at", "grams", "status", "item_name", "confidence", "needs_confirmation"}."""
     if not SNAPSHOT_DIR.is_dir():

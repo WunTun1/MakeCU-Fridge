@@ -105,7 +105,7 @@ VISION_PAGE = """<!doctype html>
   </section>
   <section class="card photos">
     <div class="photos-head">
-      <h2>Photos of new items<small id="count"></small></h2>
+      <h2>Photos<small id="count"></small></h2>
       <button id="clear" disabled>Clear</button>
     </div>
     <div class="list" id="shots"></div>
@@ -164,6 +164,9 @@ VISION_PAGE = """<!doctype html>
   function describe(s) {
     if (s.status === 'pending') return { name: 'Naming', badge: ['wait', 'Waiting'] };
     if (s.status === 'skipped') return { name: 'Not named', badge: ['wait', 'Gemini off'] };
+    if (s.status === 'removed') {
+      return s.item_name ? { name: s.item_name, badge: ['good', 'Taken out'] } : { name: 'Something taken out', badge: ['warn', 'Check app'] };
+    }
     if (s.status === 'named') {
       const pct = s.confidence != null ? Math.round(s.confidence * 100) + '%' : '';
       return s.needs_confirmation

@@ -87,6 +87,34 @@ def detect_changes(
     return regions
 
 
+RING_FRACTION = 0.25  # the background ring around a region: this share of its size, on each side
+
+
+def _stands_out(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> float:
+    """How much the inside of `bbox` differs from the shelf just around it, in this photo: high
+    when something sits there, low when it's bare shelf like its surroundings."""
+    x, y, w, h = bbox
+    fh, fw = frame.shape[:2]
+    pad = max(int(max(w, h) * RING_FRACTION), 4)
+    x0, y0, x1, y1 = max(x - pad, 0), max(y - pad, 0), min(x + w + pad, fw), min(y + h + pad, fh)
+    lab = cv2.cvtColor(cv2.GaussianBlur(frame[y0:y1, x0:x1], (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    inside = np.zeros(lab.shape[:2], bool)
+    inside[y - y0:y - y0 + h, x - x0:x - x0 + w] = True
+    ring = lab[~inside]
+    if ring.size == 0:  # the region fills the frame: nothing around it to compare with
+        return float(np.std(lab[inside]))
+    background = np.median(ring, axis=0)
+    d = np.abs(lab[inside] - background)
+    return float(np.mean(LIGHTNESS_WEIGHT * d[:, 0] + d[:, 1] + d[:, 2]))
+
+
+def appeared(before: np.ndarray, after: np.ndarray, bbox: tuple[int, int, int, int]) -> bool:
+    """For a changed region: True if something is there now that wasn't (put in), False if
+    something was there that's gone (taken out). Whichever photo's region stands out more from
+    the shelf around it is the one with the thing in it."""
+    return _stands_out(after, bbox) >= _stands_out(before, bbox)
+
+
 def steady_frame(frames: list[np.ndarray]) -> np.ndarray:
     """Per-pixel median of a few consecutive frames: removes sensor noise and one-frame flicker."""
     if len(frames) == 1:

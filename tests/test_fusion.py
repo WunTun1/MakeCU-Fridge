@@ -34,16 +34,15 @@ def test_weight_drop_matching_vanished_item_is_remove():
     assert decisions[0].item_id == 1
 
 
-def test_weight_drop_matches_best_subset_of_several_vanished_items():
+def test_every_item_the_camera_saw_go_is_removed_whatever_the_scale_says():
     vanished = [
         VanishedItem(item_id=1, product_id=10, grams=650),
         VanishedItem(item_id=2, product_id=11, grams=500),
     ]
-    # Only the 650g item actually left; the 500g one is just hidden behind something.
-    decisions = reconcile_shelf(0, 1150, 500, CameraObservation(vanished=vanished))
-    removes = [d for d in decisions if d.kind == "remove"]
-    assert len(removes) == 1
-    assert removes[0].item_id == 1
+    for after in (500, 1150, 1400):  # dropped less than both, didn't move, even went up
+        removes = [d.item_id for d in reconcile_shelf(0, 1150, after, CameraObservation(vanished=vanished))
+                   if d.kind == "remove"]
+        assert removes == [1, 2]
 
 
 def test_weight_gain_alone_adds_nothing():

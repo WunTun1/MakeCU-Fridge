@@ -2,6 +2,9 @@
 hand trip. See ReFridge_Architecture.md section 6 and 6b for the table this
 implements.
 
+What was put in or taken out is the camera's call; the weight says how much, and a weight drop
+with nothing gone from view is someone using part of an item.
+
 This module is pure logic — it takes already-computed camera observations
 (what the tracker decided vanished, moved, or is a brand-new region) and the
 before/after weight for a shelf, and returns a list of `Decision`s. The
@@ -11,7 +14,6 @@ name "add" / "swap" regions before doing so.
 """
 from __future__ import annotations
 
-import itertools
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -26,7 +28,6 @@ TYPICAL_PACKAGE_WEIGHTS_G = {
     "bread": 500, "juice": 1000, "leafy greens": 150, "berries": 350,
 }
 SPLIT_SUM_TOLERANCE_PCT = 0.15
-NOISE_RECONCILE_TOLERANCE_G = 20.0
 
 
 @dataclass
@@ -67,20 +68,6 @@ class Decision:
     region: Optional[NewRegion] = None
     note: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
-
-
-def _closest_vanishing_subset(vanished: list[VanishedItem], target: float) -> list[VanishedItem]:
-    """Some items may only be hidden, not removed. Find the subset of
-    `vanished` whose total weight is closest to the measured loss."""
-    best: list[VanishedItem] = []
-    best_diff = float("inf")
-    for r in range(1, len(vanished) + 1):
-        for combo in itertools.combinations(vanished, r):
-            diff = abs(sum(v.grams for v in combo) - target)
-            if diff < best_diff:
-                best_diff = diff
-                best = list(combo)
-    return best
 
 
 def _split_combined_weight(total: float, item_names: list[str]) -> list[float]:
@@ -128,11 +115,9 @@ def reconcile_shelf(
             decisions.extend(_adds(new_regions, sum(v.grams for v in vanished) + delta))
         elif new_regions:
             decisions.extend(_adds(new_regions, 0.0))
-        elif vanished:
-            decisions.append(Decision(
-                kind="needs_review", note="camera saw an item go but the weight did not change",
-                meta={"vanished": [v.item_id for v in vanished], "new_region_count": 0},
-            ))
+        else:
+            for v in vanished:  # the camera saw it go: gone, whatever the scale says
+                decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
         return decisions
 
     if vanished and new_regions:
@@ -158,25 +143,15 @@ def reconcile_shelf(
             ))
             return decisions
 
-        total_vanished = sum(v.grams for v in vanished)
-        if abs(total_vanished - loss) <= max(NOISE_RECONCILE_TOLERANCE_G, total_vanished * 0.1):
-            for v in vanished:
-                decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
-        else:
-            best_subset = _closest_vanishing_subset(vanished, loss)
-            subset_ids = {v.item_id for v in best_subset}
-            for v in best_subset:
-                decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
-            remaining_diff = loss - sum(v.grams for v in best_subset)
-            if abs(remaining_diff) > NOISE_RECONCILE_TOLERANCE_G:
-                decisions.append(Decision(
-                    kind="needs_review",
-                    note="removed items don't fully account for the weight drop",
-                    meta={"matched": list(subset_ids), "unmatched_grams": remaining_diff},
-                ))
+        # Taking out is the camera's call, like putting in: every item it saw go is removed.
+        for v in vanished:
+            decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
         return decisions
 
-    # delta > 0, nothing vanished. Only what the camera saw is added; weight alone adds nothing.
+    # delta > 0. Only what the camera saw is added (weight alone adds nothing), and what it saw go
+    # is removed.
+    for v in vanished:
+        decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
     if new_regions:
         decisions.extend(_adds(new_regions, delta))
     return decisions
