@@ -57,6 +57,8 @@ export type InventoryEntry = {
   expires_in_days: number | null;
   /** True when that date is an estimated shelf life, not printed on the package. */
   expiry_estimated: boolean;
+  /** Photo of the item (relative to API_URL), when nobody could name it; else null. */
+  image_url: string | null;
   location: 'fridge' | 'pantry' | 'freezer';
   /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
   shelf: number | null;
@@ -203,6 +205,8 @@ export const api = {
   },
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
   cooked: (id: number, servingsEaten: number) =>
-    post<{ recipe: string; used: { item: string; grams: number }[] }>(`/api/recipes/${id}/cooked`, { servings_eaten: servingsEaten }),
+    post<{ recipe: string; used: { item: string; grams: number }[] }>(`/api/recipes/${id}/cooked`, {
+      servings_eaten: servingsEaten,
+    }),
   rate: (id: number, liked: boolean) => post<{ ok: true }>(`/api/recipes/${id}/rate`, { liked }),
 };

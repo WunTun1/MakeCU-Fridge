@@ -13,6 +13,15 @@ const STORAGE_KEY = 'refridge.kiosk.simScreen';
 const MIN_WINDOW_W = SCREENS[0].width + 80;
 const MIN_WINDOW_H = SCREENS[0].height + 120;
 
+/** `/kiosk?sim=off` always fills the window, e.g. on a real panel driven at a desktop resolution. */
+function simDisabled(): boolean {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? '').get('sim') === 'off';
+  } catch {
+    return false;
+  }
+}
+
 function load(): ScreenKey {
   try {
     const v = globalThis.localStorage?.getItem(STORAGE_KEY);
@@ -31,8 +40,22 @@ function load(): ScreenKey {
 export function ScreenSimulator({ children }: { children: ReactNode }) {
   const win = useWindowDimensions();
   const [key, setKey] = useState<ScreenKey>(load);
-  const roomy = Platform.OS === 'web' && win.width >= MIN_WINDOW_W && win.height >= MIN_WINDOW_H;
-  if (!roomy) return <View style={{ flex: 1 }}>{children}</View>;
+  const roomy = Platform.OS === 'web' && !simDisabled() && win.width >= MIN_WINDOW_W && win.height >= MIN_WINDOW_H;
+  if (!roomy) {
+    // ?sim=off on a big display (e.g. a 7" panel fed 1920x1080 over HDMI): draw the 1024-wide
+    // layout scaled up to fill the screen, so it looks as designed instead of tiny and stretched.
+    const scale = Platform.OS === 'web' && simDisabled() ? win.width / SCREENS[0].width : 1;
+    if (scale > 1.05) {
+      const w = SCREENS[0].width;
+      const h = win.height / scale;
+      return (
+        <View style={{ flex: 1, overflow: 'hidden' }}>
+          <View style={{ width: w, height: h, transformOrigin: 'top left', transform: [{ scale }] }}>{children}</View>
+        </View>
+      );
+    }
+    return <View style={{ flex: 1 }}>{children}</View>;
+  }
 
   const screen = SCREENS.find((s) => s.key === key) ?? SCREENS[0];
   const choose = (k: ScreenKey) => {

@@ -10,6 +10,7 @@ export const darkColors = {
   accent: '#4ade80',
   onAccent: '#06230f',
   warn: '#fbbf24',
+  good: '#4ade80',
   danger: '#f87171',
   input: '#11131a',
 };
@@ -27,6 +28,7 @@ export const lightColors: Palette = {
   accent: '#c96442',
   onAccent: '#ffffff',
   warn: '#b7791f',
+  good: '#2f8a4a',
   danger: '#b53333',
   input: '#f0eee6',
 };

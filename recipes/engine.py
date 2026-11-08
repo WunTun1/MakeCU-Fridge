@@ -101,7 +101,9 @@ class RecipeEngine:
         rows: dict[str, list] = {}
         for item in self.db.active_items():
             product = self.db.get_product(item["product_id"])
-            if product is None or item["grams"] <= 0:
+            # An active item at 0 g was never weighed (camera-only, or off the scale) — it's still here.
+            # Used-up items don't reach this loop: consuming to 0 marks them removed.
+            if product is None:
                 continue
             canon = canonical(product["name"])
             if not canon:

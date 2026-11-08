@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from inventory.database import Database
 from intelligence.consumption import days_left
-from intelligence.expiry import describe_expiry
+from intelligence.expiry import describe_expiry, local_today
 
 DAYS_LEFT_THRESHOLD = 3
 LOW_PACKAGE_FRACTION = 0.20
@@ -24,7 +24,7 @@ class Alert:
 
 
 def _expiring_soon_items(db: Database):
-    cutoff = (datetime.now(timezone.utc) + timedelta(days=EXPIRING_SOON_DAYS)).date()
+    cutoff = local_today() + timedelta(days=EXPIRING_SOON_DAYS)  # local calendar date, like the expiry dates
     for item in db.active_items():
         if item["expiration_date"]:
             exp = datetime.fromisoformat(item["expiration_date"]).date()

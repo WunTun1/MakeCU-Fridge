@@ -12,7 +12,7 @@ import logging
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -77,6 +77,7 @@ class ItemIn(BaseModel):
     name: str
     grams: float
     location: str = "pantry"
+    shelf: int | None = None          # which shelf, for fridge items; None = elsewhere in the fridge
     category: str | None = None
     usual_package_size_g: float | None = None
     is_staple: bool = False
@@ -203,9 +204,11 @@ def get_summary():
             "product_id": product["id"], "name": product["name"], "category": product["category"],
             "grams": 0.0, "package_size_g": product["usual_package_size_g"],
             "expires_in_days": None, "expiry_estimated": False,
-            "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0,
+            "location": item["location"], "shelf": item["shelf"], "_shelf_grams": -1.0, "image_url": None,
         })
         entry["grams"] += item["grams"]
+        if (ITEM_IMAGE_DIR / f"{item['id']}.jpg").exists():
+            entry["image_url"] = f"/api/items/{item['id']}/image"
         if item["location"] == "fridge":
             entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
         # A product split across shelves is shown on the shelf holding most of it.
@@ -327,6 +330,33 @@ def resolve_review(review_id: int, resolution: ReviewResolutionIn):
     return {"ok": True}
 
 
+# -------------------------------------------------------------- item photos
+# A photo of an item, for when nobody could name it: the camera bench (vision/snap.py)
+# uploads its crop, and the fridge screen shows it on that item's tile.
+ITEM_IMAGE_DIR = Path(__file__).resolve().parent.parent / "data" / "item_images"
+MAX_ITEM_IMAGE_BYTES = 5_000_000
+
+
+@app.post("/api/items/{item_id}/image")
+async def put_item_image(item_id: int, request: Request):
+    if db.get_item(item_id) is None:
+        raise HTTPException(404, "item not found")
+    body = await request.body()
+    if not body.startswith(b"\xff\xd8") or len(body) > MAX_ITEM_IMAGE_BYTES:
+        raise HTTPException(400, "send a JPEG (raw request body, under 5 MB)")
+    ITEM_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    (ITEM_IMAGE_DIR / f"{item_id}.jpg").write_bytes(body)
+    return {"ok": True, "image_url": f"/api/items/{item_id}/image"}
+
+
+@app.get("/api/items/{item_id}/image")
+def get_item_image(item_id: int):
+    path = ITEM_IMAGE_DIR / f"{item_id}.jpg"
+    if not path.exists():
+        raise HTTPException(404, "no photo for this item")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 # ---------------------------------------------------------- manual / pantry
 @app.post("/api/items")
 def create_item(item: ItemIn):
@@ -336,7 +366,7 @@ def create_item(item: ItemIn):
     )
     expires, estimated = _expiry_for(item.location, printed_date=item.expiration_date, name=item.name, category=item.category)
     item_id = inv_events.apply_add(
-        db, product_id, item.grams, location=item.location,
+        db, product_id, item.grams, location=item.location, shelf=item.shelf,
         expiration_date=expires, expiration_estimated=estimated,
     )
     return {"item_id": item_id, "product_id": product_id}
