@@ -13,7 +13,7 @@ import {
 
 import { Button } from "@/components/Button";
 import { RecipeCardView } from "@/components/recipes/RecipeCardView";
-import { WithSettings } from "@/components/SettingsButton";
+import { WithAlerts } from "@/components/SettingsButton";
 import { useSnackbar } from "@/components/Snackbar";
 import { api } from "@/lib/api";
 import { makeStyles, useColors, useUi } from "@/lib/theme";
@@ -58,7 +58,7 @@ export default function Chat() {
       <Stack.Screen
         options={{
           headerRight: () => (
-            <WithSettings>
+            <WithAlerts>
               {messages.length > 0 && (
                 <Pressable
                   onPress={reset}
@@ -68,7 +68,7 @@ export default function Chat() {
                   <Text style={styles.link}>New chat</Text>
                 </Pressable>
               )}
-            </WithSettings>
+            </WithAlerts>
           ),
         }}
       />

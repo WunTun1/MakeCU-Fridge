@@ -374,6 +374,12 @@ class Database:
                 (max(grams, 0.0), now_iso(), item_id),
             )
 
+    def set_item_product(self, item_id: int, product_id: int) -> None:
+        """Say what an item is (an unnamed camera sighting, named in the app); its events follow."""
+        with self.cursor() as cur:
+            cur.execute("UPDATE items SET product_id = ? WHERE id = ?", (product_id, item_id))
+            cur.execute("UPDATE events SET product_id = ? WHERE item_id = ?", (product_id, item_id))
+
     def update_item(self, item_id: int, grams: float | None = None, expiration_date: str | None = None) -> None:
         """A person's correction. A date they give is treated as printed, not estimated."""
         with self.cursor() as cur:

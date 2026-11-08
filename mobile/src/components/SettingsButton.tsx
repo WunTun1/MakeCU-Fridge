@@ -2,12 +2,12 @@ import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { router } from "expo-router";
 import { Pressable } from "react-native";
 
+import { AlertsButton } from "@/components/AlertsButton";
 import { useColors } from "@/lib/theme";
 
 /**
- * The gear in every tab's top bar: goals, diet, allergies and display live in Settings,
- * not in the tab bar (like the App Store's account button), so the tabs stay the
- * five things you do every day.
+ * The gear in every tab's top-left corner: goals, diet, allergies and display live in
+ * Settings, not in the tab bar, so the tabs stay the five things you do every day.
  */
 export function SettingsButton() {
   const c = useColors();
@@ -19,7 +19,7 @@ export function SettingsButton() {
       hitSlop={8}
       style={({ pressed }) => ({
         padding: 10,
-        marginRight: 6,
+        marginLeft: 6,
         opacity: pressed ? 0.5 : 1,
       })}
     >
@@ -28,12 +28,12 @@ export function SettingsButton() {
   );
 }
 
-/** A tab's own top-bar action next to the gear (Home's Add food, Chat's New chat). */
-export function WithSettings({ children }: { children?: React.ReactNode }) {
+/** A tab's own top-bar action next to the alerts bell (Chat's New chat). */
+export function WithAlerts({ children }: { children?: React.ReactNode }) {
   return (
     <>
       {children}
-      <SettingsButton />
+      <AlertsButton />
     </>
   );
 }

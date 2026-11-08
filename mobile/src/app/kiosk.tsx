@@ -365,7 +365,7 @@ function RecipeIdeas({
       {updating && <UpdatingBar />}
       {recipes.length === 0 && !updating && (
         <Text style={styles.muted}>
-          Ideas show up once there's food in the fridge.
+          Ideas show up once there&apos;s food in the fridge.
         </Text>
       )}
       {recipes.map((r) => (

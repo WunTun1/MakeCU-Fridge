@@ -43,10 +43,13 @@ export const lightColors: Palette = {
 /** Fridge screen palettes (it has its own toggle). */
 export const palettes: Record<ThemeMode, Palette> = { dark: darkColors, light: lightColors };
 
-/** The phone keeps green for action / have it in both themes. */
+/**
+ * The phone's brand is a deep wine red: buttons, links, the selected tab. Green stays for
+ * "you have it", and "need to buy" is a brighter red so the two never blur.
+ */
 export const phonePalettes: Record<ThemeMode, Palette> = {
-  dark: darkColors,
-  light: { ...lightColors, accent: '#1f6b42', onAccent: '#ffffff' },
+  dark: { ...darkColors, accent: '#e8787a', onAccent: '#2a0b0d', danger: '#ff8a7a' },
+  light: { ...lightColors, accent: '#8e2b33', onAccent: '#ffffff', danger: '#d1402f' },
 };
 
 /** Live palette. Defaults to dark, so components outside a provider look as before. */

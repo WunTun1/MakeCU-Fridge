@@ -3,6 +3,7 @@ import { Tabs } from "expo-router";
 import type { ComponentProps } from "react";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AlertsButton } from "@/components/AlertsButton";
 import { SettingsButton } from "@/components/SettingsButton";
 import { TAB_BAR_HEIGHT } from "@/components/Snackbar";
 import { useColors, useTextScale } from "@/lib/theme";
@@ -48,8 +49,10 @@ export default function TabLayout() {
         headerStyle: { backgroundColor: c.bg },
         headerTintColor: c.text,
         sceneStyle: { backgroundColor: c.bg },
-        // Settings (goals, diet, allergies, display) sit behind a gear in every tab's top bar.
-        headerRight: () => <SettingsButton />,
+        // Settings (goals, diet, allergies, display) behind the gear, alerts behind the bell, on every tab.
+        headerLeft: () => <SettingsButton />,
+        headerRight: () => <AlertsButton />,
+        headerTitleAlign: "center",
       }}
     >
       <Tabs.Screen
@@ -80,7 +83,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="browse"
         options={{
-          title: "Browse",
+          title: "Your fridge",
           tabBarIcon: ({ color }) => <TabIcon name="th-list" color={color} />,
         }}
       />

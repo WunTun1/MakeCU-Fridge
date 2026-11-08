@@ -165,14 +165,17 @@ def _sum_amounts(have: str | None, more: str) -> str:
 
 
 def add_entries(
-    db: Database, names: list[str], source: str, recipe_id: int | None = None, recipe_name: str | None = None
+    db: Database, names: list[str], source: str, recipe_id: int | None = None, recipe_name: str | None = None,
+    amounts: list[str | None] | None = None,
 ) -> list[int]:
-    """Grocery's + button: 'apples 6' is stored as apples, amount 6."""
+    """Grocery's + button: 'apples 6' is stored as apples, amount 6. A recipe (or the restock row) gives
+    the amount separately, in `amounts`."""
     ids = []
-    for text in (n.strip() for n in names):
+    for i, text in enumerate(n.strip() for n in names):
         if text:
             name, amount = parse_entry(text)
-            ids.append(add_entry(db, name, source, recipe_id, recipe_name, amount)[0])
+            given = amounts[i] if amounts and i < len(amounts) else None
+            ids.append(add_entry(db, name, source, recipe_id, recipe_name, given or amount)[0])
     return ids
 
 

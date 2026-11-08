@@ -14,18 +14,19 @@ LOW_PACKAGE_FRACTION = 0.20
 EXPIRING_SOON_DAYS = 3  # the same window the app colors amber or red
 LEFTOVERS_ALERT_DAYS = 1  # fresh leftovers are no alarm until they keep only until tomorrow
 FRIDGE_TEMP_ALERT_C = 7.0          # above this, food safety is at risk
+FRIDGE_TEMP_LOW_C = 0.5            # at or below this, food starts to freeze
 CONDITION_STALE_MINUTES = 30       # a reading older than this isn't trusted
 
 
 # Most urgent first; each product keeps only its most urgent alert.
-URGENCY = ["fridge_temp_high", "expiring_soon", "staple_out", "low_days_left", "low_fraction"]
+URGENCY = ["fridge_temp_high", "fridge_temp_low", "expiring_soon", "staple_out", "low_days_left", "low_fraction"]
 
 
 @dataclass
 class Alert:
     product_id: int | None
     product_name: str
-    reason: str   # low_days_left|low_fraction|staple_out|expiring_soon|fridge_temp_high
+    reason: str   # low_days_left|low_fraction|staple_out|expiring_soon|fridge_temp_high|fridge_temp_low
     detail: str
     days: float | None = None   # days until it goes bad (expiring_soon) or runs out (low_days_left)
 
@@ -115,4 +116,7 @@ def _fridge_temp_alert(db: Database) -> Alert | None:
     if reading["temperature_c"] > FRIDGE_TEMP_ALERT_C:
         return Alert(None, "Fridge", "fridge_temp_high",
                      f"{reading['temperature_c']:.1f}°C — check the door and power")
+    if reading["temperature_c"] <= FRIDGE_TEMP_LOW_C:
+        return Alert(None, "Fridge", "fridge_temp_low",
+                     f"{reading['temperature_c']:.1f}°C — too cold, food may freeze; turn the dial up")
     return None

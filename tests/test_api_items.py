@@ -133,3 +133,25 @@ def test_adding_a_food_the_restock_plan_lists_makes_it_yours(client):
     own_id, new = grocery_list.add_entry(db, "Eggs", "manual")
     assert new and own_id != plan_id
     assert db.get_grocery_entry(own_id)["source"] == "manual"
+
+
+def test_naming_an_unidentified_item_moves_it_to_that_food_and_drops_the_photo(client, monkeypatch, tmp_path):
+    server = pytest.importorskip("api.server")
+    monkeypatch.setattr(server, "ITEM_IMAGE_DIR", tmp_path / "item_images")
+    made = client.post("/api/items", json={"name": "Unknown (5:15 PM)", "grams": 0, "location": "fridge", "shelf": 0}).json()
+    client.post(f"/api/items/{made['item_id']}/image", content=b"\xff\xd8 photo", headers={"Content-Type": "image/jpeg"})
+    assert [u["item_id"] for u in client.get("/api/items/unidentified").json()] == [made["item_id"]]
+
+    named = client.post(f"/api/items/{made['item_id']}/identify", json={"name": "Greek yogurt"}).json()
+    assert named["name"] == "Greek yogurt"
+    assert client.get("/api/items/unidentified").json() == []
+    yogurt = _inventory(client)["Greek yogurt"]
+    assert yogurt["image_url"] is None and yogurt["expires_in_days"] is not None  # estimated, now it's known
+
+
+def test_a_recipe_adds_its_amounts_to_the_grocery_list(client):
+    client.post("/api/grocery/items", json={"names": ["vegetable broth", "lemon juice"], "source": "recipe",
+                                             "recipe_id": 7, "recipe_name": "Greek Pasta", "amounts": ["1/2 cup", None]})
+    items = {i["name"]: i for i in client.get("/api/grocery").json()["items"]}
+    assert items["vegetable broth"]["amount"] == "1/2 cup"
+    assert items["lemon juice"]["amount"] is None

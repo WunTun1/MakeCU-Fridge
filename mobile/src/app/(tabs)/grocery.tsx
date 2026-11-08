@@ -18,6 +18,7 @@ import {
   type GroceryEntry,
   type GroceryList,
   type InventoryEntry,
+  type RestockItem,
 } from "@/lib/api";
 import { makeStyles, useColors, useUi } from "@/lib/theme";
 import { capitalize, sentenceCase, whenWord } from "@/lib/time";
@@ -30,23 +31,21 @@ const LOW_FRACTION = 0.25;
 const sameName = (a: string, b: string) =>
   a.trim().toLowerCase() === b.trim().toLowerCase();
 
-/** "Apples · 6", "Milk · 2 L": the amount given, else what the restock plan would buy. */
-function titleFor(entry: GroceryEntry): string {
+/** How much to get: the amount given ("6", "1/2 cup"), else what the restock plan would buy. */
+function amountFor(entry: GroceryEntry): string | null {
+  if (entry.amount) return entry.amount;
   const p = entry.plan;
-  const amount =
-    entry.amount ??
-    (p &&
-      (entry.unit === "count"
-        ? String(Math.round(p.buy_grams / entry.grams_per_unit))
-        : formatAmount(
-            p.buy_grams,
-            entry.unit,
-            entry.grams_per_unit,
-            entry.name,
-          )));
-  return amount
-    ? `${sentenceCase(entry.name)} · ${amount}`
-    : sentenceCase(entry.name);
+  if (!p) return null;
+  return entry.unit === "count"
+    ? String(Math.round(p.buy_grams / entry.grams_per_unit))
+    : formatAmount(p.buy_grams, entry.unit, entry.grams_per_unit, entry.name);
+}
+
+/** "About 2 L", "12": what the eating analysis says to buy — about a week's worth. */
+function buyText(r: RestockItem): string {
+  return r.unit === "count"
+    ? String(Math.round(r.restock_g / r.grams_per_unit))
+    : formatAmount(r.restock_g, r.unit, r.grams_per_unit, r.name);
 }
 
 /** Food you're about to run out of, soonest first (leftovers and the freezer aside). */
@@ -110,7 +109,8 @@ function sections(items: GroceryEntry[]): Section[] {
 export default function Grocery() {
   const [list, setList] = useState<GroceryList | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const summary = useApi(api.summary, 5000);
+  const summary = useApi(api.summary, 5000, "summary");
+  const restock = useApi(api.restockReport, 30000, "restock");
   const showSnack = useSnackbar();
   const ui = useUi();
   const styles = useStyles();
@@ -145,8 +145,14 @@ export default function Grocery() {
     list.items.some(
       (i) => !i.checked && i.source !== "plan" && sameName(i.name, name),
     ); // plan rows aren't shown
-  const add = (names: string[]) =>
-    run(() => api.addToGrocery({ names, source: "manual" }).then(api.grocery));
+  const add = (names: string[], amounts?: (string | null)[]) =>
+    run(() =>
+      api.addToGrocery({ names, source: "manual", amounts }).then(api.grocery),
+    );
+  const buyFor = (productId: number) => {
+    const r = restock.data?.items.find((x) => x.product_id === productId);
+    return r ? buyText(r) : null;
+  };
 
   const toggle = (entry: GroceryEntry) => {
     setList({
@@ -201,8 +207,9 @@ export default function Grocery() {
               <LowCard
                 key={`${item.product_id}-${item.location}`}
                 item={item}
+                buy={buyFor(item.product_id)}
                 listed={onList(item.name)}
-                onAdd={() => add([item.name])}
+                onAdd={() => add([item.name], [buyFor(item.product_id)])}
               />
             ))}
           </ScrollView>
@@ -230,8 +237,8 @@ export default function Grocery() {
 
       {empty && (
         <Text style={ui.detail}>
-          Nothing to buy yet. On a recipe, tap the green button to add what it
-          needs — or type an item above.
+          Nothing to buy yet. On a recipe, tap Add to grocery list to add what
+          it needs — or type an item above.
         </Text>
       )}
 
@@ -292,17 +299,159 @@ export default function Grocery() {
           </View>
         </View>
       )}
+
+      {restock.data && restock.data.items.length > 0 && (
+        <YourEating
+          items={restock.data.items}
+          fromTiger={restock.data.source === "tiger"}
+          onList={onList}
+          onAdd={(r) => add([r.name], [buyText(r)])}
+        />
+      )}
     </ScrollView>
+  );
+}
+
+/**
+ * Your eating: how fast you go through each food over the last two weeks (a small bar per
+ * day), this week against last, and when to restock how much — the analysis runs on Tiger Data.
+ */
+function YourEating({
+  items,
+  fromTiger,
+  onList,
+  onAdd,
+}: {
+  items: RestockItem[];
+  fromTiger: boolean;
+  onList: (name: string) => boolean;
+  onAdd: (r: RestockItem) => void;
+}) {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
+  return (
+    <View style={{ gap: 8, marginTop: 8 }}>
+      <View style={styles.listHeader}>
+        <Text style={ui.h2}>Your eating</Text>
+        {fromTiger && (
+          <View style={[ui.row, { gap: 6 }]}>
+            <FontAwesome name="database" size={11} color={c.muted} />
+            <Text style={ui.muted}>Insights by Tiger Data</Text>
+          </View>
+        )}
+      </View>
+      <Text style={ui.muted}>From what you used over the last two weeks</Text>
+      <View style={[ui.card, { paddingVertical: 2 }]}>
+        {items.slice(0, 6).map((r, i, shown) => {
+          const listed = onList(r.name);
+          const rate = formatAmount(
+            r.rate_g_per_day,
+            r.unit,
+            r.grams_per_unit,
+            r.name,
+          ).replace(/^about /i, "");
+          const when =
+            r.restock_in_days == null
+              ? null
+              : r.restock_in_days <= 0
+                ? "Restock today"
+                : `Restock ${whenWord(r.restock_in_days)}`;
+          const peak = Math.max(...r.series, 1);
+          return (
+            <View
+              key={r.product_id}
+              style={[styles.eatRow, i < shown.length - 1 && ui.divider]}
+            >
+              <View style={{ flex: 1, gap: 4 }}>
+                <Text
+                  style={[ui.text, { fontWeight: "600" }]}
+                  numberOfLines={1}
+                >
+                  {r.name}
+                </Text>
+                <Text style={ui.detail} numberOfLines={1}>
+                  About {rate} a day
+                </Text>
+                {r.trend_pct != null && r.trend_pct !== 0 && (
+                  <Text style={ui.muted}>
+                    {`${r.trend_pct > 0 ? "▲" : "▼"} ${Math.abs(r.trend_pct)}% vs last week`}
+                  </Text>
+                )}
+                <View
+                  style={styles.spark}
+                  accessibilityLabel={`Daily use over ${r.series.length} days`}
+                >
+                  {r.series.map((v, d) => (
+                    <View
+                      key={d}
+                      style={[
+                        styles.sparkBar,
+                        {
+                          height: 2 + (v / peak) * 22,
+                          backgroundColor:
+                            d >= r.series.length - 7 ? c.accent : c.border,
+                        },
+                      ]}
+                    />
+                  ))}
+                </View>
+                {when && (
+                  <Text
+                    style={[ui.text, { color: c.warn, fontWeight: "600" }]}
+                    numberOfLines={1}
+                  >
+                    {when} · about {buyText(r)}
+                  </Text>
+                )}
+              </View>
+              <Pressable
+                onPress={() => onAdd(r)}
+                disabled={listed}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  listed
+                    ? `${r.name} is on your list`
+                    : `Add ${buyText(r)} ${r.name} to your list`
+                }
+                style={({ pressed }) => [
+                  styles.smallButton,
+                  listed && styles.lowListed,
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                <FontAwesome
+                  name={listed ? "check" : "plus"}
+                  size={12}
+                  color={listed ? c.accent : c.onAccent}
+                />
+                <Text
+                  style={[
+                    styles.smallButtonText,
+                    listed && { color: c.accent },
+                  ]}
+                >
+                  {listed ? "On list" : "Add"}
+                </Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
 /** One food you're about to run out of: when, how much is left, and Add. */
 function LowCard({
   item,
+  buy,
   listed,
   onAdd,
 }: {
   item: InventoryEntry;
+  /** What to buy, from the eating analysis ("about 2 L"). */
+  buy: string | null;
   listed: boolean;
   onAdd: () => void;
 }) {
@@ -327,6 +476,11 @@ function LowCard({
         )}{" "}
         left
       </Text>
+      {buy && (
+        <Text style={ui.muted} numberOfLines={1}>
+          Get {buy}
+        </Text>
+      )}
       <View style={{ flex: 1 }} />
       <Pressable
         onPress={onAdd}
@@ -346,9 +500,9 @@ function LowCard({
         <FontAwesome
           name={listed ? "check" : "plus"}
           size={14}
-          color={listed ? c.good : "#ffffff"}
+          color={listed ? c.accent : c.onAccent}
         />
-        <Text style={[styles.lowButtonText, listed && { color: c.good }]}>
+        <Text style={[styles.lowButtonText, listed && { color: c.accent }]}>
           {listed ? "On list" : "Add"}
         </Text>
       </Pressable>
@@ -383,7 +537,7 @@ function AddRow({ onAdd }: { onAdd: (name: string) => void }) {
         accessibilityRole="button"
         accessibilityLabel="Add to list"
       >
-        <FontAwesome name="plus" size={18} color="#ffffff" />
+        <FontAwesome name="plus" size={18} color={c.onAccent} />
       </Pressable>
     </View>
   );
@@ -412,7 +566,7 @@ function GroceryRow({
       style={[styles.row, !last && ui.divider, done && { opacity: 0.55 }]}
     >
       <View style={[styles.check, done && styles.checkDone]}>
-        {done && <FontAwesome name="check" size={13} color="#ffffff" />}
+        {done && <FontAwesome name="check" size={13} color={c.onAccent} />}
       </View>
       <Text
         style={[
@@ -420,9 +574,20 @@ function GroceryRow({
           { flex: 1 },
           done && { textDecorationLine: "line-through" },
         ]}
+        numberOfLines={2}
       >
-        {titleFor(entry)}
+        {sentenceCase(entry.name)}
       </Text>
+      {amountFor(entry) && (
+        <Text
+          style={[
+            styles.amount,
+            done && { textDecorationLine: "line-through" },
+          ]}
+        >
+          {amountFor(entry)}
+        </Text>
+      )}
       <Pressable
         onPress={onRemove}
         style={styles.remove}
@@ -458,10 +623,42 @@ const useStyles = makeStyles((c, size) => ({
     minHeight: 36,
     marginTop: 8,
     borderRadius: 999,
-    backgroundColor: c.good,
+    backgroundColor: c.accent,
   },
-  lowListed: { backgroundColor: c.card, borderWidth: 1, borderColor: c.good },
-  lowButtonText: { color: "#ffffff", fontSize: size(14), fontWeight: "700" },
+  lowListed: { backgroundColor: c.card, borderWidth: 1, borderColor: c.accent },
+  lowButtonText: { color: c.onAccent, fontSize: size(14), fontWeight: "700" },
+  amount: {
+    color: c.text,
+    fontSize: size(15),
+    fontWeight: "700",
+    maxWidth: "40%",
+    textAlign: "right",
+  },
+  eatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+  },
+  spark: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 2,
+    height: 26,
+    marginTop: 2,
+  },
+  sparkBar: { width: 6, borderRadius: 2 },
+  smallButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: c.accent,
+  },
+  smallButtonText: { color: c.onAccent, fontSize: size(14), fontWeight: "700" },
   listHeader: {
     flexDirection: "row",
     alignItems: "center",
@@ -481,7 +678,7 @@ const useStyles = makeStyles((c, size) => ({
     width: 44,
     height: 44,
     borderRadius: 12,
-    backgroundColor: c.good,
+    backgroundColor: c.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -517,7 +714,7 @@ const useStyles = makeStyles((c, size) => ({
     alignItems: "center",
     justifyContent: "center",
   },
-  checkDone: { backgroundColor: c.good, borderColor: c.good },
+  checkDone: { backgroundColor: c.accent, borderColor: c.accent },
   remove: {
     width: 40,
     height: 40,

@@ -1,42 +1,36 @@
 import FontAwesome from "@expo/vector-icons/FontAwesome";
-import { Link, Stack, router } from "expo-router";
-import { useState } from "react";
+import { Link, router } from "expo-router";
 import {
   Pressable,
   RefreshControl,
   ScrollView,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
 
 import { InventoryRow } from "@/components/InventoryRow";
 import {
-  RecipeCardView,
-  useRecipeCardStyles,
-} from "@/components/recipes/RecipeCardView";
-import { WithSettings } from "@/components/SettingsButton";
+  haveCaption,
+  RecipeCarousel,
+  type CarouselItem,
+} from "@/components/RecipeCarousel";
 import { ErrorCard, Loading } from "@/components/States";
 import { TodayCard } from "@/components/TodayCard";
-import { formatAmount } from "@/lib/amount";
 import {
   api,
-  type Alert,
+  type BestRecipe,
   type InventoryEntry,
   type RecipeCard,
+  type RestockReport,
 } from "@/lib/api";
-import { goesBadText, keepsText, urgency, type ExpiryTone } from "@/lib/expiry";
+import { keepsText } from "@/lib/expiry";
 import { makeStyles, useColors, useUi } from "@/lib/theme";
-import { tripText, whenWord } from "@/lib/time";
+import { tripText } from "@/lib/time";
 import { useApi } from "@/lib/useApi";
 
 const POLL_MS = 5000;
-/** Fewer Cook tonight ideas than this and the row offers to ask for more. */
-const ENOUGH_IDEAS = 2;
-/** Alerts shown before "N more". */
-const ALERTS_SHOWN = 3;
-const PLACEHOLDER_CARDS = 2;
-const MORE_IDEAS_PROMPT = "What can I make without shopping?";
+const ANALYTICS_POLL_MS = 30000;
+const CAROUSEL_MAX = 8;
 
 /** Soonest to go bad first; things with no date last, by name. */
 function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
@@ -46,35 +40,65 @@ function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
   );
 }
 
-function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
-  const days = alert.days;
-  switch (alert.reason) {
-    case "expiring_soon":
-      if (entry) return goesBadText(entry) ?? alert.detail;
-      return days == null
-        ? alert.detail
-        : days < 0
-          ? "Expired"
-          : `Goes bad ${whenWord(days)}`;
-    case "low_days_left":
-      return days == null ? alert.detail : `Runs out ${whenWord(days)}`;
-    case "low_fraction":
-      return entry
-        ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left`
-        : "Running low";
-    case "staple_out":
-      return "You're out";
-    default:
-      return alert.detail;
-  }
+/** "1.3 kg", "450 g". */
+function weight(g: number): string {
+  return g >= 1000 ? `${(g / 1000).toFixed(1)} kg` : `${Math.round(g)} g`;
 }
 
+/** This week's food use against last week's, over everything you use. */
+function trendOf(report: RestockReport | null): number | null {
+  if (!report || report.items.length === 0) return null;
+  let last = 0;
+  let prev = 0;
+  for (const item of report.items) {
+    last += item.series.slice(-7).reduce((a, b) => a + b, 0);
+    prev += item.series.slice(-14, -7).reduce((a, b) => a + b, 0);
+  }
+  return prev > 0 ? Math.round(((last - prev) / prev) * 100) : null;
+}
+
+/**
+ * Cook tonight's row: the recipe that saves the most food you'd otherwise throw away first
+ * (worked out on Tiger Data), then ones you can nearly make, then tonight's other ideas.
+ */
+function carouselItems(
+  best: BestRecipe | null,
+  ready: RecipeCard[] | null,
+  tonight: RecipeCard[] | null,
+): CarouselItem[] {
+  const items: CarouselItem[] = [];
+  const seen = new Set<number>();
+  if (best?.recipe) {
+    items.push({
+      recipe: best.recipe,
+      badge: "Best to cook now",
+      caption: best.why[0] ?? haveCaption(best.recipe),
+    });
+    seen.add(best.recipe.id);
+  }
+  for (const r of [
+    ...(ready ?? []),
+    ...(tonight ?? []).filter((t) => !t.leftovers),
+  ]) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    items.push({ recipe: r, caption: haveCaption(r) });
+  }
+  return items.slice(0, CAROUSEL_MAX);
+}
+
+/**
+ * Home: a few quick numbers about your eating, then what to cook tonight (photos that turn by
+ * themselves), then today's log, the fridge, the grocery list and what you have. Alerts live
+ * behind the bell, settings behind the gear.
+ */
 export default function Home() {
-  const summary = useApi(api.summary, POLL_MS);
+  const summary = useApi(api.summary, POLL_MS, "summary");
   const profile = useApi(api.profile);
-  // No query: the engine searches by what's in the fridge, expiring items first. The server rebuilds
-  // it after every change, so polling picks up the new list without blanking the old one.
-  const ideas = useApi(api.tonight, POLL_MS, "tonight");
+  const best = useApi(api.bestRecipe, ANALYTICS_POLL_MS, "best");
+  const ready = useApi(api.readyRecipes, ANALYTICS_POLL_MS, "ready");
+  const tonight = useApi(api.tonight, POLL_MS, "tonight");
+  const restock = useApi(api.restockReport, ANALYTICS_POLL_MS, "restock");
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
@@ -86,15 +110,12 @@ export default function Home() {
   const inventory = sorted.filter((e) => e.location !== "freezer");
   const freezer = sorted.filter((e) => e.location === "freezer");
   const leftovers = inventory.filter((e) => e.leftovers);
-  // Alerts are about what's outside the freezer.
-  const entryFor = (productId: number | null) =>
-    inventory.find((e) => e.product_id === productId);
-  const proteinFirst = profile.data?.protein_mode ?? false;
+  const items = carouselItems(best.data, ready.data, tonight.data);
 
   return (
     <ScrollView
       style={ui.screen}
-      contentContainerStyle={ui.content}
+      contentContainerStyle={[ui.content, { gap: 16 }]}
       refreshControl={
         <RefreshControl
           refreshing={false}
@@ -103,109 +124,119 @@ export default function Home() {
         />
       }
     >
-      <Stack.Screen
-        options={{
-          headerRight: () => (
-            <WithSettings>
-              <AddFoodButton />
-            </WithSettings>
-          ),
-        }}
-      />
-
       {summary.error && <ErrorCard message={summary.error} />}
 
-      {s && s.review_queue_count > 0 && (
-        <Link href="/review" asChild>
-          <Pressable style={styles.reviewBanner}>
-            <Text style={[ui.text, { flex: 1 }]}>
-              {s.review_queue_count === 1
-                ? "1 fridge change needs"
-                : `${s.review_queue_count} fridge changes need`}{" "}
-              an answer
-            </Text>
-            <FontAwesome name="chevron-right" color={c.warn} />
-          </Pressable>
-        </Link>
+      {s && (
+        <Kpis
+          proteinG={s.today_intake.totals.protein_g || 0}
+          proteinGoal={profile.data?.daily_protein_g ?? null}
+          atRiskG={
+            best.data
+              ? best.data.foods.reduce((sum, f) => sum + f.at_risk_g, 0)
+              : null
+          }
+          trend={trendOf(restock.data)}
+          fromTiger={
+            best.data?.source === "tiger" || restock.data?.source === "tiger"
+          }
+        />
       )}
+
+      <View style={{ gap: 10 }}>
+        <Text style={ui.h2}>Cook tonight</Text>
+        <RecipeCarousel items={items} loading={best.loading || ready.loading} />
+      </View>
+
+      {leftovers.map((e) => (
+        <Pressable
+          key={e.product_id}
+          onPress={() =>
+            router.push({
+              pathname: "/item/[id]",
+              params: { id: e.product_id },
+            })
+          }
+          style={styles.linkCard}
+          accessibilityRole="button"
+        >
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text style={[ui.text, { fontWeight: "600" }]}>
+              Eat your leftovers: {e.name.replace(/ leftovers$/, "")}
+            </Text>
+            <Text style={ui.detail}>{keepsText(e)}</Text>
+          </View>
+          <FontAwesome name="chevron-right" color={c.textSecondary} />
+        </Pressable>
+      ))}
 
       {s && (
         <>
-          <Text style={ui.h2}>Alerts</Text>
-          <Alerts alerts={s.alerts} entryFor={entryFor} />
+          <View style={{ gap: 10 }}>
+            <Text style={ui.h2}>Today</Text>
+            <TodayCard
+              totals={s.today_intake.totals}
+              mealCount={s.today_intake.meal_count}
+              profile={profile.data}
+            />
+          </View>
 
-          <Text style={ui.h2}>Today</Text>
-          <TodayCard
-            totals={s.today_intake.totals}
-            mealCount={s.today_intake.meal_count}
-            profile={profile.data}
-          />
-
-          <Text style={ui.h2}>Cook tonight</Text>
-          {proteinFirst && (
-            <Text style={[ui.muted, styles.caption]}>
-              Highest protein first
-            </Text>
-          )}
-          <CookTonight
-            leftovers={leftovers}
-            ideas={ideas.data}
-            proteinFirst={proteinFirst}
-          />
-
-          {s.conditions?.temperature_c != null && (
-            <View
-              style={[ui.card, ui.row, { justifyContent: "space-between" }]}
-            >
-              <Text style={ui.detail}>Fridge</Text>
-              <Text style={ui.text}>
-                {`${s.conditions.temperature_c.toFixed(1)}°C`}
-                {s.conditions.humidity_pct != null
-                  ? `  ·  ${Math.round(s.conditions.humidity_pct)}% RH`
-                  : ""}
-              </Text>
-            </View>
-          )}
-
-          <Link href="/grocery" asChild>
-            <Pressable style={styles.linkCard}>
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[ui.text, { fontWeight: "600" }]}>
-                  Grocery list
-                </Text>
-                <Text style={ui.detail}>
-                  {tripText(
-                    s.next_trip_date,
-                    s.next_trip_in_days,
-                    s.covers_until,
-                  )}
+          <View style={{ gap: 10 }}>
+            {s.conditions?.temperature_c != null && (
+              <View
+                style={[ui.card, ui.row, { justifyContent: "space-between" }]}
+              >
+                <Text style={ui.detail}>Fridge</Text>
+                <Text style={ui.text}>
+                  {`${s.conditions.temperature_c.toFixed(1)}°C`}
+                  {s.conditions.humidity_pct != null
+                    ? `  ·  ${Math.round(s.conditions.humidity_pct)}% humidity`
+                    : ""}
                 </Text>
               </View>
-              <FontAwesome name="chevron-right" color={c.textSecondary} />
-            </Pressable>
-          </Link>
-
-          <Text style={ui.h2}>Inventory</Text>
-          <View style={ui.card}>
-            {inventory.length === 0 ? (
-              <Text style={ui.detail}>
-                Nothing tracked yet. Add something with Add food.
-              </Text>
-            ) : (
-              inventory.map((item, i) => (
-                <InventoryRow
-                  key={item.product_id}
-                  item={item}
-                  last={i === inventory.length - 1}
-                />
-              ))
             )}
+            <Link href="/grocery" asChild>
+              <Pressable style={styles.linkCard}>
+                <View style={{ flex: 1, gap: 2 }}>
+                  <Text style={[ui.text, { fontWeight: "600" }]}>
+                    Grocery list
+                  </Text>
+                  <Text style={ui.detail}>
+                    {tripText(
+                      s.next_trip_date,
+                      s.next_trip_in_days,
+                      s.covers_until,
+                    )}
+                  </Text>
+                </View>
+                <FontAwesome name="chevron-right" color={c.textSecondary} />
+              </Pressable>
+            </Link>
+          </View>
+
+          <View style={{ gap: 10 }}>
+            <Text style={ui.h2}>In your kitchen</Text>
+            <View style={[ui.card, { paddingVertical: 4 }]}>
+              {inventory.length === 0 ? (
+                <Text style={[ui.detail, { paddingVertical: 12 }]}>
+                  Nothing tracked yet. Add food from Your fridge.
+                </Text>
+              ) : (
+                inventory.map((item, i) => (
+                  <InventoryRow
+                    key={item.product_id}
+                    item={item}
+                    last={i === inventory.length - 1}
+                    showPlace
+                  />
+                ))
+              )}
+            </View>
           </View>
 
           {freezer.length > 0 && (
-            <>
+            <View style={{ gap: 10 }}>
               <Text style={ui.h2}>Freezer</Text>
-              <View style={ui.card}>
+              <View style={[ui.card, { paddingVertical: 4 }]}>
                 {freezer.map((item, i) => (
                   <InventoryRow
                     key={item.product_id}
@@ -214,7 +245,7 @@ export default function Home() {
                   />
                 ))}
               </View>
-            </>
+            </View>
           )}
         </>
       )}
@@ -222,226 +253,98 @@ export default function Home() {
   );
 }
 
-function AddFoodButton() {
+/** Three quick numbers about your eating, side by side. */
+function Kpis({
+  proteinG,
+  proteinGoal,
+  atRiskG,
+  trend,
+  fromTiger,
+}: {
+  proteinG: number;
+  proteinGoal: number | null;
+  atRiskG: number | null;
+  trend: number | null;
+  fromTiger: boolean;
+}) {
+  const ui = useUi();
   const styles = useStyles();
   const c = useColors();
+  const kpis = [
+    {
+      label: "Protein today",
+      value: `${Math.round(proteinG)} g`,
+      sub: proteinGoal ? `of ${Math.round(proteinGoal)} g` : "logged so far",
+      color: c.text,
+    },
+    {
+      label: "At risk",
+      value: atRiskG == null ? "—" : weight(atRiskG),
+      sub: "may go to waste",
+      color: atRiskG ? c.warn : c.text,
+    },
+    {
+      label: "Food use",
+      value:
+        trend == null
+          ? "—"
+          : `${trend > 0 ? "+" : trend < 0 ? "−" : ""}${Math.abs(trend)}%`,
+      sub: "vs last week",
+      color: c.text,
+    },
+  ];
   return (
-    <Pressable
-      onPress={() => router.push("/add")}
-      style={({ pressed }) => [styles.addButton, pressed && { opacity: 0.6 }]}
-      accessibilityRole="button"
-    >
-      <FontAwesome name="plus" size={16} color={c.accent} />
-      <Text style={styles.addLabel}>Add food</Text>
-    </Pressable>
-  );
-}
-
-/**
- * Leftovers first (they're the answer to "what's for supper"), then recipes you can make now,
- * then ones needing 1 or 2 things. Until the first list arrives, flat placeholders hold the cards'
- * place; after that the last list stays up while a new one loads. With fewer than 2 recipes, a row
- * under the cards offers "Ask for more ideas".
- */
-function CookTonight({
-  leftovers,
-  ideas,
-  proteinFirst,
-}: {
-  leftovers: InventoryEntry[];
-  ideas: RecipeCard[] | null;
-  proteinFirst: boolean;
-}) {
-  const styles = useStyles();
-  const cards = useRecipeCardStyles();
-  return (
-    <View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.carousel}
-      >
-        {leftovers.map((e) => (
-          <LeftoversCard key={e.product_id} entry={e} />
+    <View style={{ gap: 6 }}>
+      <View style={styles.kpis}>
+        {kpis.map((k, i) => (
+          <View
+            key={k.label}
+            style={[styles.kpi, i > 0 && styles.kpiDivider]}
+            accessibilityLabel={`${k.label}: ${k.value} ${k.sub}`}
+          >
+            <Text style={styles.kpiLabel} numberOfLines={1}>
+              {k.label}
+            </Text>
+            <Text
+              style={[styles.kpiValue, { color: k.color }]}
+              numberOfLines={1}
+            >
+              {k.value}
+            </Text>
+            <Text style={ui.muted} numberOfLines={1}>
+              {k.sub}
+            </Text>
+          </View>
         ))}
-        {ideas == null
-          ? Array.from({ length: PLACEHOLDER_CARDS }, (_, i) => (
-              <View
-                key={i}
-                style={[cards.card, styles.placeholder]}
-                accessibilityLabel="Loading recipes"
-              />
-            ))
-          : ideas.map((r) => (
-              <RecipeCardView
-                key={r.id}
-                card={r}
-                proteinFirst={proteinFirst}
-                onPress={() =>
-                  router.push({
-                    pathname: "/recipe/[id]",
-                    params: { id: r.id },
-                  })
-                }
-              />
-            ))}
-      </ScrollView>
-      {ideas != null && ideas.length < ENOUGH_IDEAS && (
-        <Pressable
-          onPress={() =>
-            router.push({
-              pathname: "/chat",
-              params: { ask: MORE_IDEAS_PROMPT },
-            })
-          }
-          style={styles.moreIdeas}
-          accessibilityRole="button"
-        >
-          <Text style={styles.link}>Ask for more ideas</Text>
-        </Pressable>
+      </View>
+      {fromTiger && (
+        <View style={[ui.row, { gap: 6, alignSelf: "flex-end" }]}>
+          <FontAwesome name="database" size={11} color={c.muted} />
+          <Text style={ui.muted}>Insights by Tiger Data</Text>
+        </View>
       )}
     </View>
   );
 }
 
-/** "Eat your leftovers" / Greek Stuffed Chicken / 3 servings · keeps until Tuesday. Opens the item, where eating one is the first action. */
-function LeftoversCard({ entry }: { entry: InventoryEntry }) {
-  const styles = useRecipeCardStyles();
-  const ui = useUi();
-  const c = useColors();
-  return (
-    <Pressable
-      onPress={() =>
-        router.push({
-          pathname: "/item/[id]",
-          params: { id: entry.product_id },
-        })
-      }
-      style={({ pressed }) => [styles.card, pressed && { opacity: 0.75 }]}
-      accessibilityRole="button"
-    >
-      <Text style={styles.name}>Eat your leftovers</Text>
-      <Text style={ui.text} numberOfLines={2}>
-        {entry.name.replace(/ leftovers$/, "")}
-      </Text>
-      <Text style={styles.detail} numberOfLines={2}>
-        {keepsText(entry)}
-      </Text>
-      {entry.contains.length > 0 && (
-        <Text style={[styles.detail, { color: c.danger }]}>
-          Contains {entry.contains.join(", ")}
-        </Text>
-      )}
-    </Pressable>
-  );
-}
-
-/** The 3 most urgent, then "3 more", which opens the rest in place. */
-function Alerts({
-  alerts,
-  entryFor,
-}: {
-  alerts: Alert[];
-  entryFor: (productId: number | null) => InventoryEntry | undefined;
-}) {
-  const ui = useUi();
-  const styles = useStyles();
-  const [expanded, setExpanded] = useState(false);
-  if (alerts.length === 0) {
-    return (
-      <View style={ui.card}>
-        <Text style={ui.detail}>Nothing needs attention.</Text>
-      </View>
-    );
-  }
-  const hidden = alerts.length - ALERTS_SHOWN;
-  return (
-    <>
-      {(expanded ? alerts : alerts.slice(0, ALERTS_SHOWN)).map((a, i) => (
-        <AlertRow
-          key={`${a.product_id}-${a.reason}-${i}`}
-          alert={a}
-          text={alertText(a, entryFor(a.product_id))}
-          tone={alertTone(entryFor(a.product_id))}
-        />
-      ))}
-      {hidden > 0 && (
-        <Pressable
-          onPress={() => setExpanded(!expanded)}
-          style={styles.textRow}
-          accessibilityRole="button"
-          accessibilityState={{ expanded }}
-        >
-          <Text style={styles.link}>
-            {expanded ? "Show fewer" : `${hidden} more`}
-          </Text>
-        </Pressable>
-      )}
-    </>
-  );
-}
-
-/** Same color the item gets everywhere else; an alert with no item (fridge too warm, out of a staple) is amber. */
-const alertTone = (entry: InventoryEntry | undefined): ExpiryTone =>
-  entry ? urgency(entry) : "warn";
-
-function AlertRow({
-  alert,
-  text,
-  tone,
-}: {
-  alert: Alert;
-  text: string;
-  tone: ExpiryTone;
-}) {
-  const ui = useUi();
-  const styles = useStyles();
-  const c = useColors();
-  const style = StyleSheet.flatten([
-    styles.alert,
-    { borderLeftColor: tone ? c[tone] : c.border },
-  ]);
-  const body = (
-    <Text style={[ui.text, { flex: 1 }]}>
-      <Text style={{ fontWeight: "700" }}>{alert.product_name}</Text> · {text}
-    </Text>
-  );
-  if (alert.product_id == null) return <View style={style}>{body}</View>;
-  return (
-    <Link
-      href={{ pathname: "/item/[id]", params: { id: alert.product_id } }}
-      asChild
-    >
-      <Pressable style={style}>
-        {body}
-        <FontAwesome name="chevron-right" color={c.textSecondary} />
-      </Pressable>
-    </Link>
-  );
-}
-
 const useStyles = makeStyles((c, size) => ({
-  alert: {
+  kpis: {
+    flexDirection: "row",
     backgroundColor: c.card,
     borderColor: c.border,
     borderWidth: 1,
-    borderRadius: 12,
-    padding: 16,
-    borderLeftWidth: 4,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+    borderRadius: 16,
+    paddingVertical: 14,
   },
-  reviewBanner: {
-    backgroundColor: c.card,
-    borderColor: c.warn,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
+  kpi: { flex: 1, paddingHorizontal: 12, gap: 2 },
+  kpiDivider: { borderLeftColor: c.border, borderLeftWidth: 1 },
+  kpiLabel: {
+    color: c.textSecondary,
+    fontSize: size(12),
+    lineHeight: size(16),
+    fontWeight: "600",
   },
+  kpiValue: { fontSize: size(22), lineHeight: size(28), fontWeight: "700" },
   linkCard: {
     backgroundColor: c.card,
     borderColor: c.border,
@@ -450,29 +353,6 @@ const useStyles = makeStyles((c, size) => ({
     padding: 16,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 12,
   },
-  caption: { marginTop: -4 },
-  carousel: { gap: 12, alignItems: "flex-start" },
-  placeholder: { backgroundColor: c.placeholder, borderWidth: 0 },
-  moreIdeas: { minHeight: 44, justifyContent: "center", marginTop: 4 },
-  textRow: { minHeight: 44, justifyContent: "center" },
-  link: {
-    color: c.accent,
-    fontSize: size(15),
-    lineHeight: size(20),
-    fontWeight: "600",
-  },
-  addButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    minHeight: 44,
-    paddingHorizontal: 12,
-    marginRight: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: c.accent,
-  },
-  addLabel: { color: c.accent, fontSize: size(15), fontWeight: "600" },
 }));

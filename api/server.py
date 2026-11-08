@@ -126,6 +126,11 @@ class ItemPatchIn(BaseModel):
     expiration_date: date | None = None
 
 
+class IdentifyIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    category: str | None = None
+
+
 class ConsumeIn(BaseModel):
     item_id: int
     grams: float
@@ -148,6 +153,8 @@ class GroceryAddIn(BaseModel):
     source: Literal["manual", "recipe"] = "manual"
     recipe_id: int | None = None
     recipe_name: str | None = None
+    # How much of each, in the same order ("1/2 cup", "2 L"); a name may also carry its own ("apples 6").
+    amounts: list[str | None] | None = None
 
 
 class GroceryPatchIn(BaseModel):
@@ -363,7 +370,7 @@ def put_grocery_horizon(body: HorizonIn):
 def add_grocery_items(body: GroceryAddIn):
     """`new` per name: false when it went into a row already on the list (so Undo leaves that row)."""
     before = {e["id"] for e in db.grocery_entries()}
-    ids = grocery_list.add_entries(db, body.names, body.source, body.recipe_id, body.recipe_name)
+    ids = grocery_list.add_entries(db, body.names, body.source, body.recipe_id, body.recipe_name, body.amounts)
     return {"ids": ids, "new": [i not in before for i in ids]}
 
 
@@ -537,6 +544,39 @@ def patch_item(item_id: int, body: ItemPatchIn):
     expires = body.expiration_date.isoformat() if body.expiration_date else None
     db.update_item(item_id, grams=body.grams, expiration_date=expires)
     return {"ok": True}
+
+
+@app.get("/api/items/unidentified")
+def unidentified_items():
+    """Things the camera saw but couldn't name (they have its photo): named in the app, then they
+    show on the fridge screen like anything else."""
+    out = []
+    for item in db.active_items():
+        if (ITEM_IMAGE_DIR / f"{item['id']}.jpg").exists():
+            product = db.get_product(item["product_id"])
+            out.append({"item_id": item["id"], "name": product["name"] if product else "Unknown",
+                        "image_url": f"/api/items/{item['id']}/image", "grams": item["grams"],
+                        "location": item["location"], "shelf": item["shelf"], "seen_at": item["added_at"]})
+    return out
+
+
+@app.post("/api/items/{item_id}/identify")
+def identify_item(item_id: int, body: IdentifyIn):
+    """You named it: it becomes that food (with an estimated date), and its photo goes."""
+    item = db.get_item(item_id)
+    if item is None or item["status"] != "active":
+        raise HTTPException(404, "item not found")
+    name = " ".join(body.name.split())
+    product_id = db.get_or_create_product(name, category=body.category)
+    db.set_item_product(item_id, product_id)
+    if not item["expiration_date"]:
+        expires, estimated = _expiry_for(item["location"], printed_date=None, name=name, category=body.category)
+        if expires:
+            db.update_item(item_id, expiration_date=expires)
+            with db.cursor() as cur:
+                cur.execute("UPDATE items SET expiration_estimated = ? WHERE id = ?", (int(estimated), item_id))
+    (ITEM_IMAGE_DIR / f"{item_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True, "product_id": product_id, "name": name}
 
 
 @app.post("/api/items/consume")

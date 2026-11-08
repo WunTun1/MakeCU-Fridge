@@ -152,11 +152,15 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     if (!recipe || names.length === 0) return;
     setOnList((prev) => new Set([...prev, ...names]));
     try {
+      // Each with the amount the recipe calls for ("1/2 cup"), so the list says how much to get.
+      const amountOf = (n: string) =>
+        recipe.ingredients.find((l) => l.name === n)?.amount ?? null;
       await api.addToGrocery({
         names,
         source: "recipe",
         recipe_id: recipe.id,
         recipe_name: recipe.name,
+        amounts: names.map(amountOf),
       });
       refreshAll();
       showSnack({
@@ -452,9 +456,9 @@ function GroceryBar({
         <FontAwesome
           name={done ? "check" : "shopping-cart"}
           size={18}
-          color={done ? c.good : "#ffffff"}
+          color={done ? c.accent : c.onAccent}
         />
-        <Text style={[styles.groceryLabel, done && { color: c.good }]}>
+        <Text style={[styles.groceryLabel, done && { color: c.accent }]}>
           {label}
         </Text>
       </Pressable>
@@ -640,10 +644,14 @@ const useStyles = makeStyles((c, size) => ({
     minWidth: 260,
     paddingHorizontal: 28,
     borderRadius: 999,
-    backgroundColor: c.good,
+    backgroundColor: c.accent,
   },
-  groceryDone: { backgroundColor: c.card, borderWidth: 1, borderColor: c.good },
-  groceryLabel: { color: "#ffffff", fontSize: size(16), fontWeight: "700" },
+  groceryDone: {
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: c.accent,
+  },
+  groceryLabel: { color: c.onAccent, fontSize: size(16), fontWeight: "700" },
   row: { flexDirection: "row", gap: 12 },
   thumb: { padding: 8 },
 }));

@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 
+import { haveCaption, RecipeCarousel } from "@/components/RecipeCarousel";
 import { RecipePhoto as Photo } from "@/components/RecipePhoto";
 import { SearchField } from "@/components/SearchField";
 import { ErrorCard } from "@/components/States";
@@ -16,12 +17,6 @@ const SEARCH_LIMIT = 15;
 
 const open = (id: number) =>
   router.push({ pathname: "/recipe/[id]", params: { id } });
-
-/** "You have 4 of 6" (swaps count as having it). */
-function haveText(r: RecipeCard): string | null {
-  if (!r.ingredient_count) return null;
-  return `You have ${r.have_count + r.swaps.length} of ${r.ingredient_count}`;
-}
 
 /** "35 min", "1 hr 10 min" — active time plus waiting. */
 function timeText(r: RecipeCard): string | null {
@@ -39,7 +34,6 @@ function timeText(r: RecipeCard): string | null {
  */
 export default function Recipes() {
   const ui = useUi();
-  const styles = useStyles();
   const ready = useApi(api.readyRecipes, POLL_MS, "ready");
   const tonight = useApi(api.tonight, POLL_MS, "tonight");
   const [query, setQuery] = useState("");
@@ -66,32 +60,24 @@ export default function Recipes() {
   return (
     <ScrollView
       style={ui.screen}
-      contentContainerStyle={ui.content}
+      contentContainerStyle={[ui.content, { gap: 16 }]}
       keyboardShouldPersistTaps="handled"
     >
-      <View>
-        <Text style={ui.h2}>Ready to cook</Text>
-        <Text style={ui.muted}>You have at least half of what these need</Text>
-      </View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.carousel}
-        style={styles.bleed}
-      >
-        {(ready.data ?? []).map((r) => (
-          <ReadyCard key={r.id} recipe={r} />
-        ))}
-        {ready.data == null &&
-          [0, 1, 2].map((i) => (
-            <View key={i} style={[styles.ready, styles.placeholder]} />
-          ))}
-        {ready.data?.length === 0 && (
-          <Text style={[ui.detail, { paddingVertical: 24 }]}>
-            Nothing yet — add a few things to the fridge.
+      <View style={{ gap: 10 }}>
+        <View>
+          <Text style={ui.h2}>Ready to cook</Text>
+          <Text style={ui.muted}>
+            You have at least half of what these need
           </Text>
-        )}
-      </ScrollView>
+        </View>
+        <RecipeCarousel
+          items={(ready.data ?? []).map((r) => ({
+            recipe: r,
+            caption: haveCaption(r),
+          }))}
+          loading={ready.data == null}
+        />
+      </View>
 
       <SearchField
         value={query}
@@ -124,28 +110,6 @@ export default function Recipes() {
   );
 }
 
-/** A photo-first card for the Ready to cook row. */
-function ReadyCard({ recipe }: { recipe: RecipeCard }) {
-  const styles = useStyles();
-  const ui = useUi();
-  const have = haveText(recipe);
-  return (
-    <Pressable
-      onPress={() => open(recipe.id)}
-      accessibilityRole="button"
-      style={({ pressed }) => [styles.ready, pressed && { opacity: 0.8 }]}
-    >
-      <Photo uri={recipe.image_url} style={styles.readyPhoto} />
-      <View style={styles.readyText}>
-        <Text style={[ui.text, { fontWeight: "600" }]} numberOfLines={2}>
-          {recipe.name}
-        </Text>
-        {have && <Text style={styles.have}>{have}</Text>}
-      </View>
-    </Pressable>
-  );
-}
-
 /** Search results and Cook tonight: thumbnail, name, time and how much you have. */
 function RecipeList({ recipes }: { recipes: RecipeCard[] }) {
   const ui = useUi();
@@ -170,7 +134,7 @@ function RecipeList({ recipes }: { recipes: RecipeCard[] }) {
               {r.name}
             </Text>
             <Text style={ui.muted} numberOfLines={1}>
-              {[timeText(r), haveText(r)].filter(Boolean).join(" · ")}
+              {[timeText(r), haveCaption(r)].filter(Boolean).join(" · ")}
             </Text>
           </View>
           <FontAwesome name="chevron-right" color={c.textSecondary} />
@@ -181,26 +145,6 @@ function RecipeList({ recipes }: { recipes: RecipeCard[] }) {
 }
 
 const useStyles = makeStyles((c, size) => ({
-  // The row runs to the screen's edges, like a shelf, while its first card lines up with the content.
-  bleed: { marginHorizontal: -16 },
-  carousel: { gap: 12, paddingHorizontal: 16 },
-  ready: {
-    width: 176,
-    backgroundColor: c.card,
-    borderColor: c.border,
-    borderWidth: 1,
-    borderRadius: 14,
-    overflow: "hidden",
-  },
-  placeholder: { height: 200, backgroundColor: c.placeholder, borderWidth: 0 },
-  readyPhoto: { width: "100%", height: 120 },
-  readyText: { padding: 10, gap: 4, minHeight: size(20) * 2 + size(18) + 24 },
-  have: {
-    color: c.accent,
-    fontSize: size(13),
-    lineHeight: size(18),
-    fontWeight: "600",
-  },
   row: {
     flexDirection: "row",
     alignItems: "center",

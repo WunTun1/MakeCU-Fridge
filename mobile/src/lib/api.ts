@@ -58,7 +58,8 @@ export type Alert = {
     | "low_fraction"
     | "staple_out"
     | "expiring_soon"
-    | "fridge_temp_high";
+    | "fridge_temp_high"
+    | "fridge_temp_low";
   detail: string;
   /** Days until it goes bad (expiring_soon) or runs out (low_days_left). */
   days: number | null;
@@ -277,6 +278,57 @@ export type RecipeCard = {
   leftovers?: { servings: number; expires_in_days: number | null };
 };
 
+/** A food you'd likely throw away: what's left after your usual use until it goes bad. */
+export type AtRiskFood = {
+  product_id: number;
+  name: string;
+  grams: number;
+  expires_in_days: number;
+  at_risk_g: number;
+  score: number;
+};
+
+/** Home's "Best to cook now", worked out on Tiger Data when it's connected ("tiger"), else locally. */
+export type BestRecipe = {
+  source: "tiger" | "local";
+  recipe: RecipeCard | null;
+  why: string[];
+  foods: AtRiskFood[];
+};
+
+/** How fast you go through one food, and when to buy how much. */
+export type RestockItem = Measured & {
+  product_id: number;
+  name: string;
+  on_hand_g: number;
+  rate_g_per_day: number;
+  runs_out_in_days: number | null;
+  restock_in_days: number | null;
+  restock_on: string | null;
+  restock_g: number;
+  /** This week vs last, in percent. */
+  trend_pct: number | null;
+  /** Grams used each day, oldest first, ending today. */
+  series: number[];
+};
+
+/** Something the camera saw but couldn't name, with its photo. */
+export type UnidentifiedItem = {
+  item_id: number;
+  name: string;
+  image_url: string;
+  grams: number;
+  location: "fridge" | "pantry" | "freezer";
+  shelf: number | null;
+  seen_at: string;
+};
+
+export type RestockReport = {
+  source: "tiger" | "local";
+  window_days: number;
+  items: RestockItem[];
+};
+
 export type RecipeLine = {
   name: string;
   amount: string | null;
@@ -378,6 +430,8 @@ export const api = {
     source?: "manual" | "recipe";
     recipe_id?: number;
     recipe_name?: string;
+    /** How much of each, in order ("1/2 cup", "2 L"). */
+    amounts?: (string | null)[];
   }) => post<{ ids: number[]; new: boolean[] }>("/api/grocery/items", body),
   checkGrocery: (id: number, checked: boolean) =>
     patch<{ ok: true }>(`/api/grocery/items/${id}`, { checked }),
@@ -456,6 +510,17 @@ export const api = {
   tonight: () => request<RecipeCard[]>("/api/recipes/tonight"),
   /** Recipes you have at least half the ingredients for, photo first: the Recipes tab's top row. */
   readyRecipes: () => request<RecipeCard[]>("/api/recipes/ready"),
+  /** The recipe that saves the most food you'd otherwise throw away (Tiger Data analysis). */
+  bestRecipe: () => request<BestRecipe>("/api/recipes/best"),
+  unidentified: () => request<UnidentifiedItem[]>("/api/items/unidentified"),
+  /** Name what the camera couldn't: it becomes that food, and shows on the fridge screen. */
+  identify: (itemId: number, name: string) =>
+    post<{ ok: true; product_id: number; name: string }>(
+      `/api/items/${itemId}/identify`,
+      { name },
+    ),
+  /** How fast you go through each food, and when to restock how much (Tiger Data analysis). */
+  restockReport: () => request<RestockReport>("/api/analytics/restock"),
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
   cookPreview: (id: number, made: Made) =>
     request<CookLine[]>(`/api/recipes/${id}/cooked/preview?made=${made}`),
