@@ -13,6 +13,7 @@ export const darkColors = {
   accent: '#4ade80',
   onAccent: '#06230f',
   warn: '#fbbf24',
+  good: '#4ade80',
   danger: '#f87171',
   input: '#11131a',
   /** Flat stand-in for a card that's still loading. */
@@ -33,6 +34,7 @@ export const lightColors: Palette = {
   accent: '#ad5233',
   onAccent: '#ffffff',
   warn: '#a15c07',
+  good: '#2f8a4a',
   danger: '#b53333',
   input: '#f0eee6',
   placeholder: '#ebe8df',

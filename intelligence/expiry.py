@@ -111,6 +111,13 @@ def resolve_expiration(
     return (today + timedelta(days=days)).isoformat(), True
 
 
+def local_today() -> date:
+    """Expiry dates are calendar dates where the fridge is ("use by Nov 9" means Nov 9 here),
+    so "today" is the local date. UTC's date runs a day ahead every evening in the Americas,
+    which made everything look a day closer to going bad after 7 pm Eastern."""
+    return clock.local_today()
+
+
 def days_until(expiration_date: str, today: date | None = None) -> int:
     today = today or clock.local_today()
     return (date.fromisoformat(expiration_date) - today).days

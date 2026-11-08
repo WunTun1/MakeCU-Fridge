@@ -29,7 +29,7 @@ from intelligence import clock, grocery_list, taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
 from intelligence.expiry import days_until, freezer_days, resolve_expiration
-from intelligence.fridge_view import fridge_entry, inventory_entries
+from intelligence.fridge_view import ITEM_IMAGE_DIR, fridge_entry, inventory_entries
 from intelligence.grocery import unlock_suggestions
 from intelligence.search import search as fuzzy_search
 from nutrition import intake
@@ -111,10 +111,11 @@ GRAMS_PER = {"lb": 453.6, "oz": 28.35}
 class ItemIn(BaseModel):
     """An amount as grams, or as quantity + unit (12, "count")."""
     name: str
-    grams: float | None = Field(None, gt=0)
+    grams: float | None = Field(None, ge=0)  # 0 = seen by the camera but not weighed (vision/snap.py)
     quantity: float | None = Field(None, gt=0)
     unit: Unit | None = None
     location: str = "pantry"
+    shelf: int | None = None          # which shelf, for fridge items; None = elsewhere in the fridge
     category: str | None = None
     usual_package_size_g: float | None = None
     is_staple: bool = False
@@ -193,7 +194,7 @@ class MealIn(BaseModel):
 
 class EatIn(BaseModel):
     """Grams to eat; one unit (a serving of leftovers, an egg) when left out."""
-    grams: float | None = Field(None, gt=0)
+    grams: float | None = Field(None, ge=0)  # 0 = seen by the camera but not weighed (vision/snap.py)
 
 
 class PiWeightIn(BaseModel):
@@ -464,6 +465,32 @@ def resolve_review(review_id: int, resolution: ReviewResolutionIn):
     return {"ok": True}
 
 
+# -------------------------------------------------------------- item photos
+# A photo of an item, for when nobody could name it: the camera bench (vision/snap.py)
+# uploads its crop, and the fridge screen shows it on that item's tile.
+MAX_ITEM_IMAGE_BYTES = 5_000_000
+
+
+@app.post("/api/items/{item_id}/image")
+async def put_item_image(item_id: int, request: Request):
+    if db.get_item(item_id) is None:
+        raise HTTPException(404, "item not found")
+    body = await request.body()
+    if not body.startswith(b"\xff\xd8") or len(body) > MAX_ITEM_IMAGE_BYTES:
+        raise HTTPException(400, "send a JPEG (raw request body, under 5 MB)")
+    ITEM_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    (ITEM_IMAGE_DIR / f"{item_id}.jpg").write_bytes(body)
+    return {"ok": True, "image_url": f"/api/items/{item_id}/image"}
+
+
+@app.get("/api/items/{item_id}/image")
+def get_item_image(item_id: int):
+    path = ITEM_IMAGE_DIR / f"{item_id}.jpg"
+    if not path.exists():
+        raise HTTPException(404, "no photo for this item")
+    return FileResponse(path, media_type="image/jpeg")
+
+
 # ---------------------------------------------------------- manual / pantry
 @app.post("/api/items")
 def create_item(item: ItemIn):
@@ -485,7 +512,7 @@ def create_item(item: ItemIn):
         grams = item.grams
     expires, estimated = _expiry_for(item.location, printed_date=item.expiration_date, name=item.name, category=item.category)
     item_id = inv_events.apply_add(
-        db, product_id, grams, location=item.location,
+        db, product_id, grams, location=item.location, shelf=item.shelf,
         expiration_date=expires, expiration_estimated=estimated,
     )
     return {"item_id": item_id, "product_id": product_id, "grams": grams,

@@ -3,6 +3,7 @@ amounts and day words, so the assistant and the app never disagree about what's 
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 
 from intelligence import clock
 from intelligence.consumption import days_left
@@ -12,6 +13,8 @@ from inventory.units import format_amount
 
 FACT_DAYS = 7  # "going bad this week"
 GUESS_DAYS = range(2, 7)  # an estimated date is said as "around Thursday" only for these
+# Photos of items nobody could name, uploaded by the camera bench (vision/snap.py); shown on their tiles.
+ITEM_IMAGE_DIR = Path(__file__).resolve().parent.parent / "data" / "item_images"
 
 
 def inventory_entries(db: Database) -> list[dict]:
@@ -29,9 +32,11 @@ def inventory_entries(db: Database) -> list[dict]:
             "unit": product["unit"], "grams_per_unit": product["grams_per_unit"],
             "expires_in_days": None, "expiry_estimated": False, "soonest_batch": None,
             "location": item["location"], "shelf": None if frozen else item["shelf"], "_shelf_grams": -1.0,
-            "leftovers": product["recipe_id"] is not None,
+            "leftovers": product["recipe_id"] is not None, "image_url": None,
         })
         entry["grams"] += item["grams"]
+        if (ITEM_IMAGE_DIR / f"{item['id']}.jpg").exists():
+            entry["image_url"] = f"/api/items/{item['id']}/image"
         if item["location"] == "fridge":
             entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
         # A product split across shelves is shown on the shelf holding most of it.
