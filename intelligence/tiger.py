@@ -357,5 +357,6 @@ _STOCK_HISTORY = f"""
 def stock_history(days: int = 30) -> list[dict]:
     """Per day and food: rate, days of supply, your usual days of supply, and that food's score (-1..1)."""
     rows = query(_STOCK_HISTORY, _params(days=days))
-    return [{"day": r[0].date().isoformat(), "product_id": r[1], "rate": float(r[2]),
+    # r[0] is already the household's local day (the series is built in its time zone).
+    return [{"day": r[0].strftime("%Y-%m-%d"), "product_id": r[1], "rate": float(r[2]),
              "days_of_supply": float(r[3]), "usual_days": float(r[4]), "score": float(r[5])} for r in rows]
