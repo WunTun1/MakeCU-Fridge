@@ -41,3 +41,23 @@ def test_the_camera_page_and_its_endpoints(shots, monkeypatch, tmp_path):
     assert client.get("/api/vision/snapshots").json()[0]["name"] == photo.name
     assert client.get(f"/api/vision/snapshots/{photo.name}").headers["content-type"] == "image/jpeg"
     assert client.get("/api/vision/snapshots/..%2F.env").status_code == 404
+
+
+def test_clear_empties_the_photo_list(shots, monkeypatch, tmp_path):
+    monkeypatch.setenv("SCALE_SOURCE", "mock")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
+    server = pytest.importorskip("api.server")
+    client = TestClient(server.app)
+    shots.save(np.zeros((4, 4, 3), np.uint8))
+    shots.save(np.zeros((4, 4, 3), np.uint8))
+    assert client.delete("/api/vision/snapshots").json() == {"removed": 2}
+    assert client.get("/api/vision/snapshots").json() == []
+    assert list(shots.SNAPSHOT_DIR.iterdir()) == []  # the .json files went too
+
+
+def test_scale_endpoint_reports_weights_and_door(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCALE_SOURCE", "mock")
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
+    server = pytest.importorskip("api.server")
+    body = TestClient(server.app).get("/api/scale").json()
+    assert set(body) == {"weights", "door_open"} and isinstance(body["door_open"], bool)

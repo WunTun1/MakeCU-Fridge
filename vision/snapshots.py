@@ -58,6 +58,17 @@ def _order(photo: Path) -> tuple[str, int]:
     return photo.stem[:8] + stamp, int(n or 0)
 
 
+def clear() -> int:
+    """Delete every snapshot (photo and its .json). Returns how many photos went."""
+    if not SNAPSHOT_DIR.is_dir():
+        return 0
+    photos = [p for p in SNAPSHOT_DIR.glob("*.jpg") if NAME_RE.match(p.name)]
+    for photo in photos:
+        photo.unlink(missing_ok=True)
+        photo.with_suffix(".json").unlink(missing_ok=True)
+    return len(photos)
+
+
 def path_for(name: str) -> Path | None:
     """The photo's file, if `name` is one of ours (never a path outside the folder)."""
     if not NAME_RE.match(name):

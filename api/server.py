@@ -873,6 +873,18 @@ def vision_snapshots(limit: int = 12):
     return snapshots.recent(min(max(limit, 1), 50))
 
 
+@app.delete("/api/vision/snapshots")
+def clear_vision_snapshots():
+    """Empty the list of new-item photos (the camera page's Clear)."""
+    return {"removed": snapshots.clear()}
+
+
+@app.get("/api/scale")
+def get_scale():
+    """Live shelf weights (grams, by shelf) and the door, for the camera page's status bar."""
+    return {"weights": {str(s): round(g, 1) for s, g in scale.snapshot().items()}, "door_open": scale.door_is_open()}
+
+
 @app.get("/api/vision/snapshots/{name}")
 def vision_snapshot(name: str):
     path = snapshots.path_for(name)
