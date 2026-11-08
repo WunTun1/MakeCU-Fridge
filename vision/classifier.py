@@ -110,6 +110,60 @@ def identify_item(
     return result
 
 
+CHANGE_PROMPT = (
+    "You watch one fridge shelf for an inventory system. You get two whole photos of the same shelf, "
+    "before and after, and how much the shelf's weight changed in between. If it got heavier, something "
+    "was put in: name the item that is in the after photo but not in the before photo. If it got "
+    "lighter, something was taken out or partly used: name the item that is in the before photo but "
+    "gone (or smaller) in the after photo, and if it is one of the listed items already on the shelf, "
+    "give its number. Ignore everything that is the same in both photos; the weight change tells you "
+    "roughly how big the item is. Respond with ONLY compact JSON: "
+    '{"item_name": str, "category": "produce|dairy|meat|seafood|leftovers|drink|packaged|other", '
+    '"visible_expiration_date": "YYYY-MM-DD" or null, "days_until_expired": int or null, '
+    '"index": int or null, "confidence": 0-1}. '
+    "visible_expiration_date: only if you can actually read a printed date on the packaging, never a guess. "
+    "days_until_expired: your estimate of how many days from today it stays good in a refrigerator, from "
+    "what kind of food it is and how fresh it looks; null if you can't tell. index: the listed item's "
+    "number for something taken out, else null. If you aren't sure what it is, give a low confidence "
+    "rather than guessing a specific brand."
+)
+
+
+def identify_change(before: np.ndarray, after: np.ndarray, grams_delta: float, on_shelf: list[str]) -> dict:
+    """What was put in (`grams_delta` > 0) or taken out (< 0) between two whole photos of a shelf.
+    Returns identify_item's fields plus "index": which of `on_shelf` was taken out, or None. Falls
+    back to an "Unknown Item" placeholder (flagged for the person) without a key or on failure."""
+    client = make_client()
+    if client is None:
+        return {**_unknown_item_fallback(), "index": None}
+    today = datetime.now(timezone.utc).date().isoformat()
+    change = (f"The shelf got {grams_delta:.0f} g heavier: something was put in." if grams_delta > 0
+              else f"The shelf got {-grams_delta:.0f} g lighter: something was taken out or partly used.")
+    listing = "\n".join(f"{i}: {n}" for i, n in enumerate(on_shelf)) or "(none recorded)"
+    parts = [
+        f"Today is {today}. {change}\nItems already on the shelf:\n{listing}\nBEFORE:",
+        types.Part.from_bytes(data=_encode_jpeg(before), mime_type="image/jpeg"),
+        "AFTER:",
+        types.Part.from_bytes(data=_encode_jpeg(after), mime_type="image/jpeg"),
+    ]
+    try:
+        response = client.models.generate_content(
+            model=model_name(), contents=parts,
+            config=types.GenerateContentConfig(system_instruction=CHANGE_PROMPT, response_mime_type="application/json"),
+        )
+        result = json.loads(response.text)
+        if not isinstance(result, dict):
+            raise ValueError(f"expected a JSON object, got {type(result).__name__}")
+        result["confidence"] = float(result.get("confidence", 0.5))
+    except Exception:
+        log.exception("Gemini couldn't say what changed on the shelf; asking the user instead")
+        return {**_unknown_item_fallback(), "index": None}
+    index = result.get("index")
+    result["index"] = index if isinstance(index, int) and 0 <= index < len(on_shelf) else None
+    result["needs_confirmation"] = result["confidence"] < LOW_CONFIDENCE_THRESHOLD
+    return result
+
+
 WHICH_PROMPT = (
     "Something was just taken out of a fridge. You get a crop of where it sat, from before it was "
     "taken, and the whole shelf before and after with that spot outlined in green: the item is in the "

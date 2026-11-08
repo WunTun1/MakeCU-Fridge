@@ -162,6 +162,16 @@ class ScaleReader:
         # timed out — best effort median of whatever we have
         return statistics.median(state.readings) if state.readings else 0.0
 
+    def settled(self, shelf: int) -> float | None:
+        """The shelf's weight if its recent readings have settled (the median), else None.
+        Never blocks: the fridge loop asks every tick."""
+        if self.mock:
+            return self._shelves[shelf].mock_grams
+        readings = self._shelves[shelf].readings
+        if len(readings) < SETTLE_WINDOW or statistics.pstdev(readings) > SETTLE_MAX_STDEV_G:
+            return None
+        return statistics.median(readings)
+
     def snapshot(self) -> dict[int, float]:
         """Current median per shelf, without waiting to settle. For the moment the
         door opens: nothing has touched the shelves yet, and blocking here would

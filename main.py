@@ -4,7 +4,8 @@ With ENABLE_FRIDGE_LOOP=false only the API starts — enough to run the app
 off seeded data (section 15's hardware-failure fallback). With it on, the
 loop reads weights/door from the scale source (a Pi pushing over the network,
 or the simulated Pi from `run_local.py`) and frames from the Pi's camera
-server, then runs vision + fusion once per hand trip.
+server. When a shelf's weight settles somewhere new, the before and after photos go to Gemini
+with the weight change to say what was put in or taken out.
 """
 from __future__ import annotations
 
@@ -20,264 +21,187 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("refridge.main")
 
-CONSUME_MATCH_TOLERANCE_G = 20.0  # an item "heavy enough" to have lost X grams may read slightly under X
-
-
 def identify_items_enabled() -> bool:
-    """IDENTIFY_ITEMS=off skips the Gemini call for new items (testing the camera without AI)."""
+    """IDENTIFY_ITEMS=off skips the Gemini call (testing the camera without AI)."""
     return os.getenv("IDENTIFY_ITEMS", "on").lower() not in ("off", "false", "0")
 
 
-def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
-    """Vertical slice of the camera frame (normalized y0, y1) that a shelf
-    occupies. Equal bands by default; override with SHELF_BANDS="0-0.45,0.45-1"
-    once the real camera is mounted and you can see where each shelf lands."""
-    spec = os.getenv("SHELF_BANDS", "").strip()
-    if spec:
-        y0, y1 = spec.split(",")[shelf].split("-")
-        return float(y0), float(y1)
-    return shelf / num_shelves, (shelf + 1) / num_shelves
+# A settled weight this far from the last one means something was put in or taken out.
+CHANGE_MIN_G = float(os.getenv("CHANGE_MIN_G", "8"))
+# Taken out: a drop at least this share of the item's weight is the whole item; less is some used.
+WHOLE_ITEM_SHARE = 0.7
 
 
-# A new patch smaller than this share of the frame isn't a food someone put in (a reflection, a
-# speck): the camera alone decides what was added, so it has to be something item-sized.
-MIN_FOOD_FRACTION = 0.01
+class WeightWatcher:
+    """Watches each shelf's settled weight. A shelf that settles at least CHANGE_MIN_G away from
+    its last weight has had something put in or taken out. Smaller settled drifts are folded into
+    the baseline, so slow load-cell creep never adds up to a change."""
+
+    def __init__(self, scale):
+        self.scale = scale
+        self.baseline: dict[int, float] = {}
+
+    def reset(self) -> None:
+        self.baseline = {}
+
+    def steady(self) -> bool:
+        """Every shelf has settled at its baseline: nothing is being put in or taken out."""
+        for shelf in range(self.scale.num_shelves):
+            now = self.scale.settled(shelf)
+            if now is None and self.scale.read_latest(shelf) is not None:
+                return False
+            if now is not None and shelf in self.baseline and abs(now - self.baseline[shelf]) >= CHANGE_MIN_G:
+                return False
+        return True
+
+    def changes(self) -> dict[int, tuple[float, float]]:
+        """{shelf: (weight before, weight now)} for each shelf that settled somewhere new."""
+        found = {}
+        for shelf in range(self.scale.num_shelves):
+            now = self.scale.settled(shelf)
+            if now is None:
+                continue
+            before = self.baseline.setdefault(shelf, now)
+            if abs(now - before) >= CHANGE_MIN_G:
+                found[shelf] = (before, now)
+            else:
+                self.baseline[shelf] = now  # drift, or nothing happened
+        return found
+
+    def accept(self, shelf: int, grams: float) -> None:
+        self.baseline[shelf] = grams
 
 
-def _shelf_items(db, shelf: int, exclude: set[int]):
+def _shelf_items(db, shelf: int):
     """Active fridge items that could be on this shelf: on it, or with no shelf (added by hand)."""
-    return [i for i in db.active_items(location="fridge")
-            if i["shelf"] in (shelf, None) and i["id"] not in exclude]
+    return [i for i in db.active_items(location="fridge") if i["shelf"] in (shelf, None)]
 
 
-def _item_at(db, shelf: int, region, frame, exclude: set[int]) -> int | None:
-    """The item whose saved spot is inside `region` (the nearest to its middle), if any."""
-    x, y, w, h = region.bbox
-    fh, fw = frame.shape[:2]
-    cx, cy = (x + w / 2) / fw, (y + h / 2) / fh
-    inside = [i for i in _shelf_items(db, shelf, exclude) if i["position_x"] is not None
-              and x <= i["position_x"] * fw <= x + w and y <= i["position_y"] * fh <= y + h]
-    if not inside:
-        return None
-    return min(inside, key=lambda i: (i["position_x"] - cx) ** 2 + (i["position_y"] - cy) ** 2)["id"]
+def _which_was_taken(db, items, info: dict, grams: float):
+    """The item taken out: the one Gemini picked from the list, else the one it named, else the
+    only one there, else the one whose weight is closest to what left (within a quarter)."""
+    if info.get("index") is not None:
+        return items[info["index"]]
+    named = (info.get("item_name") or "").strip().lower()
+    for item in items:
+        if named and db.get_product(item["product_id"])["name"].strip().lower() == named:
+            return item
+    if len(items) == 1:
+        return items[0]
+    if items:
+        closest = min(items, key=lambda i: abs(i["grams"] - grams))
+        if abs(closest["grams"] - grams) <= max(15.0, 0.25 * grams):
+            return closest
+    return None
 
 
-def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int], after_frame=None) -> int | None:
-    """Which item was where `region` is, in the before photo: one whose saved spot is inside it,
-    else the one Gemini picks from the shelf's items, else the only one there could be."""
-    from vision.camera import crop
-    from vision.classifier import which_item
-
-    candidates = _shelf_items(db, shelf, exclude)
-    if not candidates:
-        return None
-    spot = _item_at(db, shelf, region, before_frame, exclude)
-    if spot is not None:
-        return spot
-    if identify_items_enabled():
-        names = [db.get_product(i["product_id"])["name"] for i in candidates]
-        picked = which_item(crop(before_frame, region.bbox), before_frame, names, after=after_frame, box=region.bbox)
-        if picked is not None:
-            return candidates[picked]["id"]
-    return candidates[0]["id"] if len(candidates) == 1 else None
-
-
-def _in_band(bbox, frame_h: int, band: tuple[float, float]) -> bool:
-    _, y, _, h = bbox
-    center = (y + h / 2) / frame_h
-    return band[0] <= center < band[1]
-
-
-def _known_items_for_shelf(db, shelf: int, frame):
-    from vision.tracking import KnownItem, color_histogram, patch_box
-
-    known = []
-    for item in db.active_items(shelf=shelf):
-        if item["position_x"] is None:
-            continue
-        position = (item["position_x"], item["position_y"])
-        known.append(KnownItem(
-            item_id=item["id"], position=position,
-            color_hist=color_histogram(frame, patch_box(position, frame.shape)),
-        ))
-    return known
-
-
-def _handle_trip(
-    db, shelf: int, num_shelves: int, before_frame, after_frame, weight_before: float, weight_after: float
-) -> None:
-    from fusion.reconcile import CameraObservation, MovedItem, NewRegion, VanishedItem, reconcile_shelf
+def handle_change(db, shelf: int, before_frame, after_frame, grams_before: float, grams_after: float) -> None:
+    """The scale says something was put in or taken out; the two whole photos and Gemini say what."""
     from intelligence.expiry import resolve_expiration
     from inventory import events as inv_events
-    from vision import tracking
-    from vision.camera import crop
-    from vision.change import detect_changes, direction
     from vision import snapshots
-    from vision.classifier import identify_item
-
+    from vision.classifier import identify_change
     from vision.debug import view
 
-    band = shelf_band(shelf, num_shelves)
-    frame_h = after_frame.shape[0]
-    regions = [r for r in detect_changes(before_frame, after_frame) if _in_band(r.bbox, frame_h, band)]
-    if regions:
-        view.changes([r.bbox for r in regions])
-    known = _known_items_for_shelf(db, shelf, before_frame)
-    result = tracking.match(known, regions, before_frame, after_frame)
-    # Each changed region not explained by a known item: something put in, or something taken out.
-    # Taken out, the before photo shows what it was.
-    min_area = MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]
-    sized = [r for r in result.new_regions if r.bbox[2] * r.bbox[3] >= min_area]
-    accounted = set(result.vanished_item_ids) | {item_id for item_id, _ in result.moved}
-    ins, outs = [], []
-    for r in sized:
-        way = direction(before_frame, after_frame, r.bbox)
-        if way == "out":
-            outs.append(r)
-        elif way == "in":
-            # Something already on the shelf there (nudged, or the light shifted on it) isn't new:
-            # it's that item, at its new spot. Without this it would be counted a second time.
-            there = _item_at(db, shelf, r, after_frame, accounted)
-            if there is None:
-                ins.append(r)
-            else:
-                accounted.add(there)
-                result.moved.append((there, r))
-    result.new_regions = ins
-    for r in outs:
-        photo = snapshots.save(crop(before_frame, r.bbox), grams=None)
-        item_id = _what_was_there(db, shelf, r, before_frame, accounted, after_frame)
-        if item_id is None:
-            snapshots.record_removed(photo, None)
-            inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": "taken out, not sure what",
-                                                                 "photo": photo.name})
-            continue
-        accounted.add(item_id)
-        result.vanished_item_ids.append(item_id)
-        name = db.get_product(db.get_item(item_id)["product_id"])["name"]
-        snapshots.record_removed(photo, name)
-        log.info("Taken out: %s (item %d)", name, item_id)
+    delta = grams_after - grams_before
+    items = _shelf_items(db, shelf)
+    names = [db.get_product(i["product_id"])["name"] for i in items]
+    # The camera page keeps the photo that shows the item: after for put in, before for taken out.
+    photo = snapshots.save(after_frame if delta > 0 else before_frame, grams=delta)
+    log.info("Shelf %d: %+.0f g, asking what changed (%s)", shelf, delta, photo.name)
+    if identify_items_enabled():
+        info = identify_change(before_frame, after_frame, delta, names)
+    else:
+        info = {"item_name": "Unknown Item", "category": None, "visible_expiration_date": None,
+                "days_until_expired": None, "confidence": 0.0, "needs_confirmation": True,
+                "skipped": True, "index": None}
+    view.gemini_result(info)
 
-    observation = CameraObservation(
-        moved=[MovedItem(item_id, tracking.normalized_position(r.bbox, after_frame.shape))
-               for item_id, r in result.moved],
-        vanished=[
-            VanishedItem(item_id=i, product_id=db.get_item(i)["product_id"], grams=db.get_item(i)["grams"])
-            for i in result.vanished_item_ids
-        ],
-        new_regions=[NewRegion(index=i, position=tracking.normalized_position(r.bbox, after_frame.shape), bbox=r.bbox)
-                     for i, r in enumerate(result.new_regions)],
-    )
+    if delta > 0:
+        snapshots.record(photo, info)
+        if info.get("needs_confirmation"):
+            inv_events.apply_needs_review(db, shelf=shelf, meta={"candidate": info, "grams": delta})
+            return
+        expires, estimated = resolve_expiration(
+            printed_date=info.get("visible_expiration_date"), estimated_days=info.get("days_until_expired"),
+            name=info["item_name"], category=info.get("category"),
+        )
+        product_id = db.get_or_create_product(info["item_name"], category=info.get("category"))
+        inv_events.apply_add(db, product_id, delta, shelf=shelf, expiration_date=expires,
+                             expiration_estimated=estimated, confidence=info.get("confidence"))
+        log.info("Put in: %s, %.0f g", info["item_name"], delta)
+        return
 
-    decisions = reconcile_shelf(shelf, weight_before, weight_after, observation)
-    if decisions:
-        log.info("Shelf %d: %+.0f g -> %s", shelf, weight_after - weight_before, ", ".join(d.kind for d in decisions))
-    for d in decisions:
-        if d.kind == "move":
-            inv_events.apply_move(db, d.item_id, shelf, d.position)
-        elif d.kind == "remove":
-            inv_events.apply_remove(db, d.item_id)
-        elif d.kind == "consume":
-            visible = [i for i in db.active_items(shelf=shelf) if i["grams"] + CONSUME_MATCH_TOLERANCE_G >= d.grams]
-            if len(visible) == 1:
-                inv_events.apply_consume(db, visible[0]["id"], d.grams)
-            else:
-                inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
-        elif d.kind == "add":
-            box = d.region.bbox if d.region and d.region.bbox else None
-            region_crop = crop(after_frame, box) if box else after_frame
-            view.gemini_sending(box)
-            # Every snapshot is kept (data/snapshots), with what came of it, for the live camera page.
-            photo = snapshots.save(region_crop, grams=d.grams)
-            log.info("Snapshot of the new item: %s", photo)
-            if identify_items_enabled():
-                info = identify_item(region_crop, after_frame, d.grams, before=before_frame, box=box)
-            else:
-                # Testing without AI: the snapshot shows what Gemini would get, and the
-                # person names the item in the phone app instead.
-                info = {"item_name": "Unknown Item", "category": None, "visible_expiration_date": None,
-                        "days_until_expired": None, "confidence": 0.0, "needs_confirmation": True, "skipped": True}
-            snapshots.record(photo, info)
-            view.gemini_result(info)
-            if info.get("needs_confirmation"):
-                inv_events.apply_needs_review(db, shelf=shelf, meta={"candidate": info, "grams": d.grams, "position": d.position})
-            else:
-                expires, estimated = resolve_expiration(
-                    printed_date=info.get("visible_expiration_date"),
-                    estimated_days=info.get("days_until_expired"),
-                    name=info["item_name"], category=info.get("category"),
-                )
-                product_id = db.get_or_create_product(info["item_name"], category=info.get("category"))
-                inv_events.apply_add(
-                    db, product_id, d.grams, shelf=shelf, position=d.position,
-                    expiration_date=expires, expiration_estimated=estimated, confidence=info.get("confidence"),
-                )
-        elif d.kind == "restock_hidden":
-            inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
-        elif d.kind == "needs_review":
-            inv_events.apply_needs_review(db, shelf=shelf, meta={**d.meta, "note": d.note})
-        # "noop" needs nothing
+    taken = -delta
+    item = _which_was_taken(db, items, info, taken)
+    if item is None:
+        snapshots.record_removed(photo, None)
+        inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": "taken out, not sure what",
+                                                             "grams": taken, "candidate": info})
+        return
+    name = db.get_product(item["product_id"])["name"]
+    snapshots.record_removed(photo, name)
+    if taken >= WHOLE_ITEM_SHARE * item["grams"]:
+        inv_events.apply_remove(db, item["id"])
+        log.info("Taken out: %s", name)
+    else:
+        inv_events.apply_consume(db, item["id"], taken, meta={"source": "scale"})
+        log.info("Used %.0f g of %s", taken, name)
 
 
 LOOP_INTERVAL_S = 0.1  # ~10 fps; a remote Pi camera is fetched over HTTP each tick
-
-
-def _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=None):
-    """Weigh + photograph, reconcile every shelf against the reference, and
-    return the new reference for the next trip."""
-    new_weights = scale.weigh_all()
-    if after_frame is None:
-        after_frame = cam.read_frame()
-    for shelf, before_w in reference_weights.items():
-        _handle_trip(
-            db, shelf, scale.num_shelves, reference_frame, after_frame, before_w, new_weights.get(shelf, before_w)
-        )
-    return after_frame, new_weights
 
 
 def _weights_text(scale) -> str:
     return "  ".join(f"shelf {s}: {g:.0f} g" for s, g in sorted(scale.snapshot().items()))
 
 
-QUIET_FRAMES = 5  # recent hand-free frames, median-combined into the "before"/"after" photos
+STILL_FRAMES = 5  # consecutive still frames, median-combined into the before/after photos
+STILL_PIXEL_DIFF = 25  # per-pixel change between frames that counts as movement
+STILL_FRACTION = 0.004  # under this share of pixels moving, the picture is still
+STILL_TIMEOUT_S = 4.0  # after a weight change, wait at most this long for the hand to clear the picture
 # When the door switch reports closed, the door has already been swinging shut (darkening the view,
-# its edge crossing the picture) for about a second. The door-close check uses the steady view from
+# its edge crossing the picture) for about a second. The door-close check uses the still view from
 # before that, and never a frame much darker than the scene it's compared with.
 CLOSE_GUARD_S = 1.5
 # The camera's auto-exposure and white balance keep shifting for a few seconds after the door opens
-# and the light changes, so the before photo waits this long: taken sooner, the whole picture reads
-# as changed next to the after photo, and the new food is lost among the differences.
+# and the light changes; before photos from then are only used if nothing better is taken.
 LIGHT_SETTLE_S = float(os.getenv("LIGHT_SETTLE_S", "6"))
 DARKER_THAN_REFERENCE = 0.7
 
 
-RECHECK_S = 1.0  # with no hand in view, how often the steady scene is compared with the before photo
+def _is_still(prev, frame) -> bool:
+    """Nothing moving between two frames (compared small, so sensor noise doesn't count)."""
+    import cv2
+    import numpy as np
 
+    def small(f):
+        h, w = f.shape[:2]
+        return cv2.GaussianBlur(cv2.cvtColor(cv2.resize(f, (160, max(1, 160 * h // w))), cv2.COLOR_BGR2GRAY), (5, 5), 0)
 
-def _scene_changed(reference_frame, steady, num_shelves: int) -> bool:
-    """Something item-sized was put in or taken out between `reference_frame` and `steady`: the
-    backstop for trips the hand tracker didn't see."""
-    from vision.change import detect_changes, direction
-
-    min_area = MIN_FOOD_FRACTION * steady.shape[0] * steady.shape[1]
-    return any(r.bbox[2] * r.bbox[3] >= min_area and direction(reference_frame, steady, r.bbox) is not None
-               for r in detect_changes(reference_frame, steady))
+    if prev is None:
+        return False
+    moved = cv2.absdiff(small(prev), small(frame)) > STILL_PIXEL_DIFF
+    return float(np.mean(moved)) < STILL_FRACTION
 
 
 def _open_view(history, reference_frame, now: float):
-    """The steady view of the open fridge for the door-close check, from `history` (time, frame)
-    pairs of hand-free frames: the last few from before the door began to close. None if there
-    are none, so the check is skipped rather than run against a half-dark picture."""
+    """The still view of the open fridge for the door-close check, from `history` (time, frame)
+    pairs of still frames: the last few from before the door began to close. None if there are
+    none, so the check isn't run against a half-dark picture."""
     import numpy as np
 
     from vision.change import steady_frame
 
     floor = DARKER_THAN_REFERENCE * float(np.mean(reference_frame))
     usable = [f for t, f in history if t <= now - CLOSE_GUARD_S and float(np.mean(f)) >= floor]
-    return steady_frame(usable[-QUIET_FRAMES:]) if usable else None
+    return steady_frame(usable[-STILL_FRAMES:]) if usable else None
 
 
 def run_fridge_loop(stop_event: threading.Event) -> None:
+    """The scale decides when: a shelf settling at least CHANGE_MIN_G from where it was. The camera's
+    before photo (the latest still view while nothing was happening) and after photo (once the
+    picture is still again) go to Gemini with the weight change, which says what it was."""
     from collections import deque
 
     from inventory.database import get_db
@@ -285,98 +209,88 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
     from vision.camera import make_camera
     from vision.change import steady_frame
     from vision.debug import view
-    from vision.hands import TripDetector
-    from vision.people import make_detector
 
     db = get_db(os.getenv("DATABASE_PATH", "refridge.db"))
     scale = get_scale_reader()  # same instance the /api/pi/* endpoints feed
-    # HAND_DETECTOR=motion for the simulator's drawn hand, which MediaPipe rightly doesn't see as a hand.
-    people = make_detector() if os.getenv("HAND_DETECTOR", "mediapipe").lower() == "mediapipe" else None
-    trip_detector = TripDetector(people)
+    watcher = WeightWatcher(scale)
 
     with make_camera() as cam:
-        reference_frame = reference_weights = None
-        quiet: deque = deque(maxlen=QUIET_FRAMES)  # hand-free frames since the last time someone was in view
-        history: deque = deque(maxlen=60)  # (time, frame) for the same frames, ~6 s, for the door-close check
+        before_frame = None
+        before_settled = False  # the before photo was taken after the light settled
+        still: deque = deque(maxlen=STILL_FRAMES)
+        history: deque = deque(maxlen=60)  # (time, frame) of still frames, ~6 s, for the door-close check
+        pending: dict[int, tuple[float, float]] = {}
+        pending_since = 0.0
+        prev = None
         door_was_open = False
         door_opened_at = 0.0
-        last_check, changed_checks = 0.0, 0
-        log.info("Fridge loop started (scale: %s, camera: %s, hands: %s)",
-                 scale.source, type(cam).__name__, trip_detector.method)
+        log.info("Fridge loop started (scale: %s, camera: %s); changes of %g g or more are checked",
+                 scale.source, type(cam).__name__, CHANGE_MIN_G)
 
         while not stop_event.is_set():
             try:
                 door_open = scale.door_is_open()
                 frame = cam.read_frame()
+                now = time.monotonic()
+                is_still = _is_still(prev, frame)
+                prev = frame
+                if is_still:
+                    still.append(frame)
+                    history.append((now, frame))
+                else:
+                    still.clear()
 
                 if door_open and not door_was_open:
-                    trip_detector.on_door_open()
-                    quiet.clear()
-                    history.clear()
-                    reference_frame = None  # taken once the camera has adjusted and the scene is steady (below)
-                    reference_weights = scale.snapshot()
-                    door_opened_at = time.monotonic()
-                    status = "Door opened - learning the scene"
+                    watcher.reset()
+                    before_frame, before_settled = None, False
+                    pending = {}
+                    door_opened_at = now
+                    status = "Door opened"
 
                 elif door_open:
-                    signal = trip_detector.process_frame(frame)
-                    if signal["hand_present"] or trip_detector.motion_boxes:
-                        quiet.clear()
-                        history.clear()
+                    light_ok = now - door_opened_at >= LIGHT_SETTLE_S
+                    if not pending:
+                        pending = watcher.changes()
+                        pending_since = now
+                    if pending:
+                        # Weight settled somewhere new: wait for the hand to clear the picture.
+                        status = "Weight changed - waiting for a clear picture"
+                        clear = len(still) == STILL_FRAMES
+                        if clear or now - pending_since >= STILL_TIMEOUT_S:
+                            after = steady_frame(list(still)) if clear else frame
+                            for shelf, (w0, w1) in pending.items():
+                                w1 = scale.settled(shelf) or w1  # the latest settled weight
+                                handle_change(db, shelf, before_frame if before_frame is not None else after,
+                                              after, w0, w1)
+                                watcher.accept(shelf, w1)
+                            before_frame, before_settled = after, light_ok
+                            pending = {}
+                            status = "Done - ready for the next one"
                     else:
-                        quiet.append(frame)
-                        history.append((time.monotonic(), frame))
-                    adjusting = time.monotonic() - door_opened_at < LIGHT_SETTLE_S
-                    if reference_frame is None and not adjusting and len(quiet) == QUIET_FRAMES:
-                        reference_frame = steady_frame(list(quiet))
-                    status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
-                              else "Adjusting to the light" if reference_frame is None and adjusting
-                              else "Ready - put something in or take something out")
-                    # Backstop: no hand seen, but the steady scene now differs from the before photo
-                    # (twice in a row, so it isn't a passing flicker): measure it as a trip anyway.
-                    missed = False
-                    if (not signal["hand_present"] and reference_frame is not None
-                            and len(quiet) == QUIET_FRAMES and time.monotonic() - last_check >= RECHECK_S):
-                        last_check = time.monotonic()
-                        changed = _scene_changed(reference_frame, steady_frame(list(quiet)), scale.num_shelves)
-                        changed_checks = changed_checks + 1 if changed else 0
-                        missed = changed_checks >= 2
-                        if missed:
-                            log.info("Scene changed with no hand seen; checking it as a trip")
-                    if signal["hand_left"] or missed:
-                        changed_checks = 0
-                        # The one photo for this trip: the steady view once the hand is gone.
-                        after = steady_frame(list(quiet)) if quiet else frame
-                        view.frame(after, door_open=True, hand_boxes=[],
-                                   status="Hand left - weighing and comparing photos...")
-                        reference_frame, reference_weights = _measure_trip(
-                            db, cam, scale, reference_frame if reference_frame is not None else after,
-                            reference_weights, after_frame=after,
-                        )
-                        status = "Done - ready for the next one"
+                        # Nothing happening: keep the before photo fresh, so its light matches the after.
+                        if len(still) == STILL_FRAMES and watcher.steady() and (light_ok or not before_settled):
+                            before_frame, before_settled = steady_frame(list(still)), light_ok
+                        status = ("Ready - put something in or take something out" if light_ok
+                                  else "Adjusting to the light")
 
-                elif door_was_open and reference_frame is not None:
-                    # Door just closed: final weight check. The camera is inside a now-dark
-                    # fridge, so compare against the last steady view from before it began closing.
-                    after = _open_view(history, reference_frame, time.monotonic())
-                    if after is not None:
-                        _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=after)
-                    else:
-                        log.info("Door closed with no clear view since the last check; weight change left for review")
-                        _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=reference_frame)
-                    reference_frame = reference_weights = None
-                    quiet.clear()
+                elif door_was_open:
+                    # Door just closed: a change the scale settled on while it closed still counts,
+                    # photographed from the last still view before the door began to close.
+                    found = pending or watcher.changes()
+                    if found and before_frame is not None:
+                        after = _open_view(history, before_frame, now)
+                        for shelf, (w0, w1) in found.items():
+                            handle_change(db, shelf, before_frame, after if after is not None else before_frame, w0, w1)
+                    pending, before_frame = {}, None
                     history.clear()
-                    status = "Door closed - final check done"
+                    status = "Door closed"
                 else:
                     status = "Door closed"
 
-                view.frame(frame, door_open=door_open, hand_boxes=trip_detector.motion_boxes if door_open else [],
-                           people=trip_detector.last_people if door_open else None,
-                           status=f"{status}   |   {_weights_text(scale)}")
+                view.frame(frame, door_open=door_open, hand_boxes=[], status=f"{status}   |   {_weights_text(scale)}")
                 door_was_open = door_open
             except Exception:
-                # A dropped Wi-Fi packet to the Pi shouldn't kill the loop.
+                # A dropped packet from the Pi shouldn't kill the loop.
                 log.exception("Fridge loop tick failed; continuing")
             time.sleep(LOOP_INTERVAL_S)
 
