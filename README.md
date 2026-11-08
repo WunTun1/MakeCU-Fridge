@@ -116,6 +116,10 @@ No code changes — just configuration.
    cp pi_node/.env.example pi_node/.env      # set BACKEND_URL to the computer's IP
    bash pi_node/kiosk/install.sh
    ```
+   Or, without installing services, run it by hand on the Pi — one command connects to the
+   backend, runs the sensors and camera, and opens the fridge screen:
+   `python3 ~/MakeCU-Fridge/pi_node/run.py`. Direct Ethernet between the Pi and the
+   computer: see `pi_node/kiosk/HYBRID_SETUP.md`.
    Then calibrate each shelf inside the cold fridge:
    `.venv/bin/python -m pi_node.calibrate tare 0` (empty), then `cal 0 500` (with a 500 g weight).
    Pi 5: use `rpi-lgpio` instead of `RPi.GPIO`. Copy `data/recipes.db` from your computer

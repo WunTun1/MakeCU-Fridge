@@ -84,18 +84,29 @@ should answer once the backend is running.
 
 ## Running it
 
-On the Pi — just the sensor/camera agent, nothing backend-related:
-
-```
-cd ~/MakeCU-Fridge
-.venv/bin/python -m pi_node.agent
-```
-
 On the backend computer:
 
 ```
 python main.py
 ```
+
+On the Pi — one command does the rest:
+
+```
+python3 ~/MakeCU-Fridge/pi_node/run.py
+```
+
+It switches to the project's `.venv`, brings the direct cable link up (option A's
+`direct` profile, created the first time if missing), runs the sensor/camera agent
+(restarting it if it crashes), waits for the backend, and opens the fridge screen
+full-screen. It tells you what it finds: backend connected, camera sending
+pictures, scale not calibrated yet. The camera can be plugged in any time; it's
+picked up automatically. Ctrl+C stops everything.
+
+- `--windowed`: the fridge screen in a normal window (testing on the Pi desktop)
+- `--no-screen`: just the sensors and camera (e.g. over SSH)
+
+(Just the agent, without the screen or the checks: `.venv/bin/python -m pi_node.agent`.)
 
 Then open `http://<computer-ip>:8000/kiosk` in a browser on
 either machine — that's local traffic over the direct link, no internet

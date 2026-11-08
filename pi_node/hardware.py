@@ -40,26 +40,65 @@ class Hardware(Protocol):
 
 class WebcamGrabber:
     """Reads a USB webcam continuously on a thread so /frame.jpg always serves
-    the newest frame instead of a stale buffered one."""
+    the newest frame instead of a stale buffered one.
 
-    def __init__(self, index: int, width: int, height: int):
-        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-        self._cap = cv2.VideoCapture(index, backend)
-        if not self._cap.isOpened():
-            raise RuntimeError(f"Could not open webcam index {index}")
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    With keep_trying, a camera that isn't there yet (plugged in after start) or
+    stops answering (unplugged, USB hiccup) is looked for again every few
+    seconds instead of staying off until a restart."""
+
+    REOPEN_S = 2.0
+    MAX_FAILED_READS = 40  # ~2 s of failed reads: treat the camera as gone and reopen it
+
+    def __init__(self, index: int, width: int, height: int, keep_trying: bool = False):
+        self._index, self._width, self._height = index, width, height
+        self._cap: cv2.VideoCapture | None = None
         self._latest: np.ndarray | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        if not self._open():
+            if not keep_trying:
+                raise RuntimeError(f"Could not open webcam index {index}")
+            log.warning("No webcam at index %d yet — will keep looking (plug it in any time)", index)
         threading.Thread(target=self._run, daemon=True).start()
 
+    def _open(self) -> bool:
+        backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
+        cap = cv2.VideoCapture(self._index, backend)
+        if not cap.isOpened():
+            cap.release()
+            return False
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+        self._cap = cap
+        return True
+
+    @property
+    def connected(self) -> bool:
+        return self._cap is not None
+
     def _run(self) -> None:
+        failed = 0
         while not self._stop.is_set():
+            if self._cap is None:
+                if self._stop.wait(self.REOPEN_S):
+                    break
+                if self._open():
+                    log.info("Webcam %d connected", self._index)
+                    failed = 0
+                continue
             ok, frame = self._cap.read()
             if ok:
+                failed = 0
                 with self._lock:
                     self._latest = frame
+                continue
+            failed += 1
+            if failed >= self.MAX_FAILED_READS:
+                log.warning("Webcam %d stopped answering — looking for it again", self._index)
+                self._cap.release()
+                self._cap = None
+                with self._lock:
+                    self._latest = None
             else:
                 time.sleep(0.05)
 
@@ -69,7 +108,8 @@ class WebcamGrabber:
 
     def close(self) -> None:
         self._stop.set()
-        self._cap.release()
+        if self._cap is not None:
+            self._cap.release()
 
 
 # ===================================================================== real
@@ -101,11 +141,7 @@ class RealHardware:
             log.warning("Barometer unavailable (%s) — temperature/pressure disabled", e)
             self._baro = None
 
-        try:
-            self._cam: WebcamGrabber | None = WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height)
-        except RuntimeError as e:
-            log.warning("%s — camera disabled", e)
-            self._cam = None
+        self._cam = WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height, keep_trying=True)
 
     def read_weights(self) -> dict[int, float]:
         weights = {}

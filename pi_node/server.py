@@ -51,7 +51,7 @@ def create_app(hw: Hardware, backend_url: str = "") -> FastAPI:
 
     @app.get("/health")
     def health():
-        return {"ok": True, "hardware": type(hw).__name__, "shelves": hw.num_shelves}
+        return {"ok": True, "hardware": type(hw).__name__, "shelves": hw.num_shelves, "camera": hw.frame() is not None}
 
     if isinstance(hw, SimHardware):
         sim = hw
