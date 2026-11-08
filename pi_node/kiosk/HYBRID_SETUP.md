@@ -106,6 +106,16 @@ picked up automatically. Ctrl+C stops everything.
 - `--windowed`: the fridge screen in a normal window (testing on the Pi desktop)
 - `--no-screen`: just the sensors and camera (e.g. over SSH)
 
+### Checking the sensors and calibrating the scale
+
+```
+cd ~/MakeCU-Fridge && .venv/bin/python -m pi_node.sensors
+```
+
+Every sensor live — each shelf's weight (and raw number), the door switch, the light
+sensor, the barometer — with tare and known-weight calibration behind Enter. It writes
+the same calibration file run.py uses. Stop run.py first: both use the same pins.
+
 ### Just the link (and updating the code over it)
 
 ```

@@ -161,7 +161,8 @@ class WebcamGrabber:
 
 # ===================================================================== real
 class RealHardware:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, camera: bool = True):
+        """camera=False: just the sensors (pi_node/sensors.py), without opening the webcam."""
         import RPi.GPIO as GPIO
 
         from pi_node.hx711 import HX711, Calibration
@@ -188,7 +189,8 @@ class RealHardware:
             log.warning("Barometer unavailable (%s) — temperature/pressure disabled", e)
             self._baro = None
 
-        self._cam = WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height, keep_trying=True, scan=True)
+        self._cam = (WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height, keep_trying=True, scan=True)
+                     if camera else None)
 
     def read_weights(self) -> dict[int, float]:
         weights = {}
