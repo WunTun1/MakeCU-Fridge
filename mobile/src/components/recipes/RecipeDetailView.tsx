@@ -1,14 +1,16 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Stack } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/Button';
 import { CookSheet, usesAll } from '@/components/recipes/CookSheet';
-import { useSnackbar } from '@/components/Snackbar';
+import { minutesText } from '@/components/recipes/RecipeCardView';
+import { useSnackbar, useSnackbarClearance } from '@/components/Snackbar';
 import { formatAmount } from '@/lib/amount';
 import { api, type CookLine, type Made, type RecipeDetail, type RecipeLine } from '@/lib/api';
-import { makeStyles, useColors, type Palette } from '@/lib/theme';
+import { makeStyles, useColors, useUi, type Palette } from '@/lib/theme';
 import { refreshAll } from '@/lib/useApi';
 
 /** "Used 400 g chicken breast, all the spinach". */
@@ -23,13 +25,13 @@ function usedSummary(lines: CookLine[]): string {
   return `Used ${parts.join(', ')}`;
 }
 
-/** "35 g protein · 362 kcal · 40 min · Serves 4": one line, protein first. */
+/** "35 g protein · 362 kcal · 17 min + 4 h marinating · Serves 4": one line, protein first. */
 function metaLine(r: RecipeDetail): string {
   const n = r.nutrition;
   return [
     n.protein_g != null && `${Math.round(n.protein_g)} g protein`,
-    n.calories != null && `${Math.round(n.calories)} kcal`,
-    r.minutes != null && `${r.minutes} min`,
+    n.calories != null && `${Math.round(n.calories).toLocaleString()} kcal`,
+    minutesText(r),
     r.servings != null && `Serves ${Math.round(r.servings)}`,
   ]
     .filter(Boolean)
@@ -38,13 +40,17 @@ function metaLine(r: RecipeDetail): string {
 
 /**
  * Everything needed to cook a recipe: what you have, what to swap, what to buy
- * (one tap puts it on the grocery list), steps with swaps written in, and "I made this".
- * Leftovers from an earlier cook come first: eating one logs it without touching the ingredients.
+ * (one tap puts it on the grocery list), steps with swaps written in, and "I made this" in a bar
+ * that stays at the bottom. Leftovers from an earlier cook come first: eating one logs it without
+ * touching the ingredients.
  */
 export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   const showSnack = useSnackbar();
   const styles = useStyles();
+  const ui = useUi();
   const c = useColors();
+  const [barHeight, setBarHeight] = useState(0);
+  useSnackbarClearance(barHeight);
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [onList, setOnList] = useState<Set<string>>(new Set());
@@ -69,8 +75,20 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     load();
   }, [load]);
 
-  if (error) return <Text style={styles.detail}>Couldn&apos;t load this recipe: {error}</Text>;
-  if (!recipe) return <ActivityIndicator color={c.accent} style={{ margin: 24 }} />;
+  if (error) {
+    return (
+      <View style={[ui.screen, ui.content]}>
+        <Text style={styles.detail}>Couldn&apos;t load this recipe: {error}</Text>
+      </View>
+    );
+  }
+  if (!recipe) {
+    return (
+      <View style={ui.screen}>
+        <ActivityIndicator color={c.accent} style={{ margin: 24 }} />
+      </View>
+    );
+  }
 
   const loggedMeal = recipe.logged_meal_id;
   const left = recipe.leftovers;
@@ -98,7 +116,14 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
       refreshAll();
       showSnack({
         message,
-        action: { label: 'Undo', onPress: () => undo().then(() => (load(), refreshAll()), () => {}) },
+        action: {
+          label: 'Undo',
+          onPress: () =>
+            undo().then(
+              () => (load(), refreshAll()),
+              () => {},
+            ),
+        },
       });
     } catch (e) {
       showSnack({ message: `Couldn't log it: ${(e as Error).message}` });
@@ -127,100 +152,87 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   }
 
   return (
-    <View style={{ gap: 16 }}>
-      <Stack.Screen options={{ title: '' }} />
-      {recipe.image_url && <Image source={{ uri: recipe.image_url }} style={styles.hero} />}
+    <View style={ui.screen}>
+      <ScrollView contentContainerStyle={[ui.content, { gap: 16, paddingBottom: barHeight + 16 }]}>
+        <Stack.Screen options={{ title: '' }} />
+        {recipe.image_url && <Image source={{ uri: recipe.image_url }} style={styles.hero} />}
 
-      <Text style={styles.title} numberOfLines={3}>
-        {recipe.name}
-      </Text>
+        <Text style={styles.title} numberOfLines={3}>
+          {recipe.name}
+        </Text>
 
-      <Text style={styles.meta}>{metaLine(recipe)}</Text>
-      <Text style={styles.muted}>
-        {recipe.servings != null
-          ? 'Nutrition per serving, from the recipe source.'
-          : 'Nutrition per serving, from the recipe source. Serving count not listed.'}
-      </Text>
+        <Text style={styles.meta}>{metaLine(recipe)}</Text>
+        <Text style={styles.muted}>
+          {recipe.servings != null
+            ? 'Nutrition per serving, from the recipe source.'
+            : 'Nutrition per serving, from the recipe source. Serving count not listed.'}
+        </Text>
 
-      {recipe.reasons.length > 0 && (
-        <View style={{ gap: 4 }}>
-          {recipe.reasons.map((r) => (
-            <Text key={r} style={styles.detail}>
-              {r}
-            </Text>
+        {left && (
+          <View style={styles.leftovers}>
+            <Text style={styles.text}>You have {left.servings === 1 ? '1 serving' : `${left.servings} servings`} left over</Text>
+            <View style={styles.buttonRow}>
+              <Button title="Ate one serving" variant="outline" onPress={() => eatLeftover(left.product_id, recipe.name)} />
+            </View>
+          </View>
+        )}
+
+        {recipe.reasons.length > 0 && (
+          <View style={{ gap: 4 }}>
+            {recipe.reasons.map((r) => (
+              <Text key={r} style={styles.detail}>
+                {r}
+              </Text>
+            ))}
+          </View>
+        )}
+
+        <Text style={styles.section}>Ingredients</Text>
+        <View style={{ gap: 8 }}>
+          {recipe.ingredients.map((line, i) => (
+            <IngredientRow
+              key={`${line.name}-${i}`}
+              line={line}
+              listed={onList.has(line.name)}
+              onBuy={() => addToList([line.name])}
+            />
           ))}
         </View>
-      )}
-
-      <Text style={styles.section}>Ingredients</Text>
-      <View style={{ gap: 8 }}>
-        {recipe.ingredients.map((line, i) => (
-          <IngredientRow
-            key={`${line.name}-${i}`}
-            line={line}
-            listed={onList.has(line.name)}
-            onBuy={() => addToList([line.name])}
-          />
-        ))}
-      </View>
-      {needed.length > 0 && (
-        <View style={styles.buttonRow}>
-          <Button
-            variant="secondary"
-            title={toBuy.length === 0 ? 'On your grocery list' : `Add ${toBuy.length} to grocery list`}
-            disabled={toBuy.length === 0}
-            onPress={() => addToList(toBuy)}
-          />
-        </View>
-      )}
-
-      <Text style={styles.section}>Steps</Text>
-      <View style={{ gap: 12 }}>
-        {recipe.steps.map((step, i) => (
-          <View key={i} style={styles.stepRow}>
-            <Text style={styles.stepNum}>{i + 1}</Text>
-            <Text style={[styles.text, { flex: 1 }]}>{step}</Text>
+        {needed.length > 0 && (
+          <View style={styles.buttonRow}>
+            <Button
+              variant="secondary"
+              title={toBuy.length === 0 ? 'On your grocery list' : `Add ${toBuy.length} to grocery list`}
+              disabled={toBuy.length === 0}
+              onPress={() => addToList(toBuy)}
+            />
           </View>
-        ))}
-      </View>
+        )}
 
-      <View style={styles.cookBox}>
-        {left && (
-          <>
-            <Text style={styles.text}>
-              You have {left.servings === 1 ? '1 serving' : `${left.servings} servings`} left over
-            </Text>
-            <View style={styles.buttonRow}>
-              <Button title="Ate one serving" onPress={() => eatLeftover(left.product_id, recipe.name)} />
+        <Text style={styles.section}>Steps</Text>
+        <View style={{ gap: 12 }}>
+          {recipe.steps.map((step, i) => (
+            <View key={i} style={styles.stepRow}>
+              <Text style={styles.stepNum}>{i + 1}</Text>
+              <Text style={[styles.text, { flex: 1 }]}>{step}</Text>
             </View>
-          </>
-        )}
-        <View style={styles.buttonRow}>
-          <Button
-            title={loggedMeal != null ? 'Logged today' : 'I made this'}
-            variant={left ? 'secondary' : 'primary'}
-            onPress={() => setSheetOpen(true)}
-            disabled={loggedMeal != null}
-          />
+          ))}
         </View>
-        {loggedMeal != null && (
-          <Pressable onPress={() => setSheetOpen(true)} style={styles.textButton}>
-            <Text style={styles.link}>Log again</Text>
-          </Pressable>
-        )}
-      </View>
 
-      <View style={[styles.row, { justifyContent: 'center', gap: 24 }]}>
-        <Pressable onPress={() => rate(true)} hitSlop={12} style={styles.thumb} accessibilityLabel="I liked it">
-          <FontAwesome name="thumbs-up" size={28} color={rated === true ? c.accent : c.textSecondary} />
-        </Pressable>
-        <Pressable onPress={() => rate(false)} hitSlop={12} style={styles.thumb} accessibilityLabel="Not for me">
-          <FontAwesome name="thumbs-down" size={28} color={rated === false ? c.danger : c.textSecondary} />
-        </Pressable>
-      </View>
-      <Text style={[styles.detail, { textAlign: 'center' }]}>
-        {rated === null ? 'Rate it to tune future suggestions' : 'Thanks. Suggestions will adapt.'}
-      </Text>
+        <View style={[styles.row, { justifyContent: 'center', gap: 24 }]}>
+          <Pressable onPress={() => rate(true)} hitSlop={12} style={styles.thumb} accessibilityLabel="I liked it">
+            <FontAwesome name="thumbs-up" size={28} color={rated === true ? c.accent : c.textSecondary} />
+          </Pressable>
+          <Pressable onPress={() => rate(false)} hitSlop={12} style={styles.thumb} accessibilityLabel="Not for me">
+            <FontAwesome name="thumbs-down" size={28} color={rated === false ? c.danger : c.textSecondary} />
+          </Pressable>
+        </View>
+        <Text style={[styles.detail, { textAlign: 'center' }]}>
+          {rated === null ? 'Rate it to tune future suggestions' : 'Thanks. Suggestions will adapt.'}
+        </Text>
+      </ScrollView>
+
+      <CookBar logged={loggedMeal != null} onCook={() => setSheetOpen(true)} onHeight={setBarHeight} />
 
       <CookSheet
         recipeId={recipeId}
@@ -235,6 +247,31 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   );
 }
 
+/** "I made this", always in reach at the bottom; once logged, "Logged today" and "Log again". */
+function CookBar({ logged, onCook, onHeight }: { logged: boolean; onCook: () => void; onHeight: (px: number) => void }) {
+  const styles = useStyles();
+  const insets = useSafeAreaInsets();
+  return (
+    <View
+      style={[styles.bar, { paddingBottom: 12 + insets.bottom }]}
+      onLayout={(e) => onHeight(Math.round(e.nativeEvent.layout.height))}
+    >
+      {logged ? (
+        <View style={styles.loggedRow}>
+          <Text style={[styles.detail, { flex: 1 }]}>Logged today</Text>
+          <View style={styles.logAgain}>
+            <Button title="Log again" variant="outline" onPress={onCook} />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.buttonRow}>
+          <Button title="I made this" onPress={onCook} />
+        </View>
+      )}
+    </View>
+  );
+}
+
 type Badge = { label: string; color: string; border: string | null; check?: boolean };
 
 /**
@@ -243,7 +280,8 @@ type Badge = { label: string; color: string; border: string | null; check?: bool
  * Staples (salt, oil, water from the pasta) say "Pantry" with no border.
  */
 function badgeFor(status: RecipeLine['status'], listed: boolean, c: Palette): Badge {
-  if (listed && (status === 'missing' || status === 'short')) return { label: 'On list', color: c.textSecondary, border: c.border };
+  if (listed && (status === 'missing' || status === 'short'))
+    return { label: 'On list', color: c.textSecondary, border: c.border };
   switch (status) {
     case 'have':
       return { label: 'Have', color: c.textSecondary, border: c.border, check: true };
@@ -325,10 +363,21 @@ const useStyles = makeStyles((c, size) => ({
   struck: { textDecorationLine: 'line-through', color: c.textSecondary },
   stepRow: { flexDirection: 'row', gap: 12 },
   stepNum: { color: c.accent, fontWeight: '700', width: size(24), fontSize: size(15), lineHeight: size(22) },
-  cookBox: { gap: 8 },
+  leftovers: { gap: 8 },
   buttonRow: { flexDirection: 'row', minHeight: 48 },
-  textButton: { minHeight: 44, alignSelf: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  link: { color: c.accent, fontSize: size(15), fontWeight: '600' },
+  bar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    backgroundColor: c.bg,
+    borderTopColor: c.border,
+    borderTopWidth: 1,
+  },
+  loggedRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 48 },
+  logAgain: { flexDirection: 'row', width: 160 },
   row: { flexDirection: 'row', gap: 12 },
   thumb: { padding: 8 },
 }));

@@ -1,5 +1,6 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Link, Stack, router } from 'expo-router';
+import { useState } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { FillBar } from '@/components/FillBar';
@@ -16,6 +17,9 @@ import { useApi } from '@/lib/useApi';
 const POLL_MS = 5000;
 /** Fewer Cook tonight ideas than this and the row offers to ask for more. */
 const ENOUGH_IDEAS = 2;
+/** Alerts shown before "N more". */
+const ALERTS_SHOWN = 3;
+const PLACEHOLDER_CARDS = 2;
 const MORE_IDEAS_PROMPT = 'What can I make without shopping?';
 
 /** Soonest to go bad first; things with no date last, by name. */
@@ -43,8 +47,9 @@ function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
 export default function Home() {
   const summary = useApi(api.summary, POLL_MS);
   const profile = useApi(api.profile);
-  // No query: the engine searches by what's in the fridge, expiring items first.
-  const ideas = useApi(api.tonight, undefined, 'tonight');
+  // No query: the engine searches by what's in the fridge, expiring items first. The server rebuilds
+  // it after every change, so polling picks up the new list without blanking the old one.
+  const ideas = useApi(api.tonight, POLL_MS, 'tonight');
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
@@ -84,27 +89,14 @@ export default function Home() {
       {s && (
         <>
           <Text style={ui.h2}>Alerts</Text>
-          {s.alerts.length === 0 ? (
-            <View style={ui.card}>
-              <Text style={ui.detail}>Nothing needs attention.</Text>
-            </View>
-          ) : (
-            s.alerts.map((a, i) => (
-              <AlertRow
-                key={`${a.product_id}-${a.reason}-${i}`}
-                alert={a}
-                text={alertText(a, entryFor(a.product_id))}
-                tone={alertTone(entryFor(a.product_id))}
-              />
-            ))
-          )}
+          <Alerts alerts={s.alerts} entryFor={entryFor} />
 
           <Text style={ui.h2}>Today</Text>
           <TodayCard totals={s.today_intake.totals} mealCount={s.today_intake.meal_count} profile={profile.data} />
 
           <Text style={ui.h2}>Cook tonight</Text>
           {proteinFirst && <Text style={[ui.muted, styles.caption]}>Highest protein first</Text>}
-          <CookTonight leftovers={leftovers} ideas={ideas.data} loading={ideas.loading} proteinFirst={proteinFirst} />
+          <CookTonight leftovers={leftovers} ideas={ideas.data} proteinFirst={proteinFirst} />
 
           {s.conditions?.temperature_c != null && (
             <View style={[ui.card, ui.row, { justifyContent: 'space-between' }]}>
@@ -168,43 +160,41 @@ function AddFoodButton() {
 
 /**
  * Leftovers first (they're the answer to "what's for supper"), then recipes you can make now,
- * then ones needing 1 or 2 things. With fewer than 2 recipes, it ends with "Ask for more ideas".
+ * then ones needing 1 or 2 things. Until the first list arrives, flat placeholders hold the cards'
+ * place; after that the last list stays up while a new one loads. With fewer than 2 recipes, a row
+ * under the cards offers "Ask for more ideas".
  */
 function CookTonight({
   leftovers,
   ideas,
-  loading,
   proteinFirst,
 }: {
   leftovers: InventoryEntry[];
   ideas: RecipeCard[] | null;
-  loading: boolean;
   proteinFirst: boolean;
 }) {
-  const ui = useUi();
   const styles = useStyles();
-  const recipes = ideas ?? [];
-  if (loading && !ideas && leftovers.length === 0) {
-    return (
-      <View style={ui.card}>
-        <Text style={ui.detail}>Finding recipes for what you have…</Text>
-      </View>
-    );
-  }
+  const cards = useRecipeCardStyles();
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.carousel}>
-      {leftovers.map((e) => (
-        <LeftoversCard key={e.product_id} entry={e} />
-      ))}
-      {recipes.map((r) => (
-        <RecipeCardView
-          key={r.id}
-          card={r}
-          proteinFirst={proteinFirst}
-          onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
-        />
-      ))}
-      {recipes.length < ENOUGH_IDEAS && (
+    <View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.carousel}>
+        {leftovers.map((e) => (
+          <LeftoversCard key={e.product_id} entry={e} />
+        ))}
+        {ideas == null
+          ? Array.from({ length: PLACEHOLDER_CARDS }, (_, i) => (
+              <View key={i} style={[cards.card, styles.placeholder]} accessibilityLabel="Loading recipes" />
+            ))
+          : ideas.map((r) => (
+              <RecipeCardView
+                key={r.id}
+                card={r}
+                proteinFirst={proteinFirst}
+                onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
+              />
+            ))}
+      </ScrollView>
+      {ideas != null && ideas.length < ENOUGH_IDEAS && (
         <Pressable
           onPress={() => router.push({ pathname: '/chat', params: { ask: MORE_IDEAS_PROMPT } })}
           style={styles.moreIdeas}
@@ -213,7 +203,7 @@ function CookTonight({
           <Text style={styles.link}>Ask for more ideas</Text>
         </Pressable>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
@@ -227,12 +217,51 @@ function LeftoversCard({ entry }: { entry: InventoryEntry }) {
       style={({ pressed }) => [styles.card, pressed && { opacity: 0.75 }]}
       accessibilityRole="button"
     >
-      <View style={styles.body}>
-        <Text style={[ui.h2, { marginTop: 0 }]}>Eat your leftovers</Text>
-        <Text style={ui.text}>{entry.name.replace(/ leftovers$/, '')}</Text>
-        <Text style={styles.detail}>{keepsText(entry)}</Text>
-      </View>
+      <Text style={styles.name}>Eat your leftovers</Text>
+      <Text style={ui.text} numberOfLines={2}>
+        {entry.name.replace(/ leftovers$/, '')}
+      </Text>
+      <Text style={styles.detail} numberOfLines={2}>
+        {keepsText(entry)}
+      </Text>
     </Pressable>
+  );
+}
+
+/** The 3 most urgent, then "3 more", which opens the rest in place. */
+function Alerts({ alerts, entryFor }: { alerts: Alert[]; entryFor: (productId: number | null) => InventoryEntry | undefined }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const [expanded, setExpanded] = useState(false);
+  if (alerts.length === 0) {
+    return (
+      <View style={ui.card}>
+        <Text style={ui.detail}>Nothing needs attention.</Text>
+      </View>
+    );
+  }
+  const hidden = alerts.length - ALERTS_SHOWN;
+  return (
+    <>
+      {(expanded ? alerts : alerts.slice(0, ALERTS_SHOWN)).map((a, i) => (
+        <AlertRow
+          key={`${a.product_id}-${a.reason}-${i}`}
+          alert={a}
+          text={alertText(a, entryFor(a.product_id))}
+          tone={alertTone(entryFor(a.product_id))}
+        />
+      ))}
+      {hidden > 0 && (
+        <Pressable
+          onPress={() => setExpanded(!expanded)}
+          style={styles.textRow}
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+        >
+          <Text style={styles.link}>{expanded ? 'Show fewer' : `${hidden} more`}</Text>
+        </Pressable>
+      )}
+    </>
   );
 }
 
@@ -336,7 +365,9 @@ const useStyles = makeStyles((c, size) => ({
   amount: { width: size(96), alignItems: 'flex-end' },
   caption: { marginTop: -4 },
   carousel: { gap: 12, alignItems: 'flex-start' },
-  moreIdeas: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 8 },
+  placeholder: { backgroundColor: c.placeholder, borderWidth: 0 },
+  moreIdeas: { minHeight: 44, justifyContent: 'center', marginTop: 4 },
+  textRow: { minHeight: 44, justifyContent: 'center' },
   link: { color: c.accent, fontSize: size(15), lineHeight: size(20), fontWeight: '600' },
   addButton: {
     flexDirection: 'row',

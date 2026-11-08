@@ -13,12 +13,25 @@ export const TAB_BAR_HEIGHT = 60;
 const TAB_PATHS = new Set(['/', '/search', '/grocery', '/chat', '/profile']);
 
 const SnackbarContext = createContext<(snack: Snack) => void>(() => {});
+const ClearanceContext = createContext<(px: number) => void>(() => {});
+/** Space between a snackbar and a screen's sticky bottom bar. */
+const ABOVE_BAR = 8;
 
 /** Brief feedback after an action, with at most one action (usually Undo). */
 export const useSnackbar = () => useContext(SnackbarContext);
 
+/** A screen with a sticky bottom bar this tall (safe area included): snackbars sit above it, never over it. */
+export function useSnackbarClearance(px: number) {
+  const setClearance = useContext(ClearanceContext);
+  useEffect(() => {
+    setClearance(px);
+    return () => setClearance(0);
+  }, [px, setClearance]);
+}
+
 export function SnackbarProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<(Snack & { key: number }) | null>(null);
+  const [clearance, setClearance] = useState(0);
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
   const styles = useStyles();
@@ -31,11 +44,13 @@ export function SnackbarProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(id);
   }, [current]);
 
-  const bottom = insets.bottom + 16 + (TAB_PATHS.has(pathname) ? TAB_BAR_HEIGHT : 0);
+  const bottom = clearance
+    ? clearance + ABOVE_BAR
+    : insets.bottom + 16 + (TAB_PATHS.has(pathname) ? TAB_BAR_HEIGHT : 0);
 
   return (
     <SnackbarContext.Provider value={show}>
-      {children}
+      <ClearanceContext.Provider value={setClearance}>{children}</ClearanceContext.Provider>
       {current && pathname !== '/kiosk' && (
         <View style={[styles.bar, { bottom }]} accessibilityLiveRegion="polite" role="status">
           <Text style={styles.message} numberOfLines={2}>

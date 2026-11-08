@@ -215,7 +215,11 @@ export type RecipeCard = {
   id: number;
   name: string;
   cuisine: string | null;
+  /** Active minutes from the source. */
   minutes: number | null;
+  /** Waiting the steps call for (marinating, chilling, rising), on top of `minutes`. */
+  inactive_min: number;
+  inactive_verb: string | null;
   servings: number | null;
   image_url: string | null;
   nutrition: Nutrition;

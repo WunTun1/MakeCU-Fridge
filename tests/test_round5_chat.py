@@ -25,7 +25,7 @@ class EchoModel:
     def generate_content(self, model, contents, config):
         self.calls.append((list(contents), config.system_instruction))
         asked = contents[-1].parts[0].text if len(self.calls) == 1 else ""
-        if "grocery list" in asked:
+        if "soy sauce" in asked:
             call = SimpleNamespace(name="add_to_grocery",
                                    args={"items": [{"name": "soy sauce"}, {"name": "lemons", "amount": 6}]})
             return _response([SimpleNamespace(function_call=call)])
@@ -59,7 +59,8 @@ def kitchen(db, tmp_path):
     return bot
 
 
-@pytest.mark.parametrize("message", ["add soy sauce and 6 lemons to my grocery list", "What can I make without shopping?"])
+@pytest.mark.parametrize("message", ["add soy sauce and 6 lemons to my grocery list", "What can I make without shopping?",
+                                     "put soy sauce and 6 lemons on my shopping list please"])
 def test_fact_note_never_reaches_the_reply_or_history(kitchen, db, monkeypatch, message):
     model = EchoModel()
     monkeypatch.setattr(chatbot_module, "make_client", lambda: model)
@@ -68,6 +69,9 @@ def test_fact_note_never_reaches_the_reply_or_history(kitchen, db, monkeypatch, 
     for phrase in FACT_PHRASES:
         assert phrase.lower() not in out["reply"].lower()
         assert phrase.lower() not in stored.lower()
+    if not model.calls:
+        assert out["reply"] == "Added soy sauce and 6 lemons to your grocery list."  # done in code, no model
+        return
     contents, system = model.calls[0]
     assert "soonest first" in system  # the facts went to the model as system context...
     assert all("soonest first" not in p.text for c in contents for p in c.parts)  # ...not in a message

@@ -677,7 +677,11 @@ class NutritionistChatbot:
             self._turn_message = user_message
             self.db.add_chat_message("user", user_message)
             client = make_client()
-            if client is None:
+            if grocery := GROCERY_ADD.search(user_message):
+                # "add X and Y to my grocery list" is done in code; the model sometimes answers instead.
+                self._add_to_grocery([{"name": n} for n in LIST_SPLIT.split(grocery.group(1)) if n.strip()])
+                reply = ""
+            elif client is None:
                 reply = self._offline_reply(user_message)
             else:
                 try:
@@ -804,9 +808,6 @@ class NutritionistChatbot:
     def _offline_reply(self, user_message: str) -> str:
         """No Gemini: read the request with plain keywords and still search real recipes."""
         text = user_message.lower()
-        if grocery := GROCERY_ADD.search(user_message):
-            self._add_to_grocery([{"name": n} for n in LIST_SPLIT.split(grocery.group(1)) if n.strip()])
-            return ""
         if LEFTOVER_WORDS.search(text):
             if LOG_WORDS.search(text) and not text.rstrip().endswith("?"):
                 count = re.search(r"\b(\d+|one|two|three|four|a|an)\s+servings?\b", text)

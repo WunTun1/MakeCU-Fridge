@@ -15,6 +15,8 @@ export const darkColors = {
   warn: '#fbbf24',
   danger: '#f87171',
   input: '#11131a',
+  /** Flat stand-in for a card that's still loading. */
+  placeholder: '#232733',
 };
 
 export type Palette = typeof darkColors;
@@ -33,6 +35,7 @@ export const lightColors: Palette = {
   warn: '#a15c07',
   danger: '#b53333',
   input: '#f0eee6',
+  placeholder: '#ebe8df',
 };
 
 /** Fridge screen palettes (it has its own toggle). */

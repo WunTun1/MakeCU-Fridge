@@ -86,7 +86,7 @@ export default function Chat() {
             </View>
             {m.undo && <UndoTurn message={m} onUndo={undoTurn} />}
             {m.recipes && m.recipes.length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12 }}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 12, alignItems: 'flex-start' }}>
                 {m.recipes.map((r) => (
                   <RecipeCardView
                     key={r.id}
