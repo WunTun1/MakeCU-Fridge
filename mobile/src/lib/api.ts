@@ -265,6 +265,8 @@ export type RecipeCard = {
   image_url: string | null;
   nutrition: Nutrition;
   have_count: number;
+  /** Ingredients that count toward "you have N of M" (staples like salt don't). */
+  ingredient_count?: number;
   /** Some on hand, not enough for the recipe. */
   short: ShortLine[];
   missing: string[];
@@ -452,6 +454,8 @@ export const api = {
     return request<RecipeCard[]>(`/api/recipes/suggest${qs ? `?${qs}` : ""}`);
   },
   tonight: () => request<RecipeCard[]>("/api/recipes/tonight"),
+  /** Recipes you have at least half the ingredients for, photo first: the Recipes tab's top row. */
+  readyRecipes: () => request<RecipeCard[]>("/api/recipes/ready"),
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
   cookPreview: (id: number, made: Made) =>
     request<CookLine[]>(`/api/recipes/${id}/cooked/preview?made=${made}`),

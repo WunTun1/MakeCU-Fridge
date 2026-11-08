@@ -42,6 +42,7 @@ function ThemedApp() {
           <Stack.Screen name="recipe/[id]" options={{ title: 'Recipe' }} />
           <Stack.Screen name="review" options={{ title: 'Review queue' }} />
           <Stack.Screen name="today" options={{ title: 'Today' }} />
+          <Stack.Screen name="settings" options={{ title: 'Settings' }} />
           <Stack.Screen name="add" options={{ title: 'Add food', presentation: 'modal' }} />
           <Stack.Screen name="scan" options={{ title: 'Scan barcode', presentation: 'fullScreenModal' }} />
           <Stack.Screen name="kiosk" options={{ headerShown: false }} />

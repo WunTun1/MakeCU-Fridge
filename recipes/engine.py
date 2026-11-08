@@ -649,6 +649,8 @@ def card(m: Match) -> dict:
         "image_url": r.image_url,
         "nutrition": r.nutrition,
         "have_count": len(m.have),
+        # Ingredients that count toward "you have N of M" (staples like salt and water don't).
+        "ingredient_count": len(m.have) + len(m.short) + len(m.missing) + len(m.swaps),
         "short": m.short,
         "missing": m.missing,
         "swaps": [{"missing": s.missing, "use": s.use, "note": s.note} for s in m.swaps],

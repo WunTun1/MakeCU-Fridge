@@ -694,6 +694,37 @@ def _rebuild_tonight_soon() -> None:
     threading.Thread(target=_build_in_background, daemon=True).start()
 
 
+READY_POOL = 60          # recipes ranked against the fridge, before keeping the mostly-ready ones
+READY_MIN_HAVE = 0.5     # "you have at least half the ingredients"
+READY_LIMIT = 10
+READY_MIN_PHOTOS = 4    # with at least this many photo recipes, the row shows only those
+_ready: dict = {"key": None, "at": 0.0, "value": None}
+
+
+def ready_share(c: dict) -> float:
+    """Share of a card's ingredients on hand (enough of it, or of a swap)."""
+    total = c.get("ingredient_count") or 0
+    return (c["have_count"] + len(c["swaps"])) / total if total else 0.0
+
+
+@app.get("/api/recipes/ready")
+def recipes_ready():
+    """The Recipes tab's top row: recipes you already have at least half the ingredients for —
+    only ones with a photo when there are enough of those — most complete first. Any dish, not
+    just dinners (that's Cook tonight). Cached until the fridge (or the profile) changes."""
+    key = _fridge_version()
+    if _ready["key"] != key or time.monotonic() - _ready["at"] > TONIGHT_CACHE_SECONDS:
+        cards = [card(m) for m in chatbot.engine.suggest(
+            limit=READY_POOL, high_protein=protein_mode(db.get_profile()))]
+        ready = [c for c in cards if ready_share(c) >= READY_MIN_HAVE]
+        with_photo = [c for c in ready if c["image_url"]]
+        if len(with_photo) >= READY_MIN_PHOTOS:
+            ready = with_photo
+        ready.sort(key=lambda c: (c["image_url"] is None, -ready_share(c)))
+        _ready.update(key=key, at=time.monotonic(), value=ready[:READY_LIMIT])
+    return _ready["value"]
+
+
 @app.get("/api/recipes/tonight")
 def recipes_tonight():
     """Cook tonight: dinner-sized main dishes from what you have. Built in the background after every

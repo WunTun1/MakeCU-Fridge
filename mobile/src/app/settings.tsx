@@ -1,60 +1,105 @@
-import { useState } from 'react';
-import { ScrollView, Text, TextInput, View } from 'react-native';
+import { useState } from "react";
+import { ScrollView, Text, TextInput, View } from "react-native";
 
-import { ChoiceChips, ListField } from '@/components/Chips';
-import { Segmented } from '@/components/Segmented';
-import { useSnackbar } from '@/components/Snackbar';
-import { ErrorCard, Loading } from '@/components/States';
-import { api, type Profile } from '@/lib/api';
-import { type Appearance, type TextSize, useDisplay } from '@/lib/display';
-import { useUi } from '@/lib/theme';
-import { useApi } from '@/lib/useApi';
+import { ChoiceChips, ListField } from "@/components/Chips";
+import { Segmented } from "@/components/Segmented";
+import { useSnackbar } from "@/components/Snackbar";
+import { ErrorCard, Loading } from "@/components/States";
+import { api, type Profile } from "@/lib/api";
+import { type Appearance, type TextSize, useDisplay } from "@/lib/display";
+import { useUi } from "@/lib/theme";
+import { useApi } from "@/lib/useApi";
 
-type Goals = Pick<Profile, 'daily_calories' | 'daily_protein_g' | 'daily_carbs_g' | 'daily_fat_g'>;
+type Goals = Pick<
+  Profile,
+  "daily_calories" | "daily_protein_g" | "daily_carbs_g" | "daily_fat_g"
+>;
 type GoalKey = keyof Goals;
-type Preset = 'maintain' | 'protein' | 'lighter';
+type Preset = "maintain" | "protein" | "lighter";
 
 const PRESETS: { value: Preset; label: string; goals: Goals }[] = [
-  { value: 'maintain', label: 'Maintain', goals: { daily_calories: 2000, daily_protein_g: 100, daily_carbs_g: 225, daily_fat_g: 65 } },
-  { value: 'protein', label: 'More protein', goals: { daily_calories: 2200, daily_protein_g: 160, daily_carbs_g: 200, daily_fat_g: 70 } },
-  { value: 'lighter', label: 'Eat lighter', goals: { daily_calories: 1700, daily_protein_g: 110, daily_carbs_g: 170, daily_fat_g: 55 } },
+  {
+    value: "maintain",
+    label: "Maintain",
+    goals: {
+      daily_calories: 2000,
+      daily_protein_g: 100,
+      daily_carbs_g: 225,
+      daily_fat_g: 65,
+    },
+  },
+  {
+    value: "protein",
+    label: "More protein",
+    goals: {
+      daily_calories: 2200,
+      daily_protein_g: 160,
+      daily_carbs_g: 200,
+      daily_fat_g: 70,
+    },
+  },
+  {
+    value: "lighter",
+    label: "Eat lighter",
+    goals: {
+      daily_calories: 1700,
+      daily_protein_g: 110,
+      daily_carbs_g: 170,
+      daily_fat_g: 55,
+    },
+  },
 ];
 
 const GOAL_FIELDS: { key: GoalKey; label: string; saved: string }[] = [
-  { key: 'daily_calories', label: 'Daily calories', saved: 'Calorie goal saved' },
-  { key: 'daily_protein_g', label: 'Daily protein (g)', saved: 'Protein goal saved' },
-  { key: 'daily_carbs_g', label: 'Daily carbs (g)', saved: 'Carb goal saved' },
-  { key: 'daily_fat_g', label: 'Daily fat (g)', saved: 'Fat goal saved' },
+  {
+    key: "daily_calories",
+    label: "Daily calories",
+    saved: "Calorie goal saved",
+  },
+  {
+    key: "daily_protein_g",
+    label: "Daily protein (g)",
+    saved: "Protein goal saved",
+  },
+  { key: "daily_carbs_g", label: "Daily carbs (g)", saved: "Carb goal saved" },
+  { key: "daily_fat_g", label: "Daily fat (g)", saved: "Fat goal saved" },
 ];
 
 const DIETS = [
-  { value: 'none', label: 'None' },
-  { value: 'vegetarian', label: 'Vegetarian' },
-  { value: 'vegan', label: 'Vegan' },
-  { value: 'pescatarian', label: 'Pescatarian' },
-  { value: 'gluten-free', label: 'Gluten-free' },
+  { value: "none", label: "None" },
+  { value: "vegetarian", label: "Vegetarian" },
+  { value: "vegan", label: "Vegan" },
+  { value: "pescatarian", label: "Pescatarian" },
+  { value: "gluten-free", label: "Gluten-free" },
 ];
 
 /** The preset whose four numbers match the goals exactly; otherwise none (custom goals). */
 const presetFor = (p: Goals): Preset | null =>
-  PRESETS.find((preset) => GOAL_FIELDS.every(({ key }) => preset.goals[key] === p[key]))?.value ?? null;
+  PRESETS.find((preset) =>
+    GOAL_FIELDS.every(({ key }) => preset.goals[key] === p[key]),
+  )?.value ?? null;
 
 const APPEARANCES: { value: Appearance; label: string }[] = [
-  { value: 'system', label: 'Phone setting' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' },
+  { value: "system", label: "Phone setting" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
 ];
 
 const TEXT_SIZES: { value: TextSize; label: string }[] = [
-  { value: 'default', label: 'Default' },
-  { value: 'large', label: 'Large' },
+  { value: "default", label: "Default" },
+  { value: "large", label: "Large" },
 ];
 
 export default function ProfileScreen() {
   const { data, error, loading } = useApi(api.profile);
   const ui = useUi();
   if (loading && !data) return <Loading />;
-  if (!data) return <View style={[ui.screen, ui.content]}>{error && <ErrorCard message={error} />}</View>;
+  if (!data)
+    return (
+      <View style={[ui.screen, ui.content]}>
+        {error && <ErrorCard message={error} />}
+      </View>
+    );
   return <ProfileForm initial={data} />;
 }
 
@@ -79,7 +124,11 @@ function ProfileForm({ initial }: { initial: Profile }) {
   const preset = presetFor(profile);
 
   return (
-    <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      style={ui.screen}
+      contentContainerStyle={ui.content}
+      keyboardShouldPersistTaps="handled"
+    >
       <Text style={ui.h2}>Daily goals</Text>
       <Segmented
         label="Goal preset"
@@ -108,7 +157,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
         label="Diet"
         options={DIETS}
         value={profile.diet_type}
-        onChange={(v) => save({ diet_type: v }, 'Diet saved')}
+        onChange={(v) => save({ diet_type: v }, "Diet saved")}
       />
 
       <Text style={ui.h2}>Allergies</Text>
@@ -117,16 +166,19 @@ function ProfileForm({ initial }: { initial: Profile }) {
         label="allergies"
         placeholder="e.g. peanuts"
         values={profile.allergies}
-        onChange={(allergies) => save({ allergies }, 'Allergies saved')}
+        onChange={(allergies) => save({ allergies }, "Allergies saved")}
       />
 
       <Text style={ui.h2}>Dislikes</Text>
-      <Text style={ui.detail}>Left out of Cook tonight and One item away. Chat skips them unless you ask.</Text>
+      <Text style={ui.detail}>
+        Left out of Cook tonight and One item away. Chat skips them unless you
+        ask.
+      </Text>
       <ListField
         label="dislikes"
         placeholder="e.g. mushrooms"
         values={profile.dislikes}
-        onChange={(dislikes) => save({ dislikes }, 'Dislikes saved')}
+        onChange={(dislikes) => save({ dislikes }, "Dislikes saved")}
       />
 
       <LearnedTastes />
@@ -137,12 +189,20 @@ function ProfileForm({ initial }: { initial: Profile }) {
 }
 
 /** A number that saves when you leave the field. */
-function GoalField({ label, value, onSave }: { label: string; value: number | null; onSave: (v: number) => void }) {
+function GoalField({
+  label,
+  value,
+  onSave,
+}: {
+  label: string;
+  value: number | null;
+  onSave: (v: number) => void;
+}) {
   const ui = useUi();
-  const [text, setText] = useState(value?.toString() ?? '');
+  const [text, setText] = useState(value?.toString() ?? "");
   const commit = () => {
-    const n = Number(text.replace(',', '.'));
-    if (text.trim() !== '' && n > 0 && n !== value) onSave(n);
+    const n = Number(text.replace(",", "."));
+    if (text.trim() !== "" && n > 0 && n !== value) onSave(n);
   };
   return (
     <View style={{ gap: 4 }}>
@@ -166,21 +226,34 @@ function LearnedTastes() {
   const { data } = useApi(api.taste);
   const ui = useUi();
   if (!data) return null;
-  const nothingYet = data.cuisines.length === 0 && data.ingredients.length === 0;
+  const nothingYet =
+    data.cuisines.length === 0 && data.ingredients.length === 0;
   return (
     <View style={[ui.card, { gap: 6, marginTop: 8 }]}>
       <Text style={ui.h2}>What ReFridge has learned</Text>
       {nothingYet ? (
-        <Text style={ui.detail}>Cook, rate, and ask for recipes and this fills in. Suggestions adapt as it does.</Text>
+        <Text style={ui.detail}>
+          Cook, rate, and ask for recipes and this fills in. Suggestions adapt
+          as it does.
+        </Text>
       ) : (
         <>
           {data.cuisines.length > 0 && (
             <Text style={ui.text}>
-              You enjoy: <Text style={{ textTransform: 'capitalize' }}>{data.cuisines.map((c) => c.replace('-', ' ')).join(', ')}</Text>
+              You enjoy:{" "}
+              <Text style={{ textTransform: "capitalize" }}>
+                {data.cuisines.map((c) => c.replace("-", " ")).join(", ")}
+              </Text>
             </Text>
           )}
-          {data.ingredients.length > 0 && <Text style={ui.text}>Favorite ingredients: {data.ingredients.join(', ')}</Text>}
-          <Text style={ui.muted}>Recent habits count more; older ones fade over about a month.</Text>
+          {data.ingredients.length > 0 && (
+            <Text style={ui.text}>
+              Favorite ingredients: {data.ingredients.join(", ")}
+            </Text>
+          )}
+          <Text style={ui.muted}>
+            Recent habits count more; older ones fade over about a month.
+          </Text>
         </>
       )}
     </View>

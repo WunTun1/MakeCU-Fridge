@@ -10,7 +10,7 @@ export type Snack = { message: string; action?: { label: string; onPress: () => 
 const PLAIN_MS = 5000;
 const WITH_ACTION_MS = 8000;
 export const TAB_BAR_HEIGHT = 60;
-const TAB_PATHS = new Set(['/', '/search', '/grocery', '/chat', '/profile']);
+const TAB_PATHS = new Set(['/', '/grocery', '/chat', '/browse', '/recipes']);
 
 const SnackbarContext = createContext<(snack: Snack) => void>(() => {});
 const ClearanceContext = createContext<(px: number) => void>(() => {});

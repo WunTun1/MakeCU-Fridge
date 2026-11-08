@@ -1,18 +1,34 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Link, Stack, router } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import FontAwesome from "@expo/vector-icons/FontAwesome";
+import { Link, Stack, router } from "expo-router";
+import { useState } from "react";
+import {
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 
-import { FillBar } from '@/components/FillBar';
-import { RecipeCardView, useRecipeCardStyles } from '@/components/recipes/RecipeCardView';
-import { ErrorCard, Loading } from '@/components/States';
-import { TodayCard } from '@/components/TodayCard';
-import { formatAmount } from '@/lib/amount';
-import { api, type Alert, type InventoryEntry, type RecipeCard } from '@/lib/api';
-import { expiryTone, goesBadText, keepsText, runsOutText, urgency, type ExpiryTone } from '@/lib/expiry';
-import { makeStyles, useColors, useUi } from '@/lib/theme';
-import { capitalize, monthName, tripText, whenWord } from '@/lib/time';
-import { useApi } from '@/lib/useApi';
+import { InventoryRow } from "@/components/InventoryRow";
+import {
+  RecipeCardView,
+  useRecipeCardStyles,
+} from "@/components/recipes/RecipeCardView";
+import { WithSettings } from "@/components/SettingsButton";
+import { ErrorCard, Loading } from "@/components/States";
+import { TodayCard } from "@/components/TodayCard";
+import { formatAmount } from "@/lib/amount";
+import {
+  api,
+  type Alert,
+  type InventoryEntry,
+  type RecipeCard,
+} from "@/lib/api";
+import { goesBadText, keepsText, urgency, type ExpiryTone } from "@/lib/expiry";
+import { makeStyles, useColors, useUi } from "@/lib/theme";
+import { tripText, whenWord } from "@/lib/time";
+import { useApi } from "@/lib/useApi";
 
 const POLL_MS = 5000;
 /** Fewer Cook tonight ideas than this and the row offers to ask for more. */
@@ -20,24 +36,33 @@ const ENOUGH_IDEAS = 2;
 /** Alerts shown before "N more". */
 const ALERTS_SHOWN = 3;
 const PLACEHOLDER_CARDS = 2;
-const MORE_IDEAS_PROMPT = 'What can I make without shopping?';
+const MORE_IDEAS_PROMPT = "What can I make without shopping?";
 
 /** Soonest to go bad first; things with no date last, by name. */
 function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
-  return (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity) || a.name.localeCompare(b.name);
+  return (
+    (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity) ||
+    a.name.localeCompare(b.name)
+  );
 }
 
 function alertText(alert: Alert, entry: InventoryEntry | undefined): string {
   const days = alert.days;
   switch (alert.reason) {
-    case 'expiring_soon':
+    case "expiring_soon":
       if (entry) return goesBadText(entry) ?? alert.detail;
-      return days == null ? alert.detail : days < 0 ? 'Expired' : `Goes bad ${whenWord(days)}`;
-    case 'low_days_left':
+      return days == null
+        ? alert.detail
+        : days < 0
+          ? "Expired"
+          : `Goes bad ${whenWord(days)}`;
+    case "low_days_left":
       return days == null ? alert.detail : `Runs out ${whenWord(days)}`;
-    case 'low_fraction':
-      return entry ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left` : 'Running low';
-    case 'staple_out':
+    case "low_fraction":
+      return entry
+        ? `Only ${formatAmount(entry.grams, entry.unit, entry.grams_per_unit, entry.name)} left`
+        : "Running low";
+    case "staple_out":
       return "You're out";
     default:
       return alert.detail;
@@ -49,7 +74,7 @@ export default function Home() {
   const profile = useApi(api.profile);
   // No query: the engine searches by what's in the fridge, expiring items first. The server rebuilds
   // it after every change, so polling picks up the new list without blanking the old one.
-  const ideas = useApi(api.tonight, POLL_MS, 'tonight');
+  const ideas = useApi(api.tonight, POLL_MS, "tonight");
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
@@ -58,20 +83,35 @@ export default function Home() {
 
   const s = summary.data;
   const sorted = s ? [...s.inventory].sort(byExpiry) : [];
-  const inventory = sorted.filter((e) => e.location !== 'freezer');
-  const freezer = sorted.filter((e) => e.location === 'freezer');
+  const inventory = sorted.filter((e) => e.location !== "freezer");
+  const freezer = sorted.filter((e) => e.location === "freezer");
   const leftovers = inventory.filter((e) => e.leftovers);
   // Alerts are about what's outside the freezer.
-  const entryFor = (productId: number | null) => inventory.find((e) => e.product_id === productId);
+  const entryFor = (productId: number | null) =>
+    inventory.find((e) => e.product_id === productId);
   const proteinFirst = profile.data?.protein_mode ?? false;
 
   return (
     <ScrollView
       style={ui.screen}
       contentContainerStyle={ui.content}
-      refreshControl={<RefreshControl refreshing={false} onRefresh={summary.reload} tintColor={c.accent} />}
+      refreshControl={
+        <RefreshControl
+          refreshing={false}
+          onRefresh={summary.reload}
+          tintColor={c.accent}
+        />
+      }
     >
-      <Stack.Screen options={{ headerRight: () => <AddFoodButton /> }} />
+      <Stack.Screen
+        options={{
+          headerRight: () => (
+            <WithSettings>
+              <AddFoodButton />
+            </WithSettings>
+          ),
+        }}
+      />
 
       {summary.error && <ErrorCard message={summary.error} />}
 
@@ -79,7 +119,10 @@ export default function Home() {
         <Link href="/review" asChild>
           <Pressable style={styles.reviewBanner}>
             <Text style={[ui.text, { flex: 1 }]}>
-              {s.review_queue_count === 1 ? '1 fridge change needs' : `${s.review_queue_count} fridge changes need`} an answer
+              {s.review_queue_count === 1
+                ? "1 fridge change needs"
+                : `${s.review_queue_count} fridge changes need`}{" "}
+              an answer
             </Text>
             <FontAwesome name="chevron-right" color={c.warn} />
           </Pressable>
@@ -92,18 +135,34 @@ export default function Home() {
           <Alerts alerts={s.alerts} entryFor={entryFor} />
 
           <Text style={ui.h2}>Today</Text>
-          <TodayCard totals={s.today_intake.totals} mealCount={s.today_intake.meal_count} profile={profile.data} />
+          <TodayCard
+            totals={s.today_intake.totals}
+            mealCount={s.today_intake.meal_count}
+            profile={profile.data}
+          />
 
           <Text style={ui.h2}>Cook tonight</Text>
-          {proteinFirst && <Text style={[ui.muted, styles.caption]}>Highest protein first</Text>}
-          <CookTonight leftovers={leftovers} ideas={ideas.data} proteinFirst={proteinFirst} />
+          {proteinFirst && (
+            <Text style={[ui.muted, styles.caption]}>
+              Highest protein first
+            </Text>
+          )}
+          <CookTonight
+            leftovers={leftovers}
+            ideas={ideas.data}
+            proteinFirst={proteinFirst}
+          />
 
           {s.conditions?.temperature_c != null && (
-            <View style={[ui.card, ui.row, { justifyContent: 'space-between' }]}>
+            <View
+              style={[ui.card, ui.row, { justifyContent: "space-between" }]}
+            >
               <Text style={ui.detail}>Fridge</Text>
               <Text style={ui.text}>
                 {`${s.conditions.temperature_c.toFixed(1)}°C`}
-                {s.conditions.humidity_pct != null ? `  ·  ${Math.round(s.conditions.humidity_pct)}% RH` : ''}
+                {s.conditions.humidity_pct != null
+                  ? `  ·  ${Math.round(s.conditions.humidity_pct)}% RH`
+                  : ""}
               </Text>
             </View>
           )}
@@ -111,8 +170,16 @@ export default function Home() {
           <Link href="/grocery" asChild>
             <Pressable style={styles.linkCard}>
               <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[ui.text, { fontWeight: '600' }]}>Grocery list</Text>
-                <Text style={ui.detail}>{tripText(s.next_trip_date, s.next_trip_in_days, s.covers_until)}</Text>
+                <Text style={[ui.text, { fontWeight: "600" }]}>
+                  Grocery list
+                </Text>
+                <Text style={ui.detail}>
+                  {tripText(
+                    s.next_trip_date,
+                    s.next_trip_in_days,
+                    s.covers_until,
+                  )}
+                </Text>
               </View>
               <FontAwesome name="chevron-right" color={c.textSecondary} />
             </Pressable>
@@ -121,9 +188,17 @@ export default function Home() {
           <Text style={ui.h2}>Inventory</Text>
           <View style={ui.card}>
             {inventory.length === 0 ? (
-              <Text style={ui.detail}>Nothing tracked yet. Add something with Add food.</Text>
+              <Text style={ui.detail}>
+                Nothing tracked yet. Add something with Add food.
+              </Text>
             ) : (
-              inventory.map((item, i) => <InventoryRow key={item.product_id} item={item} last={i === inventory.length - 1} />)
+              inventory.map((item, i) => (
+                <InventoryRow
+                  key={item.product_id}
+                  item={item}
+                  last={i === inventory.length - 1}
+                />
+              ))
             )}
           </View>
 
@@ -132,7 +207,11 @@ export default function Home() {
               <Text style={ui.h2}>Freezer</Text>
               <View style={ui.card}>
                 {freezer.map((item, i) => (
-                  <InventoryRow key={item.product_id} item={item} last={i === freezer.length - 1} />
+                  <InventoryRow
+                    key={item.product_id}
+                    item={item}
+                    last={i === freezer.length - 1}
+                  />
                 ))}
               </View>
             </>
@@ -148,7 +227,7 @@ function AddFoodButton() {
   const c = useColors();
   return (
     <Pressable
-      onPress={() => router.push('/add')}
+      onPress={() => router.push("/add")}
       style={({ pressed }) => [styles.addButton, pressed && { opacity: 0.6 }]}
       accessibilityRole="button"
     >
@@ -177,26 +256,44 @@ function CookTonight({
   const cards = useRecipeCardStyles();
   return (
     <View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.carousel}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.carousel}
+      >
         {leftovers.map((e) => (
           <LeftoversCard key={e.product_id} entry={e} />
         ))}
         {ideas == null
           ? Array.from({ length: PLACEHOLDER_CARDS }, (_, i) => (
-              <View key={i} style={[cards.card, styles.placeholder]} accessibilityLabel="Loading recipes" />
+              <View
+                key={i}
+                style={[cards.card, styles.placeholder]}
+                accessibilityLabel="Loading recipes"
+              />
             ))
           : ideas.map((r) => (
               <RecipeCardView
                 key={r.id}
                 card={r}
                 proteinFirst={proteinFirst}
-                onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: r.id } })}
+                onPress={() =>
+                  router.push({
+                    pathname: "/recipe/[id]",
+                    params: { id: r.id },
+                  })
+                }
               />
             ))}
       </ScrollView>
       {ideas != null && ideas.length < ENOUGH_IDEAS && (
         <Pressable
-          onPress={() => router.push({ pathname: '/chat', params: { ask: MORE_IDEAS_PROMPT } })}
+          onPress={() =>
+            router.push({
+              pathname: "/chat",
+              params: { ask: MORE_IDEAS_PROMPT },
+            })
+          }
           style={styles.moreIdeas}
           accessibilityRole="button"
         >
@@ -214,26 +311,39 @@ function LeftoversCard({ entry }: { entry: InventoryEntry }) {
   const c = useColors();
   return (
     <Pressable
-      onPress={() => router.push({ pathname: '/item/[id]', params: { id: entry.product_id } })}
+      onPress={() =>
+        router.push({
+          pathname: "/item/[id]",
+          params: { id: entry.product_id },
+        })
+      }
       style={({ pressed }) => [styles.card, pressed && { opacity: 0.75 }]}
       accessibilityRole="button"
     >
       <Text style={styles.name}>Eat your leftovers</Text>
       <Text style={ui.text} numberOfLines={2}>
-        {entry.name.replace(/ leftovers$/, '')}
+        {entry.name.replace(/ leftovers$/, "")}
       </Text>
       <Text style={styles.detail} numberOfLines={2}>
         {keepsText(entry)}
       </Text>
       {entry.contains.length > 0 && (
-        <Text style={[styles.detail, { color: c.danger }]}>Contains {entry.contains.join(', ')}</Text>
+        <Text style={[styles.detail, { color: c.danger }]}>
+          Contains {entry.contains.join(", ")}
+        </Text>
       )}
     </Pressable>
   );
 }
 
 /** The 3 most urgent, then "3 more", which opens the rest in place. */
-function Alerts({ alerts, entryFor }: { alerts: Alert[]; entryFor: (productId: number | null) => InventoryEntry | undefined }) {
+function Alerts({
+  alerts,
+  entryFor,
+}: {
+  alerts: Alert[];
+  entryFor: (productId: number | null) => InventoryEntry | undefined;
+}) {
   const ui = useUi();
   const styles = useStyles();
   const [expanded, setExpanded] = useState(false);
@@ -262,7 +372,9 @@ function Alerts({ alerts, entryFor }: { alerts: Alert[]; entryFor: (productId: n
           accessibilityRole="button"
           accessibilityState={{ expanded }}
         >
-          <Text style={styles.link}>{expanded ? 'Show fewer' : `${hidden} more`}</Text>
+          <Text style={styles.link}>
+            {expanded ? "Show fewer" : `${hidden} more`}
+          </Text>
         </Pressable>
       )}
     </>
@@ -270,64 +382,39 @@ function Alerts({ alerts, entryFor }: { alerts: Alert[]; entryFor: (productId: n
 }
 
 /** Same color the item gets everywhere else; an alert with no item (fridge too warm, out of a staple) is amber. */
-const alertTone = (entry: InventoryEntry | undefined): ExpiryTone => (entry ? urgency(entry) : 'warn');
+const alertTone = (entry: InventoryEntry | undefined): ExpiryTone =>
+  entry ? urgency(entry) : "warn";
 
-function AlertRow({ alert, text, tone }: { alert: Alert; text: string; tone: ExpiryTone }) {
+function AlertRow({
+  alert,
+  text,
+  tone,
+}: {
+  alert: Alert;
+  text: string;
+  tone: ExpiryTone;
+}) {
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
-  const style = StyleSheet.flatten([styles.alert, { borderLeftColor: tone ? c[tone] : c.border }]);
+  const style = StyleSheet.flatten([
+    styles.alert,
+    { borderLeftColor: tone ? c[tone] : c.border },
+  ]);
   const body = (
     <Text style={[ui.text, { flex: 1 }]}>
-      <Text style={{ fontWeight: '700' }}>{alert.product_name}</Text> · {text}
+      <Text style={{ fontWeight: "700" }}>{alert.product_name}</Text> · {text}
     </Text>
   );
   if (alert.product_id == null) return <View style={style}>{body}</View>;
   return (
-    <Link href={{ pathname: '/item/[id]', params: { id: alert.product_id } }} asChild>
+    <Link
+      href={{ pathname: "/item/[id]", params: { id: alert.product_id } }}
+      asChild
+    >
       <Pressable style={style}>
         {body}
         <FontAwesome name="chevron-right" color={c.textSecondary} />
-      </Pressable>
-    </Link>
-  );
-}
-
-/**
- * A freezer row says how long it keeps; leftovers say how many servings and until when; anything
- * else when it goes bad, and when it runs out (or how much you'll likely throw away).
- */
-function rowLines(item: InventoryEntry): { goesBad: string | null; tone: ExpiryTone; second: string | null } {
-  if (item.location === 'freezer') {
-    const date = item.soonest_batch?.expiration_date;
-    return { goesBad: date ? `Good until around ${monthName(date)}` : null, tone: null, second: null };
-  }
-  if (item.leftovers) return { goesBad: keepsText(item), tone: expiryTone(item.expires_in_days, true), second: null };
-  return { goesBad: goesBadText(item), tone: expiryTone(item.expires_in_days), second: runsOutText(item) };
-}
-
-// Children of <Link asChild> must get one style object — expo-router throws on style arrays.
-function InventoryRow({ item, last }: { item: InventoryEntry; last: boolean }) {
-  const ui = useUi();
-  const styles = useStyles();
-  const c = useColors();
-  const { goesBad, tone, second } = rowLines(item);
-  return (
-    <Link href={{ pathname: '/item/[id]', params: { id: item.product_id } }} asChild>
-      <Pressable style={StyleSheet.flatten([styles.invRow, !last && ui.divider])}>
-        <View style={{ flex: 1, gap: 2 }}>
-          <Text style={[ui.text, { fontWeight: '600' }]}>{item.name}</Text>
-          {goesBad && <Text style={[ui.detail, tone && { color: c[tone] }]}>{goesBad}</Text>}
-          {second && <Text style={ui.detail}>{second}</Text>}
-        </View>
-        {!item.leftovers && (
-          <View style={styles.amount}>
-            <Text style={[ui.text, { textAlign: 'right' }]}>
-              {capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))}
-            </Text>
-            {item.fill_fraction != null && item.location !== 'freezer' && <FillBar fraction={item.fill_fraction} tone={urgency(item)} />}
-          </View>
-        )}
       </Pressable>
     </Link>
   );
@@ -341,8 +428,8 @@ const useStyles = makeStyles((c, size) => ({
     borderRadius: 12,
     padding: 16,
     borderLeftWidth: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   reviewBanner: {
@@ -351,8 +438,8 @@ const useStyles = makeStyles((c, size) => ({
     borderWidth: 1,
     borderRadius: 12,
     padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
   linkCard: {
@@ -361,21 +448,24 @@ const useStyles = makeStyles((c, size) => ({
     borderWidth: 1,
     borderRadius: 12,
     padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
   },
-  invRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, gap: 12 },
-  amount: { width: size(96), alignItems: 'flex-end' },
   caption: { marginTop: -4 },
-  carousel: { gap: 12, alignItems: 'flex-start' },
+  carousel: { gap: 12, alignItems: "flex-start" },
   placeholder: { backgroundColor: c.placeholder, borderWidth: 0 },
-  moreIdeas: { minHeight: 44, justifyContent: 'center', marginTop: 4 },
-  textRow: { minHeight: 44, justifyContent: 'center' },
-  link: { color: c.accent, fontSize: size(15), lineHeight: size(20), fontWeight: '600' },
+  moreIdeas: { minHeight: 44, justifyContent: "center", marginTop: 4 },
+  textRow: { minHeight: 44, justifyContent: "center" },
+  link: {
+    color: c.accent,
+    fontSize: size(15),
+    lineHeight: size(20),
+    fontWeight: "600",
+  },
   addButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: "row",
+    alignItems: "center",
     gap: 8,
     minHeight: 44,
     paddingHorizontal: 12,
@@ -384,5 +474,5 @@ const useStyles = makeStyles((c, size) => ({
     borderWidth: 1,
     borderColor: c.accent,
   },
-  addLabel: { color: c.accent, fontSize: size(15), fontWeight: '600' },
+  addLabel: { color: c.accent, fontSize: size(15), fontWeight: "600" },
 }));
