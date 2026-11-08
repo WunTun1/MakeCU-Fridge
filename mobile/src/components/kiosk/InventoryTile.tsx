@@ -1,17 +1,9 @@
 import { useMemo } from "react";
-import {
-  Image,
-  Platform,
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type TextStyle,
-} from "react-native";
+import { Platform, StyleSheet, Text, View, type TextStyle } from "react-native";
 
 import { FillBar } from "@/components/FillBar";
 import { formatAmount } from "@/lib/amount";
-import { API_URL, type InventoryEntry } from "@/lib/api";
+import type { InventoryEntry } from "@/lib/api";
 import {
   expiryTone,
   glanceWord,
@@ -24,7 +16,7 @@ import { byDay, capitalize } from "@/lib/time";
 
 /** Average glyph width of the bold system font, as a share of the font size. */
 const GLYPH_W = 0.62;
-const GLANCE_SIZE = { regular: [24, 30], compact: [20, 24] } as const;
+const GLANCE_SIZE = { regular: [21, 26], compact: [17, 21] } as const;
 
 /** Words wrap only at spaces. react-native-web's Text defaults to breaking inside words. */
 const KEEP_WORDS = Platform.select<TextStyle>({
@@ -62,97 +54,77 @@ function amountText(item: InventoryEntry, compact: boolean): string {
 }
 
 /**
- * One item on the fridge screen. The biggest text answers "when does it go
- * bad?"; the amount and fill bar come second. A `peek` tile is the one cut off at
- * the end of a row: it shows only its border and name, so no text appears sliced.
+ * One item on the fridge screen — display only, nothing to tap. The biggest text
+ * answers "when does it go bad?"; the amount and fill bar come second.
  */
 export function InventoryTile({
   item,
   width,
   height,
   compact,
-  peek = false,
-  onPress,
 }: {
   item: InventoryEntry;
   width: number;
   height: number;
   /** The 800x480 panel. */
   compact: boolean;
-  peek?: boolean;
-  onPress: () => void;
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const days = item.expires_in_days;
   const dateTone = expiryTone(days, item.leftovers);
   const tone = urgency(item);
-  const padding = compact ? 10 : 14;
+  const padding = compact ? 8 : 12;
   const border = tone ? 2 : 1;
-  const glance =
-    days != null
-      ? glanceWord(days)
-      : item.image_url
-        ? "Not identified"
-        : "No date";
+  const glance = days != null ? glanceWord(days) : "No date";
   const size = glanceSize(glance, width - 2 * (padding + border), compact);
 
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
+    <View
       accessibilityLabel={`${item.name}: ${glance}`}
-      style={({ pressed }) => [
+      style={[
         styles.tile,
         { width, height, padding },
         tone && { borderColor: colors[tone], borderWidth: border },
-        pressed && { opacity: 0.7 },
       ]}
     >
       <Text
-        style={[styles.name, compact && { fontSize: 16 }, KEEP_WORDS]}
-        numberOfLines={peek || compact ? 1 : 2}
+        style={[
+          styles.name,
+          styles.fixed,
+          compact && { fontSize: 14 },
+          KEEP_WORDS,
+        ]}
+        numberOfLines={compact ? 1 : 2}
       >
         {item.name}
       </Text>
-      {!peek && (
-        <>
-          <Text
-            style={[
-              styles.glance,
-              { fontSize: size, lineHeight: size + 4 },
-              KEEP_WORDS,
-              days == null
-                ? { color: colors.muted }
-                : dateTone && { color: colors[dateTone] },
-            ]}
-            numberOfLines={2}
-          >
-            {glance}
-          </Text>
-          {/* The camera's photo, for items it couldn't name: shows what was seen instead of a guess. */}
-          {item.image_url ? (
-            <Image
-              source={{ uri: `${API_URL}${item.image_url}` }}
-              style={styles.photo}
-              resizeMode="cover"
-            />
-          ) : (
-            <View style={{ flex: 1 }} />
-          )}
-          <Text
-            style={[styles.amount, compact && { fontSize: 15 }]}
-            numberOfLines={1}
-          >
-            {/* Seen by the camera but never on the scale: no weight to show, and none is guessed. */}
-            {item.grams > 0 ? amountText(item, compact) : "Not weighed"}
-          </Text>
-          {item.fill_fraction != null && (
-            <FillBar fraction={item.fill_fraction} tone={tone} />
-          )}
-        </>
+      <Text
+        style={[
+          styles.glance,
+          styles.fixed,
+          { fontSize: size, lineHeight: size + 4 },
+          KEEP_WORDS,
+          days == null
+            ? { color: colors.muted }
+            : dateTone && { color: colors[dateTone] },
+        ]}
+        numberOfLines={2}
+      >
+        {glance}
+      </Text>
+      <View style={{ flex: 1 }} />
+      <Text
+        style={[styles.amount, styles.fixed, compact && { fontSize: 13 }]}
+        numberOfLines={1}
+      >
+        {/* On a shelf without a scale: no weight to show, and none is guessed. */}
+        {item.grams > 0 ? amountText(item, compact) : "Not weighed"}
+      </Text>
+      {item.fill_fraction != null && (
+        <FillBar fraction={item.fill_fraction} tone={tone} />
       )}
-    </Pressable>
+    </View>
   );
 }
 
@@ -164,8 +136,9 @@ const makeStyles = (colors: Palette) =>
       borderWidth: 1,
       borderRadius: 12,
     },
-    name: { color: colors.text, fontSize: 18, fontWeight: "700" },
+    name: { color: colors.text, fontSize: 16, fontWeight: "700" },
     glance: { color: colors.text, fontWeight: "700", marginTop: 4 },
-    amount: { color: colors.muted, fontSize: 17, fontWeight: "500" },
-    photo: { flex: 1, minHeight: 40, marginVertical: 8, borderRadius: 10 },
+    amount: { color: colors.muted, fontSize: 15, fontWeight: "500" },
+    // Text never gives way: a squashed line would spill over its neighbours.
+    fixed: { flexShrink: 0 },
   });

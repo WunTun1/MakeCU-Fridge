@@ -1,9 +1,11 @@
 /**
- * The fridge-door touchscreen: what's inside, how much, and when it goes bad —
- * glanceable from across the kitchen, touch only (no typing). Recipes and
- * everything else live in the phone app. Built for 7" panels at 1024x600 or
- * 800x480; on a desktop browser it renders inside a simulated panel (see
- * ScreenSimulator). Open http://<backend>:8000/kiosk full-screen (see pi_node/kiosk/).
+ * The fridge-door screen: what's inside, how much, and when it goes bad —
+ * glanceable from across the kitchen. Display only: nothing on it is touched or
+ * clicked, so everything that needs a person (naming an item the camera couldn't,
+ * recipes, details) happens in the phone app. Rows with more items than fit
+ * scroll through them on their own. Built for 7" panels at 1024x600 or 800x480;
+ * on a desktop browser it renders inside a simulated panel (see ScreenSimulator).
+ * Open http://<backend>:8000/kiosk full-screen (see pi_node/kiosk/).
  */
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 import { Stack } from "expo-router";
@@ -11,45 +13,29 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Animated,
   Easing,
-  ScrollView,
   StyleSheet,
   Text,
   View,
   type LayoutChangeEvent,
-  type NativeScrollEvent,
-  type NativeSyntheticEvent,
 } from "react-native";
 
 import { InventoryTile } from "@/components/kiosk/InventoryTile";
 import { KioskHeader } from "@/components/kiosk/KioskHeader";
-import { KioskModal } from "@/components/kiosk/KioskModal";
-import { ReviewPrompt } from "@/components/kiosk/ReviewPrompt";
 import { ScreenSimulator } from "@/components/kiosk/ScreenSimulator";
-import { UsageChart } from "@/components/UsageChart";
-import { formatAmount } from "@/lib/amount";
 import {
   api,
   type Alert,
   type InventoryEntry,
-  type ProductUsage,
   type RecipeCard,
 } from "@/lib/api";
-import {
-  expiryText,
-  expiryTone,
-  expiryWord,
-  LIKELY_WASTED,
-  likelyWasted,
-} from "@/lib/expiry";
+import { expiryText, expiryTone } from "@/lib/expiry";
 import {
   palettes,
   TextScaleContext,
   ThemeContext,
   useColors,
   type Palette,
-  type ThemeMode,
 } from "@/lib/theme";
-import { capitalize, whenWord } from "@/lib/time";
 import { useApi } from "@/lib/useApi";
 
 const POLL_MS = 3000;
@@ -59,19 +45,18 @@ const RECIPE_IDEAS = 2;
 const RECIPE_SHELF_ITEMS = 4;
 /** "Updating…" stays up at least this long, so a fast refresh is still noticeable. */
 const MIN_UPDATING_MS = 900;
-const GAP = 10;
+/** The screen's one spacing unit: every gap, margin and panel padding is this, so both columns share a grid. */
+const GRID = { regular: 12, compact: 8 };
 /** The one shelf with a scale under it (pi_node HX711_PINS); the rest of the fridge isn't weighed. */
 const WEIGHED_SHELF = 0;
-/** Narrower tiles can't fit "Wednesday" at glance size; fewer, wider tiles show instead. */
-const MIN_TILE_W = { regular: 210, compact: 175 };
-/** This share of one more tile peeks in at the end of every row, so a row that scrolls shows there's more. */
-const PEEK = 0.4;
+/** Every tile is this wide, in both rows, so the columns of tiles line up: 3 fit across a row on either panel, so a row rolls from its 4th item. Fits "Wednesday" at glance size. */
+const TILE_W = { regular: 176, compact: 148 };
+/** A row with more items than fit rolls sideways at this speed, endlessly: slow enough to read while it moves. */
+const ROLL_PX_PER_S = 24;
+/** Heads up lists only this many lines, the most urgent: short enough to read at a glance and never scroll. */
+const HEADS_UP_ITEMS = 3;
 /** Below this panel width (the 800x480 screen) everything tightens up. */
 const COMPACT_W = 900;
-const THEME_KEY = "refridge.kiosk.theme";
-/** How many items the Heads up box lists (soonest to go bad first), leaving room for recipe ideas below. */
-const HEADS_UP_ITEMS = 4;
-const HEADS_UP_ITEMS_COMPACT = 3;
 /** Backend alerts the box shows on top. Expiry is covered by the item list, so expiring_soon isn't repeated. */
 const SHOWN_ALERTS: Alert["reason"][] = [
   "fridge_temp_high",
@@ -80,72 +65,48 @@ const SHOWN_ALERTS: Alert["reason"][] = [
   "low_fraction",
 ];
 
-// The kiosk runs in a browser; localStorage may be missing (native) or blocked.
-function loadMode(): ThemeMode {
-  try {
-    return globalThis.localStorage?.getItem(THEME_KEY) === "light"
-      ? "light"
-      : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
-function saveMode(mode: ThemeMode) {
-  try {
-    globalThis.localStorage?.setItem(THEME_KEY, mode);
-  } catch {
-    // Not remembered across reloads; the toggle still works.
-  }
-}
-
 export default function Kiosk() {
-  const [mode, setMode] = useState<ThemeMode>(loadMode);
-  const toggle = () =>
-    setMode((m) => {
-      const next = m === "dark" ? "light" : "dark";
-      saveMode(next);
-      return next;
-    });
-
   return (
-    <ThemeContext.Provider value={palettes[mode]}>
+    // Always the light theme: nobody is at the screen to switch it.
+    <ThemeContext.Provider value={palettes.light}>
       {/* The phone's Large text setting doesn't apply here: the fridge screen has its own type scale. */}
       <TextScaleContext.Provider value={1}>
         <Stack.Screen options={{ headerShown: false }} />
         <ScreenSimulator>
-          <KioskScreen mode={mode} onToggleTheme={toggle} />
+          <KioskScreen />
         </ScreenSimulator>
       </TextScaleContext.Provider>
     </ThemeContext.Provider>
   );
 }
 
-function KioskScreen({
-  mode,
-  onToggleTheme,
-}: {
-  mode: ThemeMode;
-  onToggleTheme: () => void;
-}) {
+function KioskScreen() {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const summary = useApi(api.summary, POLL_MS);
-  const reviews = useApi(api.review, POLL_MS);
-  const common = useApi(() => api.commonProducts(8));
-  const recipes = useRecipeIdeas(summary.data?.inventory);
 
   const [screenW, setScreenW] = useState(0);
-  const [selected, setSelected] = useState<InventoryEntry | null>(null);
 
   const s = summary.data;
   const compact = screenW > 0 && screenW < COMPACT_W;
-  const openReviews = reviews.data ?? [];
-  const shelves = useMemo(
-    () => groupRows(bySoonest(s?.inventory ?? [])),
+  const grid = compact ? GRID.compact : GRID.regular;
+  // Items the camera couldn't name stay off this screen (and out of its alerts) until
+  // someone names them in the phone app.
+  const inventory = useMemo(
+    () => (s?.inventory ?? []).filter(isNamed),
     [s?.inventory],
   );
+  const alerts = useMemo(() => {
+    const unnamed = new Set(
+      (s?.inventory ?? []).filter((i) => !isNamed(i)).map((i) => i.product_id),
+    );
+    return (s?.alerts ?? []).filter(
+      (a) => a.product_id == null || !unnamed.has(a.product_id),
+    );
+  }, [s?.inventory, s?.alerts]);
+  const recipes = useRecipeIdeas(s ? inventory : undefined);
+  const shelves = useMemo(() => groupRows(bySoonest(inventory)), [inventory]);
 
   return (
     <View
@@ -157,8 +118,6 @@ function KioskScreen({
       <KioskHeader
         conditions={s?.conditions ?? null}
         doorOpen={s?.door_open ?? false}
-        mode={mode}
-        onToggleTheme={onToggleTheme}
         compact={compact}
       />
 
@@ -168,8 +127,8 @@ function KioskScreen({
           <Text style={styles.offlineText}>Connecting to ReFridge…</Text>
         </View>
       ) : (
-        <View style={[styles.body, compact && { padding: 10, gap: 10 }]}>
-          <View style={[styles.shelves, compact && { gap: 10 }]}>
+        <View style={[styles.body, { padding: grid, gap: grid }]}>
+          <View style={[styles.column, { gap: grid }]}>
             {s &&
               shelves.map((shelf) => (
                 <Shelf
@@ -178,146 +137,126 @@ function KioskScreen({
                   empty={shelf.empty}
                   items={shelf.items}
                   compact={compact}
-                  onOpen={setSelected}
+                  grid={grid}
                 />
               ))}
           </View>
 
-          <ScrollView
-            style={{ width: compact ? 220 : 270, flexGrow: 0 }}
-            contentContainerStyle={{ gap: compact ? 10 : 12 }}
+          {/* Two boxes, each the height of the row beside it, so their edges line up across the screen. */}
+          <View
+            style={[styles.side, { width: compact ? 220 : 270, gap: grid }]}
           >
-            {/* The only thing the fridge ever asks: "what is this?" for an item it couldn't name. */}
-            {openReviews.length > 0 && (
-              <ReviewPrompt
-                key={openReviews[openReviews.length - 1].id}
-                review={openReviews[openReviews.length - 1]}
-                remaining={openReviews.length}
-                commonNames={(common.data ?? []).map((p) => p.name)}
-                onResolved={() => {
-                  reviews.reload();
-                  summary.reload();
-                }}
-              />
-            )}
-            {s && (
-              <HeadsUp
-                inventory={s.inventory}
-                alerts={s.alerts}
-                compact={compact}
-              />
-            )}
-            {((recipes.ideas?.length ?? 0) > 0 || recipes.updating) && (
-              <RecipeIdeas
-                recipes={(recipes.ideas ?? []).slice(
-                  0,
-                  compact ? 1 : RECIPE_IDEAS,
-                )}
-                updating={recipes.updating}
-              />
-            )}
-          </ScrollView>
+            <HeadsUp inventory={inventory} alerts={alerts} grid={grid} />
+            <RecipeIdeas
+              recipes={(recipes.ideas ?? []).slice(
+                0,
+                compact ? 1 : RECIPE_IDEAS,
+              )}
+              updating={recipes.updating}
+              grid={grid}
+            />
+          </View>
         </View>
-      )}
-
-      {selected && (
-        <ItemModal item={selected} onClose={() => setSelected(null)} />
       )}
     </View>
   );
 }
 
 /**
- * One tile width for the whole screen, from the row width alone (never the item count),
- * so every row lines up: as many tiles as fit at the minimum width, plus a peek.
+ * The few things worth a look right now, most urgent first — never more than
+ * HEADS_UP_ITEMS, so it always fits without scrolling. The full list is the rows.
  */
-function tileLayout(
-  rowW: number,
-  compact: boolean,
-): { width: number; fit: number } {
-  const min = compact ? MIN_TILE_W.compact : MIN_TILE_W.regular;
-  for (let fit = Math.floor((rowW + GAP) / (min + GAP)); fit > 1; fit--) {
-    const width = (rowW - GAP * fit) / (fit + PEEK);
-    if (width >= min) return { width, fit };
-  }
-  return { width: (rowW - GAP) / (1 + PEEK), fit: 1 };
-}
-
-/** "How long is it good for": every fridge item, soonest to go bad first, plus any other alerts. */
 function HeadsUp({
   inventory,
   alerts,
-  compact,
+  grid,
 }: {
   inventory: InventoryEntry[];
   alerts: Alert[];
-  compact: boolean;
+  grid: number;
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const other = alerts
-    .filter((a) => SHOWN_ALERTS.includes(a.reason))
-    .slice(0, 3);
-  const items = inventory
-    .filter((i) => i.location === "fridge" && i.expires_in_days != null)
-    .sort(
-      (a, b) =>
-        a.expires_in_days! - b.expires_in_days! || a.name.localeCompare(b.name),
-    );
-  const shown = items.slice(
-    0,
-    Math.max(
-      (compact ? HEADS_UP_ITEMS_COMPACT : HEADS_UP_ITEMS) - other.length,
-      1,
-    ),
-  );
+  const top = headsUpLines(inventory, alerts).slice(0, HEADS_UP_ITEMS);
 
   return (
-    <View style={styles.panel}>
+    <View style={[styles.panel, { padding: grid }]}>
       <Text style={styles.section}>Heads up</Text>
-      {other.map((a, i) => (
-        <View key={`${a.reason}-${a.product_id}-${i}`} style={styles.alertRow}>
-          <View
-            style={[
-              styles.dot,
-              {
-                backgroundColor:
-                  a.reason === "fridge_temp_high" ? colors.danger : colors.warn,
-              },
-            ]}
-          />
-          <Text style={styles.alertText} numberOfLines={2}>
-            <Text style={{ fontWeight: "700" }}>{a.product_name}</Text> ·{" "}
-            {a.detail}
-          </Text>
-        </View>
-      ))}
-      {shown.map((item) => {
-        const d = item.expires_in_days!;
-        const tone = expiryTone(d, item.leftovers);
-        const color = tone ? colors[tone] : colors.good;
-        return (
-          <View key={item.product_id} style={styles.alertRow}>
-            <View style={[styles.dot, { backgroundColor: color }]} />
+      {top.length === 0 ? (
+        <Text style={styles.muted}>Nothing to worry about.</Text>
+      ) : (
+        top.map((line) => (
+          <View key={line.key} style={styles.alertRow}>
+            <View
+              style={[styles.dot, { backgroundColor: colors[line.tone] }]}
+            />
             <Text style={styles.alertText} numberOfLines={2}>
-              <Text style={{ fontWeight: "700" }}>{item.name}</Text> ·{" "}
-              {lowerFirst(
-                expiryText(d, item.expiry_estimated && !item.leftovers),
-              )}
+              <Text style={{ fontWeight: "700" }}>{line.title}</Text> ·{" "}
+              {line.detail}
             </Text>
           </View>
-        );
-      })}
-      {items.length > shown.length && (
-        <Text style={styles.muted}>
-          +{items.length - shown.length} more on the shelves
-        </Text>
-      )}
-      {other.length === 0 && items.length === 0 && (
-        <Text style={styles.muted}>Nothing to worry about.</Text>
+        ))
       )}
     </View>
   );
+}
+
+type HeadsUpLine = {
+  key: string;
+  title: string;
+  detail: string;
+  tone: "danger" | "warn" | "good";
+  /** Ranks the lines: lower is more urgent. */
+  rank: number;
+};
+
+/**
+ * Everything Heads up could say, most urgent first: the fridge running warm, then food
+ * going bad today or tomorrow (soonest first), things running out, and then whatever
+ * goes bad next.
+ */
+function headsUpLines(
+  inventory: InventoryEntry[],
+  alerts: Alert[],
+): HeadsUpLine[] {
+  const lines: HeadsUpLine[] = [];
+  for (const [i, a] of alerts
+    .filter((a) => SHOWN_ALERTS.includes(a.reason))
+    .entries()) {
+    const warm = a.reason === "fridge_temp_high";
+    lines.push({
+      key: `alert-${a.reason}-${a.product_id}-${i}`,
+      title: a.product_name,
+      detail: a.detail,
+      tone: warm ? "danger" : "warn",
+      rank: warm ? 0 : runningOutRank(a),
+    });
+  }
+  for (const item of inventory) {
+    const d = item.expires_in_days;
+    if (item.location === "freezer" || d == null) continue; // frozen food keeps for months
+    const tone = expiryTone(d, item.leftovers);
+    lines.push({
+      key: `item-${item.product_id}`,
+      title: item.name,
+      detail: lowerFirst(
+        expiryText(d, item.expiry_estimated && !item.leftovers),
+      ),
+      tone: tone ?? "good",
+      rank: (d <= 1 ? 1 : 4) + Math.max(d, -1) / 1000, // soonest first within each group
+    });
+  }
+  return lines.sort(
+    (a, b) => a.rank - b.rank || a.title.localeCompare(b.title),
+  );
+}
+
+/** Out of a staple first, then whatever runs out soonest, then "getting low" — all after food going bad. */
+function runningOutRank(a: Alert): number {
+  if (a.reason === "staple_out") return 3;
+  if (a.reason === "low_days_left")
+    return 3.1 + Math.max(a.days ?? 0, 0) / 1000;
+  return 3.5;
 }
 
 /**
@@ -335,10 +274,7 @@ function useRecipeIdeas(inventory: InventoryEntry[] | undefined) {
     .map((i) => `${i.product_id}:${i.grams}`)
     .join(",");
   const shelfQuery = (inventory ?? [])
-    .filter(
-      (i) =>
-        i.location === "fridge" && i.shelf === WEIGHED_SHELF && !i.image_url,
-    ) // no unnamed items
+    .filter((i) => i.location === "fridge" && i.shelf === WEIGHED_SHELF)
     .sort(
       (a, b) =>
         (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity),
@@ -408,19 +344,26 @@ function UpdatingBar() {
 function RecipeIdeas({
   recipes,
   updating,
+  grid,
 }: {
   recipes: RecipeCard[];
   updating: boolean;
+  grid: number;
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   return (
-    <View style={styles.panel}>
+    <View style={[styles.panel, { padding: grid }]}>
       <View style={styles.panelHeader}>
         <Text style={styles.section}>Recipe ideas</Text>
         {updating && <Text style={styles.updating}>Updating…</Text>}
       </View>
       {updating && <UpdatingBar />}
+      {recipes.length === 0 && !updating && (
+        <Text style={styles.muted}>
+          Ideas show up once there's food in the fridge.
+        </Text>
+      )}
       {recipes.map((r) => (
         <View
           key={r.id}
@@ -459,33 +402,53 @@ function RecipeIdeas({
 /** "Goes bad Monday" -> "goes bad Monday", to follow the item's name. */
 const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
 
-/** One shelf: a row of tiles you swipe sideways, soonest to go bad on the left. */
+/**
+ * One shelf: a row of tiles, soonest to go bad on the left. When more items are
+ * on it than fit, the row rolls slowly sideways, endlessly: the list is drawn twice
+ * back to back, so its end flows straight into its start again.
+ */
 function Shelf({
   title,
   empty,
   items,
   compact,
-  onOpen,
+  grid,
 }: {
   title: string;
   /** Shown when the row has nothing in it. */
   empty: string;
   items: InventoryEntry[];
   compact: boolean;
-  onOpen: (item: InventoryEntry) => void;
+  grid: number;
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const [row, setRow] = useState({ width: 0, height: 0 });
-  const [first, setFirst] = useState(0);
+  const [offset] = useState(() => new Animated.Value(0));
 
-  const { width: tileW, fit } = tileLayout(row.width, compact);
-  const overflows = items.length > fit;
-  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) =>
-    setFirst(Math.round(e.nativeEvent.contentOffset.x / (tileW + GAP)));
+  const tileW = compact ? TILE_W.compact : TILE_W.regular;
+  const cycle = items.length * (tileW + grid); // one full pass of the list, its trailing gap included
+  // Tiles roll inside the box's padding: they disappear and reappear the same distance
+  // from the border as they sit when still.
+  const rolls = row.width > 0 && cycle - grid > row.width;
+  useEffect(() => {
+    offset.setValue(0);
+    if (!rolls) return;
+    const loop = Animated.loop(
+      Animated.timing(offset, {
+        toValue: -cycle,
+        duration: (cycle / ROLL_PX_PER_S) * 1000,
+        easing: Easing.linear,
+        useNativeDriver: false,
+      }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [rolls, cycle, offset]);
+  const drawn = rolls ? [...items, ...items] : items;
 
   return (
-    <View style={[styles.shelf, compact && { padding: 8, gap: 6 }]}>
+    <View style={[styles.shelf, { padding: grid, gap: grid * 0.75 }]}>
       <View style={styles.shelfHeader}>
         <Text style={styles.section}>{title}</Text>
         <Text style={styles.shelfCount}>
@@ -494,11 +457,14 @@ function Shelf({
             : items.length === 1
               ? "1 item"
               : `${items.length} items, soonest to go bad first`}
-          {overflows ? "  ·  swipe for more ›" : ""}
         </Text>
       </View>
       <View
-        style={{ flex: 1 }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          overflow: "hidden",
+        }}
         onLayout={(e: LayoutChangeEvent) => setRow(e.nativeEvent.layout)}
       >
         {items.length === 0 ? (
@@ -507,32 +473,37 @@ function Shelf({
           </View>
         ) : (
           row.width > 0 && (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              snapToInterval={tileW + GAP}
-              decelerationRate="fast"
-              onScroll={onScroll}
-              scrollEventThrottle={100}
-              contentContainerStyle={{ gap: GAP }}
+            <Animated.View
+              style={{
+                flexDirection: "row",
+                gap: grid,
+                alignSelf: "flex-start",
+                transform: [{ translateX: offset }],
+              }}
             >
-              {items.map((item, i) => (
+              {drawn.map((item, i) => (
                 <InventoryTile
-                  key={item.product_id}
+                  key={`${item.product_id}-${i}`}
                   item={item}
                   width={tileW}
                   height={row.height}
                   compact={compact}
-                  peek={overflows && i === first + fit}
-                  onPress={() => onOpen(item)}
                 />
               ))}
-            </ScrollView>
+            </Animated.View>
           )
         )}
       </View>
     </View>
   );
+}
+
+/**
+ * Whether the item has a real name. The camera bench adds an item it couldn't name
+ * with a photo of it; those wait in the phone app until someone names them.
+ */
+function isNamed(item: InventoryEntry): boolean {
+  return !item.image_url;
 }
 
 /** Soonest to go bad first; things with no known expiry after, by name. */
@@ -552,141 +523,42 @@ type Row = {
 };
 
 /**
- * Two rows, both always shown: what's on the weighed shelf, and everything
- * else in the fridge. Pantry items aren't in the fridge, so they're left off.
+ * Two rows, both always shown: what's on the weighed shelf, and everything else
+ * you have — the rest of the fridge, the pantry and the freezer.
  */
 function groupRows(ranked: InventoryEntry[]): Row[] {
-  const inFridge = ranked.filter((item) => item.location === "fridge");
+  const onShelf = (item: InventoryEntry) =>
+    item.location === "fridge" && item.shelf === WEIGHED_SHELF;
   return [
     {
       key: "shelf",
       title: "Shelf",
       empty: "Empty — put something on the shelf.",
-      items: inFridge.filter((item) => item.shelf === WEIGHED_SHELF),
+      items: ranked.filter(onShelf),
     },
     {
       key: "rest",
-      title: "Rest of the fridge",
-      empty: "Nothing else in the fridge.",
-      items: inFridge.filter((item) => item.shelf !== WEIGHED_SHELF),
+      title: "Everything else",
+      empty: "Nothing else at the moment.",
+      items: ranked.filter((item) => !onShelf(item)),
     },
   ];
-}
-
-function ItemModal({
-  item,
-  onClose,
-}: {
-  item: InventoryEntry;
-  onClose: () => void;
-}) {
-  const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
-  const [usage, setUsage] = useState<ProductUsage | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .usage(item.product_id)
-      .then((u) => !cancelled && setUsage(u))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [item.product_id]);
-
-  const d = item.expires_in_days;
-  const tone = expiryTone(d, item.leftovers);
-  const wasted = item.leftovers ? null : likelyWasted(item);
-  return (
-    <KioskModal visible title={item.name} onClose={onClose}>
-      <View style={styles.stats}>
-        <Stat
-          label={item.expiry_estimated ? "Goes bad (estimate)" : "Goes bad"}
-          value={d == null ? "No date" : expiryWord(d)}
-          color={d == null ? colors.muted : tone ? colors[tone] : undefined}
-        />
-        <Stat
-          label="Have"
-          value={
-            item.grams > 0
-              ? capitalize(
-                  formatAmount(
-                    item.grams,
-                    item.unit,
-                    item.grams_per_unit,
-                    item.name,
-                  ),
-                )
-              : "Not weighed"
-          }
-        />
-        {wasted ? (
-          <Stat label={LIKELY_WASTED} value={wasted} />
-        ) : (
-          !item.leftovers &&
-          item.days_left != null && (
-            <Stat
-              label="Runs out"
-              value={capitalize(whenWord(item.days_left))}
-            />
-          )
-        )}
-      </View>
-      {usage && (
-        <>
-          <Text style={styles.muted}>Used per day, last 2 weeks</Text>
-          <UsageChart
-            dailyUsage={usage.daily_usage_g}
-            days={14}
-            height={110}
-            unit={usage.unit}
-            gramsPerUnit={usage.grams_per_unit}
-            name={usage.name}
-          />
-        </>
-      )}
-    </KioskModal>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-}) {
-  const colors = useColors();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
-  return (
-    <View style={{ alignItems: "center", flex: 1, gap: 4 }}>
-      <Text
-        style={{
-          color: color ?? colors.text,
-          fontSize: 26,
-          fontWeight: "700",
-          textAlign: "center",
-        }}
-      >
-        {value}
-      </Text>
-      <Text style={styles.muted}>{label}</Text>
-    </View>
-  );
 }
 
 const makeStyles = (colors: Palette) =>
   StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.bg },
-    body: { flex: 1, flexDirection: "row", padding: 14, gap: 14 },
-    shelves: { flex: 1, gap: 12 },
+    body: { flex: 1, flexDirection: "row" },
+    // minWidth/minHeight 0: a column never grows to fit a rolling row (or list) — it clips it instead.
+    column: { flex: 1, minWidth: 0, minHeight: 0 },
+    // Fixed width, never squeezed (no `flex`: on the web `flex: 0` would zero the width).
+    side: { flexShrink: 0, minHeight: 0 },
     shelf: {
       flex: 1,
-      gap: 8,
-      padding: 10,
-      borderRadius: 18,
+      minWidth: 0,
+      minHeight: 0,
+      borderRadius: 16,
+      overflow: "hidden", // tiles rolling past are clipped by the rounded border
       borderWidth: 1,
       borderColor: colors.border,
       backgroundColor: colors.input,
@@ -707,14 +579,15 @@ const makeStyles = (colors: Palette) =>
     shelfCount: { color: colors.muted, fontSize: 13 },
     emptyShelf: { flex: 1, alignItems: "center", justifyContent: "center" },
     muted: { color: colors.muted, fontSize: 14 },
-    stats: { flexDirection: "row", gap: 8 },
     panel: {
-      backgroundColor: colors.card,
+      flex: 1,
+      minHeight: 0,
+      overflow: "hidden",
+      backgroundColor: colors.input,
       borderColor: colors.border,
       borderWidth: 1,
       borderRadius: 16,
-      padding: 12,
-      gap: 10,
+      gap: 8,
     },
     alertRow: { flexDirection: "row", alignItems: "center", gap: 10 },
     dot: { width: 10, height: 10, borderRadius: 5 },
