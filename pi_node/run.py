@@ -205,7 +205,7 @@ def main() -> None:
             if pi and pi.get("camera") != camera_up:
                 camera_up = pi.get("camera")
                 say("Camera: sending pictures." if camera_up else
-                    f"Camera: not found at index {config.camera_index} yet — plug it in, it's picked up automatically.")
+                    "Camera: none found yet (tried every camera device) — plug it in, it's picked up automatically.")
 
             if backend_up and browser and env and (screen is None or screen.poll() is not None):
                 if screen is not None:

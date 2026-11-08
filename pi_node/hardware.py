@@ -38,19 +38,38 @@ class Hardware(Protocol):
     def close(self) -> None: ...
 
 
+def _quiet_opencv():
+    """Silence OpenCV's warnings while probing cameras; returns a function that restores them."""
+    try:
+        logging_ = cv2.utils.logging
+        previous = logging_.getLogLevel()
+        logging_.setLogLevel(logging_.LOG_LEVEL_ERROR)
+        return lambda: logging_.setLogLevel(previous)
+    except AttributeError:
+        return lambda: None
+
+
 class WebcamGrabber:
     """Reads a USB webcam continuously on a thread so /frame.jpg always serves
     the newest frame instead of a stale buffered one.
 
     With keep_trying, a camera that isn't there yet (plugged in after start) or
     stops answering (unplugged, USB hiccup) is looked for again every few
-    seconds instead of staying off until a restart."""
+    seconds instead of staying off until a restart.
+
+    With scan, when `index` doesn't give a picture, every other camera device is
+    tried too and the first one that does is used. On the Pi the USB camera isn't
+    always /dev/video0 (replugging renumbers it, and a Pi 5 has video devices of
+    its own). Off by default: on a laptop, a missing USB camera must not quietly
+    fall back to the built-in one."""
 
     REOPEN_S = 2.0
     MAX_FAILED_READS = 40  # ~2 s of failed reads: treat the camera as gone and reopen it
+    WARMUP_READS = 5       # some cameras return a few empty reads right after opening
 
-    def __init__(self, index: int, width: int, height: int, keep_trying: bool = False):
+    def __init__(self, index: int, width: int, height: int, keep_trying: bool = False, scan: bool = False):
         self._index, self._width, self._height = index, width, height
+        self._preferred, self._scan = index, scan
         self._cap: cv2.VideoCapture | None = None
         self._latest: np.ndarray | None = None
         self._lock = threading.Lock()
@@ -58,19 +77,47 @@ class WebcamGrabber:
         if not self._open():
             if not keep_trying:
                 raise RuntimeError(f"Could not open webcam index {index}")
-            log.warning("No webcam at index %d yet — will keep looking (plug it in any time)", index)
+            log.warning("No webcam %s yet — will keep looking (plug it in any time)",
+                        "found on any /dev/video*" if scan else f"at index {index}")
         threading.Thread(target=self._run, daemon=True).start()
 
-    def _open(self) -> bool:
+    def _candidates(self) -> list[int]:
+        if not self._scan:
+            return [self._preferred]
+        if os.name == "posix" and os.path.isdir("/dev"):
+            found = sorted(int(n[5:]) for n in os.listdir("/dev") if n.startswith("video") and n[5:].isdigit())
+        else:
+            found = list(range(6))
+        return [self._preferred] + [i for i in found if i != self._preferred]
+
+    def _try(self, index: int) -> cv2.VideoCapture | None:
+        """The camera at `index`, if it opens and actually delivers a picture
+        (a USB camera's metadata node, or the Pi 5's own video devices, open but don't)."""
         backend = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_ANY
-        cap = cv2.VideoCapture(self._index, backend)
-        if not cap.isOpened():
-            cap.release()
+        cap = cv2.VideoCapture(index, backend)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
+            for _ in range(self.WARMUP_READS):
+                if cap.read()[0]:
+                    return cap
+        cap.release()
+        return None
+
+    def _open(self) -> bool:
+        quiet = _quiet_opencv() if self._scan else None  # trying absent devices prints a warning each
+        try:
+            for index in self._candidates():
+                cap = self._try(index)
+                if cap is not None:
+                    if index != self._preferred:
+                        log.info("Camera index %d has no picture; using camera %d instead", self._preferred, index)
+                    self._index, self._cap = index, cap
+                    return True
             return False
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        self._cap = cap
-        return True
+        finally:
+            if quiet is not None:
+                quiet()
 
     @property
     def connected(self) -> bool:
@@ -141,7 +188,7 @@ class RealHardware:
             log.warning("Barometer unavailable (%s) — temperature/pressure disabled", e)
             self._baro = None
 
-        self._cam = WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height, keep_trying=True)
+        self._cam = WebcamGrabber(cfg.camera_index, cfg.camera_width, cfg.camera_height, keep_trying=True, scan=True)
 
     def read_weights(self) -> dict[int, float]:
         weights = {}
