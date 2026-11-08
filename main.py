@@ -347,6 +347,21 @@ def _open_camera_page(port: int) -> None:
     webbrowser.open(f"{url}/vision")
 
 
+def clear_shelves(db) -> int:
+    """Start each run with an empty shelf: what the camera put on a shelf last time is cleared,
+    with the shelf's open "what is this?" prompts. Not logged as eaten or thrown out, so it never
+    counts in the analytics. The freezer, the pantry and things added by hand (no shelf) stay."""
+    items = [i for i in db.active_items(location="fridge") if i["shelf"] is not None]
+    for item in items:
+        db.mark_item_removed(item["id"])
+    with db.cursor() as cur:
+        cur.execute("SELECT id FROM events WHERE event_type = 'needs_review' AND resolved = 0 AND shelf IS NOT NULL")
+        open_prompts = [row["id"] for row in cur.fetchall()]
+    for event_id in open_prompts:
+        db.resolve_event(event_id)
+    return len(items)
+
+
 def main() -> None:
     import sys
 
@@ -357,6 +372,11 @@ def main() -> None:
     port = int(os.getenv("API_PORT", "8000"))
     stop_event = threading.Event()
     if os.getenv("ENABLE_FRIDGE_LOOP", "false").lower() == "true":
+        if os.getenv("CLEAR_SHELF_ON_START", "on").lower() not in ("off", "false", "0"):
+            from inventory.database import get_db
+
+            cleared = clear_shelves(get_db(os.getenv("DATABASE_PATH", "refridge.db")))
+            log.info("Started with an empty shelf: cleared %d item(s) (CLEAR_SHELF_ON_START=off to keep them)", cleared)
         thread = threading.Thread(target=run_fridge_loop, args=(stop_event,), daemon=True)
         thread.start()
         # On a desktop, show what the camera sees and the photos it takes (VISION_WINDOW=off to skip).

@@ -58,3 +58,19 @@ def test_when_it_cant_tell_what_left_it_asks(tmp_path, monkeypatch):
     main._handle_trip(db, 0, 1, _with_orange(empty), empty, 1000.0, 1000.0)
     assert len(db.active_items()) == 2
     assert [(s["status"], s["item_name"]) for s in snapshots.recent()] == [("removed", None)]
+
+
+def test_a_restart_starts_with_an_empty_shelf(tmp_path):
+    db = Database(tmp_path / "t.db")
+    on_shelf = events.apply_add(db, db.get_or_create_product("Avocado"), 0, shelf=0)
+    by_hand = events.apply_add(db, db.get_or_create_product("Milk"), 1000)  # no shelf
+    frozen = events.apply_add(db, db.get_or_create_product("Peas"), 400, location="freezer", shelf=0)
+    events.apply_needs_review(db, shelf=0, meta={"reason": "taken out, not sure what"})
+    assert main.clear_shelves(db) == 1
+    left = {i["id"] for i in db.active_items()}
+    assert on_shelf not in left and {by_hand, frozen} <= left
+    with db.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM events WHERE event_type = 'needs_review' AND resolved = 0")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT COUNT(*) FROM events WHERE event_type IN ('remove', 'waste', 'consume')")
+        assert cur.fetchone()[0] == 0  # not counted as eaten or thrown out
