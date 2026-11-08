@@ -95,6 +95,13 @@ def _split_combined_weight(total: float, item_names: list[str]) -> list[float]:
     return [total / len(item_names)] * len(item_names)
 
 
+def _adds(new_regions: list[NewRegion], grams: float) -> list[Decision]:
+    """One add per new region the camera saw, sharing `grams` (what the scale says came in;
+    0 when it didn't move, so the amount is left for the person to set)."""
+    each = max(grams, 0.0) / len(new_regions)
+    return [Decision(kind="add", grams=each, region=r, position=r.position) for r in new_regions]
+
+
 def reconcile_shelf(
     shelf: int,
     weight_before: float,
@@ -111,23 +118,21 @@ def reconcile_shelf(
     vanished = observation.vanished
     new_regions = observation.new_regions
 
+    # Whether something was added is the camera's call alone: a new region is a new item, whatever
+    # the scale did. The scale only says how much it weighs.
     if not significant:
         if vanished and new_regions:
-            # Weight unchanged but something disappeared and something new appeared
-            # nearby — already handled as a position match upstream (tracker), or
-            # it's a put-back-differently case the tracker couldn't resolve.
+            # Something left and something new arrived at about the same weight: a swap.
+            for v in vanished:
+                decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
+            decisions.extend(_adds(new_regions, sum(v.grams for v in vanished) + delta))
+        elif new_regions:
+            decisions.extend(_adds(new_regions, 0.0))
+        elif vanished:
             decisions.append(Decision(
-                kind="needs_review", note="weight unchanged but item identity ambiguous",
-                meta={"vanished": [v.item_id for v in vanished],
-                      "new_region_count": len(new_regions)},
+                kind="needs_review", note="camera saw an item go but the weight did not change",
+                meta={"vanished": [v.item_id for v in vanished], "new_region_count": 0},
             ))
-        elif vanished or new_regions:
-            decisions.append(Decision(
-                kind="needs_review", note="camera saw a change but weight did not confirm it "
-                                           "(likely shadow/lighting)",
-                meta={"vanished": [v.item_id for v in vanished], "new_region_count": len(new_regions)},
-            ))
-        # else: truly nothing happened — no decision needed.
         return decisions
 
     if vanished and new_regions:
@@ -137,18 +142,13 @@ def reconcile_shelf(
         removed_weight = sum(v.grams for v in vanished)
         for v in vanished:
             decisions.append(Decision(kind="remove", item_id=v.item_id, product_id=v.product_id, grams=v.grams))
-        add_weight = delta + removed_weight
-        if len(new_regions) == 1:
-            decisions.append(Decision(kind="add", grams=add_weight, region=new_regions[0], position=new_regions[0].position))
-        else:
-            decisions.append(Decision(
-                kind="needs_review", note="swap with multiple new regions — ask user to confirm split",
-                meta={"total_grams": add_weight, "region_count": len(new_regions)},
-            ))
+        decisions.extend(_adds(new_regions, delta + removed_weight))
         return decisions
 
     if delta < 0:
         loss = -delta
+        if new_regions:
+            decisions.extend(_adds(new_regions, 0.0))  # seen arriving while something else was used
         if not vanished:
             # Nothing gone visually -> someone used some of a still-visible item.
             decisions.append(Decision(
@@ -176,21 +176,7 @@ def reconcile_shelf(
                 ))
         return decisions
 
-    # delta > 0, nothing vanished: something was added
-    gain = delta
-    if not new_regions:
-        decisions.append(Decision(
-            kind="restock_hidden", grams=gain,
-            note="weight increased but no new item visible — probably placed behind something",
-        ))
-        return decisions
-
-    if len(new_regions) == 1:
-        decisions.append(Decision(kind="add", grams=gain, region=new_regions[0], position=new_regions[0].position))
-    else:
-        decisions.append(Decision(
-            kind="needs_review",
-            note="multiple new items in one trip — ask user how the combined weight splits",
-            meta={"total_grams": gain, "regions": [r.index for r in new_regions]},
-        ))
+    # delta > 0, nothing vanished. Only what the camera saw is added; weight alone adds nothing.
+    if new_regions:
+        decisions.extend(_adds(new_regions, delta))
     return decisions

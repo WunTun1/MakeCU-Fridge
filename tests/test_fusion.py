@@ -46,19 +46,23 @@ def test_weight_drop_matches_best_subset_of_several_vanished_items():
     assert removes[0].item_id == 1
 
 
-def test_no_new_region_on_weight_gain_is_restock_hidden():
-    decisions = reconcile_shelf(0, 1000, 1300, CameraObservation())
-    assert len(decisions) == 1
-    assert decisions[0].kind == "restock_hidden"
+def test_weight_gain_alone_adds_nothing():
+    assert reconcile_shelf(0, 1000, 1300, CameraObservation()) == []
 
 
-def test_multiple_new_regions_needs_review():
+def test_a_new_region_is_an_add_even_when_the_scale_did_not_move():
+    obs = CameraObservation(new_regions=[NewRegion(index=0, position=(0.5, 0.5))])
+    decisions = reconcile_shelf(0, 1000, 1003, obs)
+    assert [d.kind for d in decisions] == ["add"] and decisions[0].grams == 0
+
+
+def test_several_new_regions_are_each_added_sharing_the_weight():
     obs = CameraObservation(new_regions=[
         NewRegion(index=0, position=(0.3, 0.5)), NewRegion(index=1, position=(0.7, 0.5)),
     ])
     decisions = reconcile_shelf(0, 1000, 1950, obs)
-    assert len(decisions) == 1
-    assert decisions[0].kind == "needs_review"
+    assert [d.kind for d in decisions] == ["add", "add"]
+    assert [d.grams for d in decisions] == [475, 475]
 
 
 def test_swap_removes_old_and_adds_new():

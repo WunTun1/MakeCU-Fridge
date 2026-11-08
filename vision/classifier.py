@@ -61,7 +61,9 @@ def identify_item(
 
     today = datetime.now(timezone.utc).date().isoformat()
     parts = [
-        f"Today is {today}. Measured weight: {measured_grams:.0f} g. Cropped item photo:",
+        f"Today is {today}. "
+        + (f"Measured weight: {measured_grams:.0f} g. " if measured_grams > 0 else "Weight: not measured. ")
+        + "Cropped item photo:",
         types.Part.from_bytes(data=_encode_jpeg(crop), mime_type="image/jpeg"),
     ]
     if shelf_context is not None:

@@ -39,15 +39,9 @@ def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
     return shelf / num_shelves, (shelf + 1) / num_shelves
 
 
-# A changed patch smaller than this share of the frame isn't a food someone put in.
+# A new patch smaller than this share of the frame isn't a food someone put in (a reflection, a
+# speck): the camera alone decides what was added, so it has to be something item-sized.
 MIN_FOOD_FRACTION = 0.01
-
-
-def _band_box(band: tuple[float, float], shape) -> tuple[int, int, int, int]:
-    """The shelf's whole slice of the frame, as an x, y, w, h box."""
-    h, w = shape[:2]
-    y0, y1 = int(band[0] * h), int(band[1] * h)
-    return 0, y0, w, max(y1 - y0, 1)
 
 
 def _in_band(bbox, frame_h: int, band: tuple[float, float]) -> bool:
@@ -92,6 +86,8 @@ def _handle_trip(
         view.changes([r.bbox for r in regions])
     known = _known_items_for_shelf(db, shelf, before_frame)
     result = tracking.match(known, regions, before_frame, after_frame)
+    min_area = MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]
+    result.new_regions = [r for r in result.new_regions if r.bbox[2] * r.bbox[3] >= min_area]
 
     observation = CameraObservation(
         moved=[MovedItem(item_id, tracking.normalized_position(r.bbox, after_frame.shape))
@@ -120,11 +116,6 @@ def _handle_trip(
                 inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
         elif d.kind == "add":
             box = d.region.bbox if d.region and d.region.bbox else None
-            if box and box[2] * box[3] < MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]:
-                # Too small to be the food: a reflection or a speck, not what was put in. Show
-                # Gemini the whole shelf instead of a sliver.
-                log.info("Changed patch too small (%dx%d); sending the whole shelf", box[2], box[3])
-                box = _band_box(band, after_frame.shape)
             region_crop = crop(after_frame, box) if box else after_frame
             view.gemini_sending(box)
             # Every snapshot is kept (data/snapshots), with what came of it, for the live camera page.
@@ -162,24 +153,12 @@ def _handle_trip(
 LOOP_INTERVAL_S = 0.1  # ~10 fps; a remote Pi camera is fetched over HTTP each tick
 
 
-# A trip that moved the scale less than this changed nothing on it: the hand tracker can lose a
-# hand for a moment while it's still holding the food.
-TRIP_MIN_GRAMS = 15.0
-
-
 def _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=None):
     """Weigh + photograph, reconcile every shelf against the reference, and
-    return the new reference for the next trip.
-
-    When no shelf's weight moved, the before photo is kept: if the hand tracker lost a hand
-    mid-placement, the food is in this photo but not yet on the scale, and taking it as the new
-    before photo would hide that food from the real trip a moment later."""
+    return the new reference for the next trip."""
     new_weights = scale.weigh_all()
     if after_frame is None:
         after_frame = cam.read_frame()
-    moved = any(abs(new_weights.get(s, w) - w) >= TRIP_MIN_GRAMS for s, w in reference_weights.items())
-    if not moved:
-        return reference_frame, reference_weights
     for shelf, before_w in reference_weights.items():
         _handle_trip(
             db, shelf, scale.num_shelves, reference_frame, after_frame, before_w, new_weights.get(shelf, before_w)
