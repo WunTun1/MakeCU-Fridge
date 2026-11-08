@@ -1,6 +1,5 @@
 import { formatAmount } from '@/lib/amount';
 import type { InventoryEntry } from '@/lib/api';
-import { colors, type Palette } from '@/lib/theme';
 import { capitalize, whenWord } from '@/lib/time';
 
 /** Goes bad within this many days: red. Within WARN_DAYS: amber. */
@@ -22,8 +21,8 @@ export function expiryTone(days: number | null): ExpiryTone {
  * The one color an item gets on every screen (phone and fridge): red when it goes bad
  * today/tomorrow, amber when it goes bad in 2-3 days or runs out today/tomorrow.
  */
-export function urgency(item: Pick<InventoryEntry, 'expires_in_days' | 'days_left'>): ExpiryTone {
-  return expiryTone(item.expires_in_days) ?? (runsOutSoon(item) ? 'warn' : null);
+export function urgency(item: Pick<InventoryEntry, 'expires_in_days' | 'days_left'> & { leftovers?: boolean }): ExpiryTone {
+  return expiryTone(item.expires_in_days) ?? (!item.leftovers && runsOutSoon(item) ? 'warn' : null);
 }
 
 export const runsOutSoon = (item: Pick<InventoryEntry, 'days_left'>) =>
@@ -59,7 +58,8 @@ export function soonestPart(item: InventoryEntry): string | null {
 export function goesBadText(item: InventoryEntry): string | null {
   const days = item.expires_in_days;
   if (days == null) return null;
-  const text = expiryText(days, item.expiry_estimated);
+  // Leftovers keep a fixed 3 days (USDA), so their date is never "around".
+  const text = expiryText(days, item.expiry_estimated && !item.leftovers);
   const part = soonestPart(item);
   if (!part) return text;
   const plural = item.unit === 'count' && Math.round(item.soonest_batch!.grams / item.grams_per_unit) > 1;
@@ -69,35 +69,41 @@ export function goesBadText(item: InventoryEntry): string | null {
 
 type Stock = Pick<InventoryEntry, 'grams' | 'unit' | 'grams_per_unit' | 'name' | 'days_left' | 'expires_in_days'>;
 
-/** The label for what's left when it goes bad, the same on every screen. */
-export const LEFT_WHEN_BAD = 'Left when it goes bad';
+/** The stat label for what you won't finish before it goes bad, the same on every screen. */
+export const LIKELY_WASTED = 'Likely wasted';
 
 /**
  * How much you won't have used by the day it goes bad, at your usual rate: "1.2 kg" (always an
  * estimate, so shown with "about"). Null when you'll finish it first, or there's no date or history.
  */
-function leftAmount(item: Stock): string | null {
+function wastedAmount(item: Stock): string | null {
   const { days_left: runsOut, expires_in_days: goesBad } = item;
   if (runsOut == null || goesBad == null || runsOut <= goesBad) return null;
   const left = item.grams * (1 - Math.max(goesBad, 0) / runsOut);
-  return formatAmount(left, item.unit, item.grams_per_unit, item.name).replace(/^about /, '');
+  // A non-breaking space keeps "48 ml" on one line.
+  return formatAmount(left, item.unit, item.grams_per_unit, item.name).replace(/^about /, '').replace(' ', '\u00a0');
 }
 
-/** The stat value under LEFT_WHEN_BAD: "About 1.2 kg". */
-export function leftWhenBad(item: Stock): string | null {
-  const amount = leftAmount(item);
+/** The stat value under LIKELY_WASTED: "About 1.2 kg". */
+export function likelyWasted(item: Stock): string | null {
+  const amount = wastedAmount(item);
   return amount && `About ${amount}`;
 }
 
-/** "Runs out tomorrow", or "Left when it goes bad: about 1.2 kg" when it outlasts its date. */
-export function runsOutText(item: Stock): string {
-  if (item.days_left == null) return 'No usage history yet';
-  const amount = leftAmount(item);
-  if (amount) return `${LEFT_WHEN_BAD}: about ${amount}`;
-  return `Runs out ${whenWord(item.days_left)}`;
+/**
+ * "Runs out tomorrow", or "You'll likely throw away about 1.2 kg" when it outlasts its date.
+ * Null without usage history: there's nothing true to say yet.
+ */
+export function runsOutText(item: Stock): string | null {
+  const amount = wastedAmount(item);
+  if (amount) return `You'll likely throw away about ${amount}`;
+  return item.days_left == null ? null : `Runs out ${whenWord(item.days_left)}`;
 }
 
-export function expiryColor(days: number, palette: Palette = colors): string {
-  const tone = expiryTone(days);
-  return tone ? palette[tone] : palette.muted;
+/** Leftovers: "3 servings · keeps until Tuesday". */
+export function keepsText(item: Pick<InventoryEntry, 'grams' | 'unit' | 'grams_per_unit' | 'name' | 'expires_in_days'>): string {
+  const amount = formatAmount(item.grams, item.unit, item.grams_per_unit, item.name);
+  const days = item.expires_in_days;
+  if (days == null) return amount;
+  return `${amount} · ${days < 0 ? 'past its keep-by day' : `keeps until ${whenWord(days)}`}`;
 }

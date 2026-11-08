@@ -13,6 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from inventory.database import Database
 from intelligence.grocery import DEFAULT_TRIP_CADENCE_DAYS, grocery_plan, next_trip_date
 from recipes.ingredients import canonical, matches
+from recipes.titles import clean_title
 
 HORIZON_KEY = "grocery.horizon"
 TRIP_KEY = "grocery.trip_date"
@@ -104,7 +105,8 @@ def build_list(db: Database) -> dict:
         unit, per = units.get(p.product_id, ("g", 1.0)) if p else ("g", 1.0)
         items.append({
             "id": e["id"], "name": e["name"], "amount": e["amount"], "source": e["source"],
-            "recipe_id": e["recipe_id"], "recipe_name": e["recipe_name"], "checked": bool(e["checked"]),
+            "recipe_id": e["recipe_id"], "checked": bool(e["checked"]),
+            "recipe_name": clean_title(e["recipe_name"]) if e["recipe_name"] else None,
             "unit": unit, "grams_per_unit": per,
             "plan": p.__dict__ if p else None,
         })

@@ -91,3 +91,16 @@ def test_summary_shows_the_soonest_package_and_the_saved_trip(client):
 
 def test_cook_preview_takes_made_as_half_or_full(client):
     assert client.get("/api/recipes/1/cooked/preview?made=0.75").status_code == 422
+
+
+def test_pounds_and_ounces_are_stored_as_grams(client):
+    res = client.post("/api/items", json={"name": "Chicken breast", "quantity": 1, "unit": "lb", "location": "fridge"}).json()
+    assert round(res["grams"]) == 454 and res["unit"] == "g"
+    res = client.post("/api/items", json={"name": "Feta", "quantity": 8, "unit": "oz", "location": "fridge"}).json()
+    assert round(res["grams"]) == 227
+
+
+def test_bananas_are_counted(client):
+    res = client.post("/api/items", json={"name": "Bananas", "quantity": 3, "unit": "count", "location": "fridge"}).json()
+    assert res["unit"] == "count" and res["grams"] == 360
+    assert client.post("/api/items", json={"name": "Orange juice", "quantity": 1000, "unit": "ml"}).json()["unit"] == "ml"

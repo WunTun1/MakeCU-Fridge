@@ -1,6 +1,6 @@
 """Protein mode, same-food matching, truthful chat logging, allergy blocks, leftovers,
 the freezer and count remnants."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -14,6 +14,11 @@ from recipes.engine import RecipeEngine
 from recipes.ingredients import allergen_found, canonical, matches
 from recipes.store import RecipeStore
 from tests.test_recipes import _recipe
+
+
+def _today() -> date:
+    """The server's dates are UTC dates; in the evening west of Greenwich that's already tomorrow."""
+    return datetime.now(timezone.utc).date()
 
 
 def _store(tmp_path, recipes):
@@ -64,7 +69,10 @@ def test_protein_mode_hides_low_and_unknown_protein_and_ranks_by_protein(db, tmp
         _add(db, name, 1000)
 
     names = [m.recipe.name for m in engine.suggest(limit=10, automatic=True, high_protein=True)]
-    assert names == ["Chicken Wrap", "Chicken Bowl", "Chicken Stew"]  # 35 g at 350 kcal beats 35 g at 500
+    # Nothing to buy comes first (the bowl); among 1-to-buy recipes, most protein first.
+    assert names == ["Chicken Bowl", "Chicken Wrap", "Chicken Stew"]
+    chat = [m.recipe.name for m in engine.suggest(query="chicken", limit=10, high_protein=True)]
+    assert chat[:2] == ["Chicken Wrap", "Chicken Bowl"]  # 35 g at 350 kcal beats 35 g at 500
 
     default = [m.recipe.name for m in engine.suggest(limit=10, automatic=True)]
     assert "Rice Spinach Bake" in default and "Mac and Cheese" in default
@@ -150,7 +158,7 @@ def test_a_blocked_query_names_the_allergy_and_shows_no_cards(db, tmp_path, monk
     bot._engine = RecipeEngine(db, _store(tmp_path, [_dish(1, "Shrimp Stir Fry", ["shrimp", "rice"], protein=30)]))
     db.update_profile(allergies=["shellfish"])
     out = bot.chat("high-protein shrimp stir fry")
-    assert out["reply"] == "You listed shellfish as an allergy, so I won't suggest shrimp. You can change allergies in Profile."
+    assert out["reply"] == "You listed shellfish as an allergy, so I won't suggest recipes with it."
     assert out["recipes"] == []
 
 
@@ -188,7 +196,7 @@ def test_made_minus_eaten_becomes_leftovers(cook, db):
     result = cook.cooked(1, made=1.0, servings_eaten=1)
     left = result["leftovers"]
     assert left["servings"] == 3
-    assert left["expiration_date"] == (date.today() + timedelta(days=3)).isoformat()
+    assert left["expiration_date"] == (_today() + timedelta(days=3)).isoformat()
     assert cook.leftovers_for(1) == {"product_id": left["product_id"], "servings": 3}
     assert db.get_product(left["product_id"])["name"] == "Greek Stuffed Chicken leftovers"
 
@@ -219,13 +227,13 @@ def test_freezing_moves_dates_drops_the_alert_and_undoes(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "db", db)
     client = TestClient(server.app)
 
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    tomorrow = (_today() + timedelta(days=1)).isoformat()
     item_id = _add(db, "Chicken Breast", 1400, category="Meat", expiration_date=tomorrow, shelf=0)
     pid = db.get_item(item_id)["product_id"]
     assert any(a.reason == "expiring_soon" for a in low_stock_alerts(db))
 
     out = client.post(f"/api/products/{pid}/freeze").json()
-    assert date.fromisoformat(out["expiration_date"]) - date.today() == timedelta(days=270)
+    assert date.fromisoformat(out["expiration_date"]) - _today() == timedelta(days=270)
     inv_events.apply_consume(db, item_id, 600, meta={"source": "app"})  # a fast rate: it would "run out" soon
     assert not any(a.product_name == "Chicken Breast" for a in low_stock_alerts(db))
     inventory = client.get("/api/summary").json()["inventory"]

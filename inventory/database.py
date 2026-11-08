@@ -97,6 +97,15 @@ CREATE TABLE IF NOT EXISTS chat_memory (
     occurred_at TEXT NOT NULL
 );
 
+-- What one chat reply changed, so it can be undone from under that reply.
+CREATE TABLE IF NOT EXISTS chat_turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at TEXT NOT NULL,
+    meal_ids TEXT NOT NULL,     -- json list: meals it logged (their tagged events go with them)
+    event_ids TEXT NOT NULL,    -- json list: other inventory events (an add, a consume)
+    undone INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS taste_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at TEXT NOT NULL,
@@ -579,6 +588,21 @@ class Database:
     def clear_chat(self) -> None:
         with self.cursor() as cur:
             cur.execute("DELETE FROM chat_memory")
+
+    def add_chat_turn(self, meal_ids: list[int], event_ids: list[int]) -> int:
+        with self.cursor() as cur:
+            cur.execute("INSERT INTO chat_turns (occurred_at, meal_ids, event_ids) VALUES (?, ?, ?)",
+                        (now_iso(), json.dumps(meal_ids), json.dumps(event_ids)))
+            return cur.lastrowid
+
+    def get_chat_turn(self, turn_id: int) -> Optional[sqlite3.Row]:
+        with self.cursor() as cur:
+            cur.execute("SELECT * FROM chat_turns WHERE id = ?", (turn_id,))
+            return cur.fetchone()
+
+    def mark_chat_turn_undone(self, turn_id: int) -> None:
+        with self.cursor() as cur:
+            cur.execute("UPDATE chat_turns SET undone = 1 WHERE id = ?", (turn_id,))
 
     # ------------------------------------------------------------ taste_events
     def log_taste(self, signal: str, features: list[tuple[str, float]], occurred_at: str | None = None) -> None:

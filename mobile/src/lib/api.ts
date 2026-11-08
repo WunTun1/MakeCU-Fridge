@@ -248,7 +248,8 @@ export type CookLine = Measured & { product_id: number; item: string; grams_used
 /** How much of the recipe was cooked: all of it or half. */
 export type Made = 1 | 0.5;
 
-export type ChatReply = { reply: string; recipes: RecipeCard[] };
+/** A reply that changed stock has a turn id and an Undo label ("Undo: puts back 400 g chicken breast"). */
+export type ChatReply = { reply: string; recipes: RecipeCard[]; turn_id: number | null; undo: string | null };
 
 /** A logged meal; a macro is null when nothing was known about it. */
 export type Meal = { [K in keyof Macros]: number | null } & {
@@ -257,6 +258,8 @@ export type Meal = { [K in keyof Macros]: number | null } & {
   servings: number;
   occurred_at: string;
   source: string;
+  /** Cooked with "I made this": what undoing the cooking puts back and removes. */
+  cook_undo: string | null;
 };
 
 /** Ate some of a fridge item as it is; what it logged. */
@@ -289,7 +292,7 @@ export const api = {
       | { action: 'remove'; item_id: number }
       | { action: 'add_confirmed'; product_name: string; grams?: number },
   ) => post<{ ok: true }>(`/api/review/${id}`, body),
-  addItem: (body: { name: string; quantity: number; unit: Unit; location: string }) =>
+  addItem: (body: { name: string; quantity: number; unit: Unit | 'lb' | 'oz'; location: string }) =>
     post<Measured & { item_id: number; product_id: number; grams: number; checked_off: { id: number; name: string } | null }>(
       '/api/items',
       body,
@@ -304,6 +307,8 @@ export const api = {
   saveProfile: (p: Partial<Profile>) => request<{ ok: true }>('/api/profile', { method: 'PUT', body: JSON.stringify(p) }),
   chat: (message: string) => post<ChatReply>('/api/chat', { message }),
   clearChat: () => del<{ ok: true }>('/api/chat/history'),
+  /** Reverses everything one chat reply changed. */
+  undoTurn: (turnId: number) => post<{ ok: true }>(`/api/chat/turns/${turnId}/undo`, {}),
   taste: () => request<{ cuisines: string[]; ingredients: string[] }>('/api/taste'),
   /** Cook tonight: dinner-sized main dishes from what you have (cached on the server). */
   tonight: () => request<RecipeCard[]>('/api/recipes/tonight'),
@@ -320,9 +325,9 @@ export const api = {
   undoMeal: (mealId: number) => post<{ ok: true }>(`/api/meals/${mealId}/undo`, {}),
   meals: () => request<Meal[]>('/api/meals?period=today'),
   /** Nutrition only (numbers off a label); with occurred_at, puts back a removed meal. */
-  addMeal: (body: Partial<Omit<Meal, 'id'>> & { name: string }) => post<{ meal_id: number }>('/api/meals', body),
+  addMeal: (body: Partial<Omit<Meal, 'id' | 'cook_undo'>> & { name: string }) => post<{ meal_id: number }>('/api/meals', body),
   /** Off today's log only; the fridge stays as it is. Returns the meal for Undo. */
-  deleteMeal: (mealId: number) => del<Omit<Meal, 'id'>>(`/api/meals/${mealId}`),
+  deleteMeal: (mealId: number) => del<Omit<Meal, 'id' | 'cook_undo'>>(`/api/meals/${mealId}`),
   quickAdds: () => request<QuickAdd[]>('/api/meals/quick-adds'),
   /** Ate it as it is: one serving of leftovers, or `grams` of anything. */
   eat: (productId: number, grams?: number) => post<Eaten>(`/api/products/${productId}/eat`, { grams }),

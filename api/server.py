@@ -26,11 +26,13 @@ from inventory.units import default_grams_per_unit, to_grams
 from intelligence import grocery_list, taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
-from intelligence.expiry import days_until, freezer_days, resolve_expiration
+from intelligence.expiry import freezer_days, resolve_expiration
+from intelligence.fridge_view import inventory_entries
 from intelligence.grocery import unlock_suggestions
 from intelligence.search import search as fuzzy_search
+from nutrition import intake
 from nutrition.chatbot import NutritionistChatbot
-from nutrition.intake import eat_from_fridge, get_intake, log_nutrition, meals, protein_mode
+from nutrition.intake import get_intake, log_nutrition, meals, protein_mode
 from nutrition.lookup import lookup_barcode_off
 from recipes.engine import card
 from sensors.scale import get_scale_reader
@@ -84,7 +86,9 @@ class EventIn(BaseModel):
     category: str | None = None
 
 
-Unit = Literal["g", "count", "ml"]
+Unit = Literal["g", "count", "ml", "lb", "oz"]
+# Weights people buy meat and cheese in; stored as grams like everything else.
+GRAMS_PER = {"lb": 453.6, "oz": 28.35}
 
 
 class ItemIn(BaseModel):
@@ -251,45 +255,7 @@ def post_event(event: EventIn):
 # ------------------------------------------------------------------- summary
 @app.get("/api/summary")
 def get_summary():
-    items = db.active_items()
-    # What's in the freezer is listed apart from the same product in the fridge or pantry.
-    by_product: dict[tuple[int, bool], dict] = {}
-    for item in items:
-        product = db.get_product(item["product_id"])
-        if product is None:
-            continue
-        frozen = item["location"] == "freezer"
-        entry = by_product.setdefault((product["id"], frozen), {
-            "product_id": product["id"], "name": product["name"], "category": product["category"],
-            "grams": 0.0, "package_size_g": product["usual_package_size_g"],
-            "unit": product["unit"], "grams_per_unit": product["grams_per_unit"],
-            "expires_in_days": None, "expiry_estimated": False, "soonest_batch": None,
-            "location": item["location"], "shelf": None if frozen else item["shelf"], "_shelf_grams": -1.0,
-            "leftovers": product["recipe_id"] is not None,
-        })
-        entry["grams"] += item["grams"]
-        if item["location"] == "fridge":
-            entry["location"] = "fridge"  # in the fridge at all -> show it on the fridge screen
-        # A product split across shelves is shown on the shelf holding most of it.
-        if not frozen and item["shelf"] is not None and item["grams"] > entry["_shelf_grams"]:
-            entry["shelf"], entry["_shelf_grams"] = item["shelf"], item["grams"]
-        if item["expiration_date"]:
-            d = days_until(item["expiration_date"])
-            batch = entry["soonest_batch"]
-            if batch and batch["expiration_date"] == item["expiration_date"]:
-                batch["grams"] += item["grams"]
-            elif entry["expires_in_days"] is None or d < entry["expires_in_days"]:
-                entry["expires_in_days"] = d
-                entry["expiry_estimated"] = bool(item["expiration_estimated"])
-                entry["soonest_batch"] = {"grams": item["grams"], "expiration_date": item["expiration_date"]}
-
-    inventory = []
-    for entry in by_product.values():
-        entry.pop("_shelf_grams")
-        dl = days_left(db, entry["product_id"])
-        fill = (entry["grams"] / entry["package_size_g"]) if entry["package_size_g"] else None
-        inventory.append({**entry, "days_left": dl, "fill_fraction": fill})
-
+    inventory = inventory_entries(db)
     trip_date = grocery_list.trip_date_for(db, grocery_list.get_horizon(db))
     today_intake = get_intake(db, "today")
 
@@ -469,12 +435,15 @@ def resolve_review(review_id: int, resolution: ReviewResolutionIn):
 def create_item(item: ItemIn):
     if item.grams is None and item.quantity is None:
         raise HTTPException(422, "give grams, or quantity and unit")
+    weight = GRAMS_PER.get(item.unit or "")
     product_id = db.get_or_create_product(
         item.name, category=item.category, usual_package_size_g=item.usual_package_size_g,
-        is_staple=item.is_staple, unit=item.unit,
+        is_staple=item.is_staple, unit="g" if weight else item.unit,
     )
     product = db.get_product(product_id)
-    if item.quantity is not None:
+    if item.quantity is not None and weight:
+        grams = item.quantity * weight
+    elif item.quantity is not None:
         unit = item.unit or product["unit"]
         per = product["grams_per_unit"] if unit == product["unit"] else default_grams_per_unit(item.name, unit)
         grams = to_grams(item.quantity, unit, per)
@@ -529,13 +498,9 @@ def undo_events(body: EventIdsIn):
 def eat_product(product_id: int, body: EatIn):
     """Ate some as it is: a serving of leftovers, a yogurt. Logs its nutrition and takes it from the
     fridge, nothing else. Undo with /api/meals/{meal_id}/undo."""
-    product = db.get_product(product_id)
-    if product is None:
+    if db.get_product(product_id) is None:
         raise HTTPException(404, "product not found")
-    leftovers = product["recipe_id"] is not None
-    name = product["name"].removesuffix(" leftovers") if leftovers else product["name"]
-    eaten = eat_from_fridge(db, product_id, body.grams or product["grams_per_unit"], name,
-                            source="leftovers" if leftovers else "fridge")
+    eaten = intake.eat_product(db, product_id, body.grams)
     if eaten is None:
         raise HTTPException(409, "none left")
     return eaten
@@ -607,6 +572,17 @@ def post_chat(body: ChatIn):
     if not message:
         raise HTTPException(400, "empty message")
     return chatbot.chat(message[:MAX_CHAT_CHARS])
+
+
+@app.post("/api/chat/turns/{turn_id}/undo")
+def undo_chat_turn(turn_id: int):
+    """Everything one chat reply changed goes back: grams, leftovers and the meals it logged."""
+    undone = chatbot.undo_turn(turn_id)
+    if undone is None:
+        raise HTTPException(404, "no such chat turn")
+    if not undone:
+        raise HTTPException(409, "already undone")
+    return {"ok": True}
 
 
 @app.delete("/api/chat/history")
@@ -686,7 +662,10 @@ def get_taste():
 
 @app.get("/api/meals")
 def get_meals(period: Literal["today", "week"] = "today"):
-    return meals(db, period)
+    """Each meal cooked with "I made this" says what undoing the cooking would do
+    ("puts back 400 g chicken breast and removes 3 leftover servings")."""
+    return [{**m, "cook_undo": inv_events.undo_summary(db, db.events_for_meal(m["id"])) if m["source"] == "recipe" else None}
+            for m in meals(db, period)]
 
 
 @app.post("/api/meals")

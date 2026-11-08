@@ -9,12 +9,14 @@ import re
 
 UNITS = ("g", "count", "ml")
 
-COUNT_WORDS = ("egg", "lemon", "lime", "apple", "avocado", "onion", "pepper", "tomato")
+COUNT_WORDS = ("egg", "lemon", "lime", "apple", "avocado", "onion", "pepper", "tomato", "banana", "orange",
+               "potato", "bagel", "roll", "muffin")
 ML_WORDS = ("milk", "juice", "oil", "cream", "broth", "soda")
 # "Sour cream" and "peppercorn" don't pour or get counted.
 NOT_A_UNIT_WORDS = ("sour cream", "cream cheese", "ice cream", "peppercorn", "eggplant", "pepper flake")
 
-GRAMS_PER_PIECE = {"egg": 50.0, "lemon": 100.0, "apple": 180.0, "onion": 150.0}
+GRAMS_PER_PIECE = {"egg": 50.0, "lemon": 100.0, "apple": 180.0, "onion": 150.0, "banana": 120.0, "orange": 130.0,
+                   "potato": 200.0, "avocado": 170.0}
 DEFAULT_PIECE_G = 100.0
 LEFTOVERS_WORD = "leftovers"  # "Chili leftovers" is counted in servings
 ML_G = 1.0
@@ -33,10 +35,10 @@ def guess_unit(name: str | None) -> str:
     text = _words(name or "")
     if any(w in text for w in NOT_A_UNIT_WORDS):
         return "g"
+    if any(_has_word(text, w) for w in ML_WORDS):  # "orange juice" is poured, not counted
+        return "ml"
     if any(_has_word(text, w) for w in COUNT_WORDS):
         return "count"
-    if any(_has_word(text, w) for w in ML_WORDS):
-        return "ml"
     return "g"
 
 

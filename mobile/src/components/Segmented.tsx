@@ -1,6 +1,6 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
-import { colors } from '@/lib/theme';
+import { makeStyles } from '@/lib/theme';
 
 /** One choice out of a few, all visible. The selected segment is filled with the accent. */
 export function Segmented<T extends string | number | null>({
@@ -15,6 +15,7 @@ export function Segmented<T extends string | number | null>({
   /** Read by screen readers for the whole group. */
   label: string;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.group} role="radiogroup" accessibilityLabel={label}>
       {options.map((o, i) => {
@@ -35,17 +36,17 @@ export function Segmented<T extends string | number | null>({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   group: {
     flexDirection: 'row',
     borderWidth: 1,
-    borderColor: colors.muted,
+    borderColor: c.muted,
     borderRadius: 8,
     overflow: 'hidden',
   },
-  segment: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  divider: { borderLeftWidth: 1, borderLeftColor: colors.muted },
-  selected: { backgroundColor: colors.accent },
-  label: { color: colors.text, fontSize: 15, fontWeight: '600' },
-  selectedLabel: { color: colors.onAccent },
-});
+  segment: { flex: 1, minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 4 },
+  divider: { borderLeftWidth: 1, borderLeftColor: c.muted },
+  selected: { backgroundColor: c.accent },
+  label: { color: c.text, fontSize: size(15), lineHeight: size(20), fontWeight: '600', textAlign: 'center' },
+  selectedLabel: { color: c.onAccent },
+}));

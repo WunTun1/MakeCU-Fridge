@@ -6,7 +6,8 @@ import { Segmented } from '@/components/Segmented';
 import { useSnackbar } from '@/components/Snackbar';
 import { ErrorCard, Loading } from '@/components/States';
 import { api, type Profile } from '@/lib/api';
-import { ui } from '@/lib/theme';
+import { type Appearance, type TextSize, useDisplay } from '@/lib/display';
+import { useUi } from '@/lib/theme';
 import { useApi } from '@/lib/useApi';
 
 type Goals = Pick<Profile, 'daily_calories' | 'daily_protein_g' | 'daily_carbs_g' | 'daily_fat_g'>;
@@ -16,7 +17,7 @@ type Preset = 'maintain' | 'protein' | 'lighter';
 const PRESETS: { value: Preset; label: string; goals: Goals }[] = [
   { value: 'maintain', label: 'Maintain', goals: { daily_calories: 2000, daily_protein_g: 100, daily_carbs_g: 225, daily_fat_g: 65 } },
   { value: 'protein', label: 'More protein', goals: { daily_calories: 2200, daily_protein_g: 160, daily_carbs_g: 200, daily_fat_g: 70 } },
-  { value: 'lighter', label: 'Lighter', goals: { daily_calories: 1700, daily_protein_g: 110, daily_carbs_g: 170, daily_fat_g: 55 } },
+  { value: 'lighter', label: 'Eat lighter', goals: { daily_calories: 1700, daily_protein_g: 110, daily_carbs_g: 170, daily_fat_g: 55 } },
 ];
 
 const GOAL_FIELDS: { key: GoalKey; label: string; saved: string }[] = [
@@ -38,8 +39,20 @@ const DIETS = [
 const presetFor = (p: Goals): Preset | null =>
   PRESETS.find((preset) => GOAL_FIELDS.every(({ key }) => preset.goals[key] === p[key]))?.value ?? null;
 
+const APPEARANCES: { value: Appearance; label: string }[] = [
+  { value: 'system', label: 'Phone setting' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+];
+
+const TEXT_SIZES: { value: TextSize; label: string }[] = [
+  { value: 'default', label: 'Default' },
+  { value: 'large', label: 'Large' },
+];
+
 export default function ProfileScreen() {
   const { data, error, loading } = useApi(api.profile);
+  const ui = useUi();
   if (loading && !data) return <Loading />;
   if (!data) return <View style={[ui.screen, ui.content]}>{error && <ErrorCard message={error} />}</View>;
   return <ProfileForm initial={data} />;
@@ -49,6 +62,7 @@ export default function ProfileScreen() {
 function ProfileForm({ initial }: { initial: Profile }) {
   const [profile, setProfile] = useState<Profile>(initial);
   const showSnack = useSnackbar();
+  const ui = useUi();
 
   async function save(patch: Partial<Profile>, message: string) {
     const before = profile;
@@ -76,7 +90,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
           save(p.goals, `Goals set to ${p.label.toLowerCase()}`);
         }}
       />
-      {preset == null && <Text style={ui.muted}>Custom goals</Text>}
+      {preset == null && <Text style={ui.detail}>Custom goals</Text>}
       <View style={[ui.card, { gap: 12 }]}>
         {GOAL_FIELDS.map((f) => (
           <GoalField
@@ -98,7 +112,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
       />
 
       <Text style={ui.h2}>Allergies</Text>
-      <Text style={ui.muted}>ReFridge never suggests recipes with these.</Text>
+      <Text style={ui.detail}>ReFridge never suggests recipes with these.</Text>
       <ListField
         label="allergies"
         placeholder="e.g. peanuts"
@@ -107,7 +121,7 @@ function ProfileForm({ initial }: { initial: Profile }) {
       />
 
       <Text style={ui.h2}>Dislikes</Text>
-      <Text style={ui.muted}>Left out of Cook tonight and One item away. Chat skips them unless you ask.</Text>
+      <Text style={ui.detail}>Left out of Cook tonight and One item away. Chat skips them unless you ask.</Text>
       <ListField
         label="dislikes"
         placeholder="e.g. mushrooms"
@@ -116,12 +130,15 @@ function ProfileForm({ initial }: { initial: Profile }) {
       />
 
       <LearnedTastes />
+
+      <DisplaySettings />
     </ScrollView>
   );
 }
 
 /** A number that saves when you leave the field. */
 function GoalField({ label, value, onSave }: { label: string; value: number | null; onSave: (v: number) => void }) {
+  const ui = useUi();
   const [text, setText] = useState(value?.toString() ?? '');
   const commit = () => {
     const n = Number(text.replace(',', '.'));
@@ -129,7 +146,7 @@ function GoalField({ label, value, onSave }: { label: string; value: number | nu
   };
   return (
     <View style={{ gap: 4 }}>
-      <Text style={ui.muted}>{label}</Text>
+      <Text style={ui.detail}>{label}</Text>
       <TextInput
         style={ui.input}
         value={text}
@@ -147,13 +164,14 @@ function GoalField({ label, value, onSave }: { label: string; value: number | nu
 /** What the taste profile has picked up from cooking, ratings, requests, and habits. */
 function LearnedTastes() {
   const { data } = useApi(api.taste);
+  const ui = useUi();
   if (!data) return null;
   const nothingYet = data.cuisines.length === 0 && data.ingredients.length === 0;
   return (
     <View style={[ui.card, { gap: 6, marginTop: 8 }]}>
       <Text style={ui.h2}>What ReFridge has learned</Text>
       {nothingYet ? (
-        <Text style={ui.muted}>Cook, rate, and ask for recipes and this fills in. Suggestions adapt as it does.</Text>
+        <Text style={ui.detail}>Cook, rate, and ask for recipes and this fills in. Suggestions adapt as it does.</Text>
       ) : (
         <>
           {data.cuisines.length > 0 && (
@@ -166,5 +184,36 @@ function LearnedTastes() {
         </>
       )}
     </View>
+  );
+}
+
+/** How the app looks on this phone: saved on the device, not in the profile. */
+function DisplaySettings() {
+  const ui = useUi();
+  const { display, setDisplay } = useDisplay();
+  return (
+    <>
+      <Text style={ui.h2}>Display</Text>
+      <View style={[ui.card, { gap: 16 }]}>
+        <View style={{ gap: 8 }}>
+          <Text style={ui.text}>Appearance</Text>
+          <Segmented
+            label="Appearance"
+            options={APPEARANCES}
+            value={display.appearance}
+            onChange={(appearance) => setDisplay({ ...display, appearance })}
+          />
+        </View>
+        <View style={{ gap: 8 }}>
+          <Text style={ui.text}>Text size</Text>
+          <Segmented
+            label="Text size"
+            options={TEXT_SIZES}
+            value={display.textSize}
+            onChange={(textSize) => setDisplay({ ...display, textSize })}
+          />
+        </View>
+      </View>
+    </>
   );
 }

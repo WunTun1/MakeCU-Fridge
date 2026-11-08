@@ -1,7 +1,7 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
-import { colors } from '@/lib/theme';
+import { makeStyles, useColors } from '@/lib/theme';
 
 /** − value + with 48 px buttons. */
 export function Stepper({
@@ -22,6 +22,7 @@ export function Stepper({
   minusLabel: string;
   plusLabel: string;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.row}>
       <StepButton icon="minus" label={minusLabel} disabled={!canMinus} onPress={onMinus} />
@@ -42,6 +43,8 @@ function StepButton({
   disabled: boolean;
   onPress: () => void;
 }) {
+  const styles = useStyles();
+  const c = useColors();
   return (
     <Pressable
       onPress={onPress}
@@ -50,21 +53,21 @@ function StepButton({
       accessibilityLabel={label}
       style={[styles.button, disabled && { opacity: 0.4 }]}
     >
-      <FontAwesome name={icon} size={16} color={colors.text} />
+      <FontAwesome name={icon} size={16} color={c.text} />
     </Pressable>
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   row: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  value: { color: colors.text, fontSize: 20, fontWeight: '700', minWidth: 24, textAlign: 'center' },
+  value: { color: c.text, fontSize: size(20), lineHeight: size(24), fontWeight: '700', minWidth: 24, textAlign: 'center' },
   button: {
     width: 48,
     height: 48,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: colors.muted,
+    borderColor: c.muted,
     alignItems: 'center',
     justifyContent: 'center',
   },
-});
+}));

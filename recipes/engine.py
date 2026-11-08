@@ -55,6 +55,8 @@ LEFTOVER_SERVING_G = 300.0
 # Automatic lists (Cook tonight, One item away) fill a dinner slot.
 DINNER_MINUTES, DINNER_MINUTES_RELAXED, DINNER_MIN_RESULTS = 45, 60, 3
 DINNER_MIN_KCAL = 250
+# Cook tonight is for tonight: what you can make now first, then 1 item to buy, then 2; never 3 or more.
+TONIGHT_MAX_TO_BUY = 2
 NOT_DINNER_TAGS = {"desserts", "breakfast", "beverages", "cookies-and-brownies", "condiments-etc", "sauces"}
 
 # Rough grams per unit, for comparing and subtracting stock.
@@ -312,9 +314,13 @@ class RecipeEngine:
         automatic: bool = False,
         min_servings: float | None = None,
         min_protein_g: float | None = None,
+        dinner: bool = False,
     ) -> list[Match]:
         """`automatic` is for lists nobody asked for (Cook tonight): dinner-sized main dishes only,
-        dislikes excluded outright. `high_protein` is protein mode: see protein_floor and protein_key."""
+        dislikes excluded outright, ranked by how little there is to buy (tonight_order). `dinner` is
+        the same dinner filter for a chat ask ("something for supper"). `high_protein` is protein
+        mode: see protein_floor and protein_key."""
+        dinner = dinner or automatic
         pantry = self.pantry()
         allergies, dislikes = self.profile_filters()
         prefs = taste.profile(self.db)
@@ -329,8 +335,8 @@ class RecipeEngine:
                 ordered = sorted(rich) + [c for c in ordered if c in pantry.expiring and c not in rich]
             search_text = " ".join(ordered[:SEARCH_SEED_ITEMS])
 
-        minutes = DINNER_MINUTES_RELAXED if automatic else max_minutes
-        hits = self.store.search(search_text, cuisine, minutes, CANDIDATES, main_dish_only=automatic)
+        minutes = min(max_minutes or DINNER_MINUTES_RELAXED, DINNER_MINUTES_RELAXED) if dinner else max_minutes
+        hits = self.store.search(search_text, cuisine, minutes, CANDIDATES, main_dish_only=dinner)
         if len(hits) < limit and query and cuisine:  # too narrow — keep the cuisine, drop the free text
             seen = {i for i, _ in hits}
             hits += [(i, r * 0.5) for i, r in self.store.search(None, cuisine, minutes, CANDIDATES) if i not in seen]
@@ -345,12 +351,12 @@ class RecipeEngine:
             if min_protein_g and (recipe.nutrition.get("protein_g") or 0) < min_protein_g:
                 continue
             disliked = dislike_hits(recipe, dislikes)
-            if automatic and (disliked or not fits_dinner(recipe)):
+            if (automatic and disliked) or (dinner and not fits_dinner(recipe)):
                 continue
             # In chat, naming a disliked ingredient ("mushroom risotto") means you want it this time.
             disliked = [p for p in disliked if not p.search(query or "")]
             m = self.analyze(recipe, pantry)
-            if must_have_all and m.to_buy:
+            if (must_have_all and m.to_buy) or (automatic and len(m.to_buy) > TONIGHT_MAX_TO_BUY):
                 continue
             needed = max(len(m.have) + len(m.swaps) + len(m.short) + len(m.missing), 1)
             coverage = (len(m.have) + 0.8 * len(m.swaps) + 0.5 * len(m.short)) / needed
@@ -380,10 +386,12 @@ class RecipeEngine:
 
         matches_.sort(key=lambda m: m.score, reverse=True)
         ranked = _dedupe(matches_)
-        if automatic:
+        if dinner and not max_minutes:
             quick = [m for m in ranked if m.recipe.minutes is None or m.recipe.minutes <= DINNER_MINUTES]
             if len(quick) >= DINNER_MIN_RESULTS:
                 ranked = quick
+        if automatic:
+            return tonight_order(protein_floor(ranked) if high_protein else ranked, high_protein)[:limit]
         if high_protein:
             # The best fits for right now, shown highest protein first.
             ranked = sorted(protein_floor(ranked)[:limit * PROTEIN_SORT_POOL], key=protein_key, reverse=True)
@@ -394,9 +402,6 @@ class RecipeEngine:
         reasons = []
         if m.uses_expiring:
             reasons.append("Uses your " + ", ".join(m.uses_expiring[:2]) + " before it goes bad")
-        total = len(m.have) + len(m.swaps) + len(m.short) + len(m.missing)
-        if total:
-            reasons.append(f"You have {len(m.have) + len(m.swaps)} of {total} ingredients")
         if high_protein and protein:
             reasons.append(f"{protein:.0f} g protein per serving")
         if affinity > 0.2 and m.recipe.cuisine:
@@ -551,6 +556,16 @@ class RecipeEngine:
             return False
         taste.record_recipe(self.db, "liked" if liked else "disliked", recipe)
         return True
+
+
+def tonight_order(matches_: list[Match], high_protein: bool = False) -> list[Match]:
+    """Fewest things to buy first (0, 1, 2). Within that: in protein mode, most protein; otherwise
+    the ones using more of what's about to go bad, then the overall score."""
+    def key(m: Match) -> tuple:
+        if high_protein:
+            return (len(m.to_buy), *(-x for x in protein_key(m)))
+        return len(m.to_buy), -min(len(m.uses_expiring), 2), -m.score
+    return sorted(matches_, key=key)
 
 
 def _dedupe(ranked: list[Match]) -> list[Match]:

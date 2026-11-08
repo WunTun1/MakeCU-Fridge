@@ -4,27 +4,38 @@ import type { ComponentProps } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TAB_BAR_HEIGHT } from '@/components/Snackbar';
-import { colors } from '@/lib/theme';
+import { useColors, useTextScale } from '@/lib/theme';
 
 type IconName = ComponentProps<typeof FontAwesome>['name'];
 
+/** Tab labels are 12 px (14 at Large text). */
+const TAB_LABEL_PX = 12;
+
 // React Navigation types tab colors as ColorValue (can be null/number); ours are always strings.
 function TabIcon({ name, color }: { name: IconName; color: unknown }) {
-  return <FontAwesome size={22} name={name} color={typeof color === 'string' ? color : colors.muted} />;
+  const c = useColors();
+  return <FontAwesome size={24} name={name} color={typeof color === 'string' ? color : c.muted} />;
 }
 
 export default function TabLayout() {
   const insets = useSafeAreaInsets();
+  const c = useColors();
+  const scale = useTextScale();
+  const extra = Math.round(TAB_LABEL_PX * scale) - TAB_LABEL_PX;
   return (
     <Tabs
       screenOptions={{
-        tabBarActiveTintColor: colors.accent,
-        tabBarInactiveTintColor: colors.muted,
-        tabBarStyle: { backgroundColor: colors.card, borderTopColor: colors.border, height: TAB_BAR_HEIGHT + insets.bottom },
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '600', marginBottom: 4 },
-        headerStyle: { backgroundColor: colors.bg },
-        headerTintColor: colors.text,
-        sceneStyle: { backgroundColor: colors.bg },
+        tabBarActiveTintColor: c.accent,
+        tabBarInactiveTintColor: c.muted,
+        tabBarStyle: {
+          backgroundColor: c.card,
+          borderTopColor: c.border,
+          height: TAB_BAR_HEIGHT + extra + insets.bottom,
+        },
+        tabBarLabelStyle: { fontSize: TAB_LABEL_PX + extra, lineHeight: 16 + extra, fontWeight: '600', marginBottom: 4 },
+        headerStyle: { backgroundColor: c.bg },
+        headerTintColor: c.text,
+        sceneStyle: { backgroundColor: c.bg },
       }}
     >
       <Tabs.Screen

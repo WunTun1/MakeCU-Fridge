@@ -5,11 +5,13 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '@/components/Button';
 import { api } from '@/lib/api';
-import { colors, ui } from '@/lib/theme';
+import { makeStyles, useUi } from '@/lib/theme';
 
 export default function Scan() {
   const [permission, requestPermission] = useCameraPermissions();
   const [status, setStatus] = useState<string | null>(null);
+  const ui = useUi();
+  const styles = useStyles();
   // onBarcodeScanned fires repeatedly while a code is in view; only handle the first.
   const handling = useRef(false);
 
@@ -53,8 +55,9 @@ export default function Scan() {
   );
 }
 
-const styles = StyleSheet.create({
+// Drawn over the camera picture, so it's light text on a dark scrim in either theme.
+const useStyles = makeStyles((c, size) => ({
   overlay: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', gap: 16 },
-  frame: { width: 260, height: 140, borderColor: colors.accent, borderWidth: 2, borderRadius: 12 },
-  status: { color: colors.text, backgroundColor: '#000a', padding: 10, borderRadius: 8, overflow: 'hidden' },
-});
+  frame: { width: 260, height: 140, borderColor: '#ffffff', borderWidth: 2, borderRadius: 12 },
+  status: { color: '#ffffff', fontSize: size(15), backgroundColor: '#000a', padding: 12, borderRadius: 8, overflow: 'hidden' },
+}));

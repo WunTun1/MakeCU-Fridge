@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from recipes.ingredients import canonical
+from recipes.titles import clean_steps, clean_title
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "recipes.db"
 
@@ -183,20 +184,21 @@ class RecipeStore:
 
     @staticmethod
     def _to_recipe(row: sqlite3.Row) -> Recipe:
-        # Food.com text carries HTML entities ("Mac &amp; Cheese"); decoded here so no screen shows them.
+        # Food.com text carries HTML entities ("Mac &amp; Cheese"), shouting and hashtags; tidied here so no screen
+        # shows them (the search index keeps the raw title).
         ingredients = json.loads(row["ingredients"])
         for ing in ingredients:
             ing["name"] = html.unescape(ing["name"])
             # Recomputed on read so improvements to ingredient matching apply without a rebuild.
             ing["canon"] = canonical(ing["name"])
         return Recipe(
-            id=row["id"], name=html.unescape(row["name"]), cuisine=row["cuisine"], minutes=row["minutes"],
+            id=row["id"], name=clean_title(html.unescape(row["name"])), cuisine=row["cuisine"], minutes=row["minutes"],
             servings=row["servings"],
             nutrition={k: row[k] for k in ("calories", "protein_g", "fat_g", "carbs_g", "fiber_g", "sugar_g", "sodium_mg")},
             image_url=row["image_url"],
             description=html.unescape(row["description"]) if row["description"] else None,
             tags=json.loads(row["tags"]), ingredients=ingredients,
-            steps=[html.unescape(s) for s in json.loads(row["steps"])],
+            steps=clean_steps([html.unescape(s) for s in json.loads(row["steps"])]),
         )
 
 

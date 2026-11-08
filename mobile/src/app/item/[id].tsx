@@ -1,6 +1,6 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
 import { Button } from '@/components/Button';
 import { useSnackbar } from '@/components/Snackbar';
@@ -9,8 +9,8 @@ import { Stepper } from '@/components/Stepper';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount, fromGrams, toGrams } from '@/lib/amount';
 import { api, type ProductUsage, type StockItem } from '@/lib/api';
-import { expiryText, expiryTone, LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
-import { colors, ui } from '@/lib/theme';
+import { expiryText, expiryTone, LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
+import { makeStyles, useColors, useUi } from '@/lib/theme';
 import { calendarDate, capitalize, daysUntil, isoDateIn, monthName, relativeDays, whenWord } from '@/lib/time';
 import { refreshAll, useApi } from '@/lib/useApi';
 
@@ -27,6 +27,8 @@ export default function ItemDetail() {
   const showSnack = useSnackbar();
   const [open, setOpen] = useState<Action | null>(null);
   const busy = useRef(false);
+  const ui = useUi();
+  const styles = useStyles();
 
   if (loading && !data) return <Loading />;
 
@@ -62,7 +64,7 @@ export default function ItemDetail() {
           <Stats data={data} />
 
           {data.items.length === 0 ? (
-            <Text style={ui.muted}>You don&apos;t have any right now.</Text>
+            <Text style={ui.detail}>You don&apos;t have any right now.</Text>
           ) : (
             <>
               {data.recipe_id != null && (
@@ -149,47 +151,62 @@ const recipeName = (productName: string) => productName.replace(/ leftovers$/, '
 /** All of it is frozen: it keeps for months, so the date is said as a month. */
 const allFrozen = (data: ProductUsage) => data.items.length > 0 && data.items.every((i) => i.location === 'freezer');
 
+/** The third stat: leftovers keep until a day; otherwise what you'll likely waste, or when it runs out. */
+function thirdStat(data: ProductUsage, days: number | null): { label: string; value: string } | null {
+  if (data.recipe_id != null) return days == null ? null : { label: 'Keeps until', value: days < 0 ? 'Past it' : capitalize(whenWord(days)) };
+  const wasted = likelyWasted({ ...data, grams: data.on_hand_g, expires_in_days: days });
+  if (wasted) return { label: LIKELY_WASTED, value: wasted };
+  return data.days_left == null ? null : { label: 'Runs out', value: capitalize(whenWord(data.days_left)) };
+}
+
 function Stats({ data }: { data: ProductUsage }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
   const days = data.expiration_date ? daysUntil(data.expiration_date) : null;
   const tone = expiryTone(days);
-  const left = leftWhenBad({ ...data, grams: data.on_hand_g, expires_in_days: days });
-  const runsOut = data.days_left == null ? 'Not enough history' : capitalize(whenWord(data.days_left));
+  const third = thirdStat(data, days);
   return (
     <View style={[ui.card, styles.stats]}>
       {allFrozen(data) && data.expiration_date ? (
-        <Stat label="Good until" value={`Around ${monthName(data.expiration_date)}`} sub="In the freezer" subColor={colors.muted} />
+        <Stat label="Good until" value={`Around ${monthName(data.expiration_date)}`} sub="In the freezer" />
       ) : (
         <Stat
           label="Goes bad"
           value={data.expiration_date ? calendarDate(data.expiration_date) : 'No date'}
-          sub={days == null ? undefined : days < 0 ? 'Expired' : relativeDays(days, data.expiry_estimated)}
-          subColor={tone ? colors[tone] : colors.muted}
+          sub={days == null ? undefined : days < 0 ? 'Expired' : relativeDays(days, data.expiry_estimated && data.recipe_id == null)}
+          subColor={tone ? c[tone] : undefined}
         />
       )}
       <Stat label="Have" value={formatAmount(data.on_hand_g, data.unit, data.grams_per_unit, data.name)} />
-      {left ? <Stat label={LEFT_WHEN_BAD} value={left} /> : <Stat label="Runs out" value={runsOut} />}
+      {third && <Stat label={third.label} value={third.value} />}
     </View>
   );
 }
 
 function Stat({ label, value, sub, subColor }: { label: string; value: string; sub?: string; subColor?: string }) {
+  const ui = useUi();
+  const styles = useStyles();
   return (
     <View style={{ flex: 1, gap: 2 }}>
       <Text style={ui.muted}>{label}</Text>
-      <Text style={[ui.text, { fontSize: 17, fontWeight: '700' }]}>{value}</Text>
-      {sub && <Text style={[ui.muted, { color: subColor, fontWeight: '600' }]}>{sub}</Text>}
+      <Text style={styles.statValue}>{value}</Text>
+      {sub && <Text style={[ui.detail, { fontWeight: '600' }, subColor ? { color: subColor } : null]}>{sub}</Text>}
     </View>
   );
 }
 
 function GridButton({ title, onPress, active = false }: { title: string; onPress: () => void; active?: boolean }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      style={({ pressed }) => [styles.gridButton, active && { borderColor: colors.accent }, pressed && { opacity: 0.6 }]}
+      style={({ pressed }) => [styles.gridButton, active && { borderColor: c.accent }, pressed && { opacity: 0.6 }]}
     >
-      <Text style={[ui.text, { fontWeight: '600' }, active && { color: colors.accent }]}>{title}</Text>
+      <Text style={[ui.text, { fontWeight: '600', textAlign: 'center' }, active && { color: c.accent }]}>{title}</Text>
     </Pressable>
   );
 }
@@ -206,13 +223,16 @@ function packageWhen(item: StockItem, days: number | null): string {
 
 /** One package (an add): how much is left of it, when it goes bad, and its own Fix date. */
 function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: StockItem; fixing: boolean; onFix: () => void }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
   const days = item.expiration_date ? daysUntil(item.expiration_date) : null;
   const tone = expiryTone(days);
   return (
     <View style={styles.packageRow}>
       <View style={{ flex: 1, gap: 2 }}>
         <Text style={ui.text}>{capitalize(formatAmount(item.grams, data.unit, data.grams_per_unit, data.name))}</Text>
-        <Text style={[ui.muted, tone && item.location !== 'freezer' && { color: colors[tone] }]}>
+        <Text style={[ui.detail, tone && item.location !== 'freezer' && { color: c[tone] }]}>
           {packageWhen(item, days)}
         </Text>
       </View>
@@ -229,6 +249,7 @@ function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: S
 }
 
 function UsedSome({ data, onDone }: PanelProps) {
+  const ui = useUi();
   const step = data.unit === 'count' ? data.grams_per_unit : 50;
   const [grams, setGrams] = useState(Math.min(step, data.on_hand_g));
   const amount = formatAmount(grams, data.unit, data.grams_per_unit, data.name);
@@ -264,6 +285,8 @@ function UsedSome({ data, onDone }: PanelProps) {
 }
 
 function FixAmount({ data, onDone }: PanelProps) {
+  const ui = useUi();
+  const styles = useStyles();
   const unitWord = data.unit === 'count' ? 'how many' : data.unit;
   const [text, setText] = useState(String(fromGrams(data.on_hand_g, data.unit, data.grams_per_unit)));
 
@@ -306,6 +329,9 @@ const DATE_PICKS = [
 ];
 
 function FixDate({ data, item, onDone }: PanelProps & { item: StockItem }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
   const [days, setDays] = useState(() => (item.expiration_date ? daysUntil(item.expiration_date) : 3));
   const date = isoDateIn(days);
 
@@ -332,9 +358,9 @@ function FixDate({ data, item, onDone }: PanelProps & { item: StockItem }) {
           <Pressable
             key={p.label}
             onPress={() => setDays(p.days)}
-            style={[styles.chip, p.days === days && { borderColor: colors.accent }]}
+            style={[styles.chip, p.days === days && { borderColor: c.accent }]}
           >
-            <Text style={[ui.text, { fontSize: 15 }, p.days === days && { color: colors.accent }]}>{p.label}</Text>
+            <Text style={[ui.text, p.days === days && { color: c.accent }]}>{p.label}</Text>
           </Pressable>
         ))}
       </View>
@@ -368,32 +394,35 @@ function SaveButton({ title, onPress }: { title: string; onPress: () => Promise<
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   stats: { flexDirection: 'row', gap: 12 },
+  statValue: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '700' },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   buttonRow: { flexDirection: 'row' },
   gridButton: {
     flexBasis: '48%',
     flexGrow: 1,
     minHeight: 48,
+    paddingHorizontal: 8,
+    paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: colors.muted,
-    backgroundColor: colors.card,
+    borderColor: c.muted,
+    backgroundColor: c.card,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  label: { color: colors.text, fontSize: 13, fontWeight: '600' },
+  label: { color: c.text, fontSize: size(15), lineHeight: size(20), fontWeight: '600' },
   packageRow: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 56, paddingVertical: 8 },
-  packageDivider: { borderTopColor: colors.border, borderTopWidth: 1 },
+  packageDivider: { borderTopColor: c.border, borderTopWidth: 1 },
   textButton: { minHeight: 44, minWidth: 44, justifyContent: 'center', paddingHorizontal: 8 },
-  link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
+  link: { color: c.accent, fontSize: size(15), fontWeight: '600' },
   chip: {
     minHeight: 44,
     paddingHorizontal: 12,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: colors.muted,
+    borderColor: c.muted,
     justifyContent: 'center',
   },
-});
+}));

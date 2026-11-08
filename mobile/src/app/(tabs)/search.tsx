@@ -5,8 +5,8 @@ import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { ErrorCard } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
 import { api, type SearchResult } from '@/lib/api';
-import { LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
-import { colors, ui } from '@/lib/theme';
+import { LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
+import { useColors, useUi } from '@/lib/theme';
 import { relativeDays } from '@/lib/time';
 
 const DEBOUNCE_MS = 250;
@@ -14,8 +14,8 @@ const DEBOUNCE_MS = 250;
 function answer(r: SearchResult): string {
   if (r.on_hand_g <= 0) return "You're out.";
   const have = `You have ${formatAmount(r.on_hand_g, r.unit, r.grams_per_unit, r.product_name)}.`;
-  const left = leftWhenBad({ ...r, grams: r.on_hand_g, name: r.product_name });
-  if (left) return `${have} ${LEFT_WHEN_BAD}: ${left.toLowerCase()}.`;
+  const wasted = likelyWasted({ ...r, grams: r.on_hand_g, name: r.product_name });
+  if (wasted) return `${have} ${LIKELY_WASTED}: ${wasted.toLowerCase()}.`;
   return r.days_left != null ? `${have} Runs out ${relativeDays(r.days_left, true)}.` : have;
 }
 
@@ -23,6 +23,8 @@ export default function Search() {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const ui = useUi();
+  const c = useColors();
 
   const q = query.trim();
   const visible = q ? results : [];
@@ -46,21 +48,22 @@ export default function Search() {
     <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
       <TextInput
         style={ui.input}
-        placeholder="milk, spinach, rice…"
-        placeholderTextColor={colors.muted}
+        placeholder="e.g. milk, spinach, rice"
+        placeholderTextColor={c.muted}
         value={query}
         onChangeText={setQuery}
         autoCorrect={false}
         autoFocus
+        accessibilityLabel="Search your food"
       />
       {error && <ErrorCard message={error} />}
-      {q !== '' && visible.length === 0 && !error && <Text style={ui.muted}>No matches.</Text>}
+      {q !== '' && visible.length === 0 && !error && <Text style={ui.detail}>No food matches &quot;{q}&quot;.</Text>}
       {visible.map((r) => (
         <Link key={r.product_id} href={{ pathname: '/item/[id]', params: { id: r.product_id } }} asChild>
           <Pressable style={ui.card}>
             <View>
               <Text style={[ui.text, { fontWeight: '600' }]}>{r.product_name}</Text>
-              <Text style={ui.muted}>{answer(r)}</Text>
+              <Text style={ui.detail}>{answer(r)}</Text>
             </View>
           </Pressable>
         </Link>

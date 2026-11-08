@@ -10,7 +10,7 @@ from intelligence.expiry import days_until, describe_expiry
 
 DAYS_LEFT_THRESHOLD = 3
 LOW_PACKAGE_FRACTION = 0.20
-EXPIRING_SOON_DAYS = 2
+EXPIRING_SOON_DAYS = 3  # the same window the app colors amber or red
 FRIDGE_TEMP_ALERT_C = 7.0          # above this, food safety is at risk
 CONDITION_STALE_MINUTES = 30       # a reading older than this isn't trusted
 

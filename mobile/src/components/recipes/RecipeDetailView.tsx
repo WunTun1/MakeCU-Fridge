@@ -1,14 +1,14 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Stack } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, Text, View } from 'react-native';
 
 import { Button } from '@/components/Button';
 import { CookSheet, usesAll } from '@/components/recipes/CookSheet';
 import { useSnackbar } from '@/components/Snackbar';
 import { formatAmount } from '@/lib/amount';
 import { api, type CookLine, type Made, type RecipeDetail, type RecipeLine } from '@/lib/api';
-import { colors } from '@/lib/theme';
+import { makeStyles, useColors, type Palette } from '@/lib/theme';
 import { refreshAll } from '@/lib/useApi';
 
 /** "Used 400 g chicken breast, all the spinach". */
@@ -43,6 +43,8 @@ function metaLine(r: RecipeDetail): string {
  */
 export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   const showSnack = useSnackbar();
+  const styles = useStyles();
+  const c = useColors();
   const [recipe, setRecipe] = useState<RecipeDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [onList, setOnList] = useState<Set<string>>(new Set());
@@ -67,8 +69,8 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
     load();
   }, [load]);
 
-  if (error) return <Text style={styles.muted}>Couldn&apos;t load this recipe: {error}</Text>;
-  if (!recipe) return <ActivityIndicator color={colors.accent} style={{ margin: 24 }} />;
+  if (error) return <Text style={styles.detail}>Couldn&apos;t load this recipe: {error}</Text>;
+  if (!recipe) return <ActivityIndicator color={c.accent} style={{ margin: 24 }} />;
 
   const loggedMeal = recipe.logged_meal_id;
   const left = recipe.leftovers;
@@ -143,7 +145,7 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
       {recipe.reasons.length > 0 && (
         <View style={{ gap: 4 }}>
           {recipe.reasons.map((r) => (
-            <Text key={r} style={styles.reason}>
+            <Text key={r} style={styles.detail}>
               {r}
             </Text>
           ))}
@@ -177,7 +179,7 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
         {recipe.steps.map((step, i) => (
           <View key={i} style={styles.stepRow}>
             <Text style={styles.stepNum}>{i + 1}</Text>
-            <Text style={[styles.text, { flex: 1, lineHeight: 22 }]}>{step}</Text>
+            <Text style={[styles.text, { flex: 1 }]}>{step}</Text>
           </View>
         ))}
       </View>
@@ -210,13 +212,13 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
 
       <View style={[styles.row, { justifyContent: 'center', gap: 24 }]}>
         <Pressable onPress={() => rate(true)} hitSlop={12} style={styles.thumb} accessibilityLabel="I liked it">
-          <FontAwesome name="thumbs-up" size={28} color={rated === true ? colors.accent : colors.muted} />
+          <FontAwesome name="thumbs-up" size={28} color={rated === true ? c.accent : c.textSecondary} />
         </Pressable>
         <Pressable onPress={() => rate(false)} hitSlop={12} style={styles.thumb} accessibilityLabel="Not for me">
-          <FontAwesome name="thumbs-down" size={28} color={rated === false ? colors.danger : colors.muted} />
+          <FontAwesome name="thumbs-down" size={28} color={rated === false ? c.danger : c.textSecondary} />
         </Pressable>
       </View>
-      <Text style={[styles.muted, { textAlign: 'center' }]}>
+      <Text style={[styles.detail, { textAlign: 'center' }]}>
         {rated === null ? 'Rate it to tune future suggestions' : 'Thanks. Suggestions will adapt.'}
       </Text>
 
@@ -233,38 +235,38 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
   );
 }
 
-type Badge = { label: string; color: string; border: string; check?: boolean };
+type Badge = { label: string; color: string; border: string | null; check?: boolean };
 
 /**
  * Have is the common case, so it's neutral with a check. Short is amber, Buy is the accent
  * (it's tappable). Red is never used here: red means "goes bad today or tomorrow".
- * Staples (salt, oil, water from the pasta) get no badge.
+ * Staples (salt, oil, water from the pasta) say "Pantry" with no border.
  */
-function badgeFor(status: RecipeLine['status'], listed: boolean): Badge | null {
-  if (listed && (status === 'missing' || status === 'short')) return { label: 'On list', color: colors.muted, border: colors.border };
+function badgeFor(status: RecipeLine['status'], listed: boolean, c: Palette): Badge {
+  if (listed && (status === 'missing' || status === 'short')) return { label: 'On list', color: c.textSecondary, border: c.border };
   switch (status) {
     case 'have':
-      return { label: 'Have', color: colors.muted, border: colors.border, check: true };
+      return { label: 'Have', color: c.textSecondary, border: c.border, check: true };
     case 'swap':
-      return { label: 'Swap', color: colors.text, border: colors.muted };
+      return { label: 'Swap', color: c.text, border: c.muted };
     case 'short':
-      return { label: 'Short', color: colors.warn, border: colors.warn };
+      return { label: 'Short', color: c.warn, border: c.warn };
     case 'missing':
-      return { label: 'Buy', color: colors.accent, border: colors.accent };
+      return { label: 'Buy', color: c.accent, border: c.accent };
     default:
-      return null;
+      return { label: 'Pantry', color: c.textSecondary, border: null };
   }
 }
 
 function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: boolean; onBuy: () => void }) {
-  const b = badgeFor(line.status, listed);
-  const badge = b ? (
-    <View style={[styles.badge, { borderColor: b.border }]}>
-      {b.check && <FontAwesome name="check" size={11} color={b.color} />}
+  const styles = useStyles();
+  const c = useColors();
+  const b = badgeFor(line.status, listed, c);
+  const badge = (
+    <View style={[styles.badge, b.border ? { borderColor: b.border } : styles.plainBadge]}>
+      {b.check && <FontAwesome name="check" size={12} color={b.color} />}
       <Text style={[styles.badgeText, { color: b.color }]}>{b.label}</Text>
     </View>
-  ) : (
-    <View style={styles.noBadge} />
   );
   return (
     <View style={styles.ingRow}>
@@ -281,8 +283,8 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
         badge
       )}
       <View style={{ flex: 1 }}>
-        <Text style={[styles.text, line.status === 'staple' && { color: colors.muted }]}>
-          {line.amount ? <Text style={styles.muted}>{line.amount} </Text> : null}
+        <Text style={styles.text}>
+          {line.amount ? `${line.amount} ` : null}
           {line.use ? (
             <>
               <Text style={styles.struck}>{line.name}</Text> → {line.use}
@@ -290,43 +292,43 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
           ) : (
             line.name
           )}
-          {line.on_hand ? <Text style={{ color: colors.warn }}> · you have {line.on_hand}</Text> : null}
+          {line.on_hand ? <Text style={{ color: c.warn }}> · you have {line.on_hand}</Text> : null}
         </Text>
-        {line.note && <Text style={styles.muted}>{line.note}</Text>}
+        {line.note && <Text style={styles.detail}>{line.note}</Text>}
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  hero: { width: '100%', height: 180, borderRadius: 12, backgroundColor: colors.input },
-  title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '700' },
-  meta: { color: colors.text, fontSize: 15, lineHeight: 20 },
-  text: { color: colors.text, fontSize: 16 },
-  muted: { color: colors.muted, fontSize: 13 },
-  reason: { color: colors.accent, fontSize: 15 },
-  section: { color: colors.muted, fontSize: 13, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
+const useStyles = makeStyles((c, size) => ({
+  hero: { width: '100%', height: 180, borderRadius: 12, backgroundColor: c.input },
+  title: { color: c.text, fontSize: size(22), lineHeight: size(28), fontWeight: '700' },
+  meta: { color: c.text, fontSize: size(15), lineHeight: size(20) },
+  text: { color: c.text, fontSize: size(16), lineHeight: size(22) },
+  detail: { color: c.textSecondary, fontSize: size(15), lineHeight: size(20) },
+  muted: { color: c.muted, fontSize: size(13), lineHeight: size(18) },
+  section: { color: c.textSecondary, fontSize: size(13), fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase' },
   ingRow: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
   badge: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
-    height: 22,
-    minWidth: 68,
+    minHeight: size(24),
+    minWidth: size(72),
     borderWidth: 1,
     borderRadius: 999,
     paddingHorizontal: 8,
   },
-  badgeText: { fontSize: 12, lineHeight: 16, fontWeight: '600' },
-  noBadge: { minWidth: 68 },
-  struck: { textDecorationLine: 'line-through', color: colors.muted },
+  plainBadge: { borderColor: 'transparent' },
+  badgeText: { fontSize: size(13), lineHeight: size(16), fontWeight: '600' },
+  struck: { textDecorationLine: 'line-through', color: c.textSecondary },
   stepRow: { flexDirection: 'row', gap: 12 },
-  stepNum: { color: colors.accent, fontWeight: '700', width: 24, fontSize: 15 },
+  stepNum: { color: c.accent, fontWeight: '700', width: size(24), fontSize: size(15), lineHeight: size(22) },
   cookBox: { gap: 8 },
   buttonRow: { flexDirection: 'row', minHeight: 48 },
   textButton: { minHeight: 44, alignSelf: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  link: { color: colors.accent, fontSize: 15, fontWeight: '600' },
+  link: { color: c.accent, fontSize: size(15), fontWeight: '600' },
   row: { flexDirection: 'row', gap: 12 },
   thumb: { padding: 8 },
-});
+}));

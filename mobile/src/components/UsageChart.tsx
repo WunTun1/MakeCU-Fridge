@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { formatAmount, type Unit } from '@/lib/amount';
 import { calendarDate } from '@/lib/time';
-import { ui, useColors } from '@/lib/theme';
+import { useColors, useUi } from '@/lib/theme';
 
 const MIN_DAYS = 7;
 
@@ -38,7 +38,8 @@ export function UsageChart({
   name?: string;
 }) {
   const c = useColors();
-  const muted = [ui.muted, { color: c.muted }];
+  const ui = useUi();
+  const muted = ui.muted;
   const labels = trimmedDays(dailyUsage, days);
   const values = labels.map((d) => dailyUsage[d] ?? 0);
   const max = Math.max(...values, 1);

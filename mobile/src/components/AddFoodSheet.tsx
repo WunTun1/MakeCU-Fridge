@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Modal, Pressable, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/Button';
 import { formatAmount } from '@/lib/amount';
 import { api, type QuickAdd } from '@/lib/api';
-import { colors, ui } from '@/lib/theme';
+import { makeStyles, useColors, useUi } from '@/lib/theme';
 import { sentenceCase } from '@/lib/time';
 
 /** "2 eggs", "Greek yogurt 200 g", "Chili, 1 serving". */
@@ -33,6 +33,8 @@ export function AddFoodSheet({
   onOther: (entry: { name: string; protein_g: number | null; calories: number | null }) => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
+  const styles = useStyles();
+  const ui = useUi();
   const [portions, setPortions] = useState<QuickAdd[] | null>(null);
   const [name, setName] = useState('');
   const [protein, setProtein] = useState('');
@@ -76,7 +78,7 @@ export function AddFoodSheet({
 
         <View style={{ gap: 8 }}>
           <Text style={styles.label}>From your fridge</Text>
-          {portions?.length === 0 && <Text style={ui.muted}>Nothing in the fridge with 10 g of protein or more.</Text>}
+          {portions?.length === 0 && <Text style={ui.detail}>Nothing in the fridge with 10 g of protein or more.</Text>}
           <View style={styles.chips}>
             {portions?.map((q) => (
               <Pressable
@@ -88,11 +90,11 @@ export function AddFoodSheet({
                 accessibilityLabel={`Ate ${portionText(q)}, ${q.protein_g} g protein`}
               >
                 <Text style={ui.text}>{portionText(q)}</Text>
-                <Text style={ui.muted}>{q.protein_g} g protein</Text>
+                <Text style={ui.detail}>{q.protein_g} g protein</Text>
               </Pressable>
             ))}
           </View>
-          <Text style={ui.muted}>Takes it out of the fridge and logs it.</Text>
+          <Text style={ui.detail}>Takes it out of the fridge and logs it.</Text>
         </View>
 
         <View style={{ gap: 8 }}>
@@ -128,15 +130,17 @@ function Field({
   placeholder: string;
   numeric?: boolean;
 }) {
+  const ui = useUi();
+  const c = useColors();
   return (
     <View style={{ flex: 1, gap: 4 }}>
-      <Text style={ui.muted}>{label}</Text>
+      <Text style={ui.detail}>{label}</Text>
       <TextInput
         style={ui.input}
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
-        placeholderTextColor={colors.muted}
+        placeholderTextColor={c.muted}
         keyboardType={numeric ? 'decimal-pad' : 'default'}
         accessibilityLabel={label}
       />
@@ -144,19 +148,19 @@ function Field({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   backdrop: { flex: 1, backgroundColor: '#000a' },
   sheet: {
-    backgroundColor: colors.card,
+    backgroundColor: c.card,
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
-    borderColor: colors.border,
+    borderColor: c.border,
     borderWidth: 1,
     padding: 16,
     gap: 24,
   },
-  title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '700' },
-  label: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  title: { color: c.text, fontSize: size(22), lineHeight: size(28), fontWeight: '700' },
+  label: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '600' },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
     minHeight: 48,
@@ -164,8 +168,8 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: colors.muted,
+    borderColor: c.muted,
     justifyContent: 'center',
   },
   buttonRow: { flexDirection: 'row' },
-});
+}));

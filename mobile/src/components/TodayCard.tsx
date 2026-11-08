@@ -1,9 +1,9 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Link } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 
 import type { Macros, Profile } from '@/lib/api';
-import { colors, ui } from '@/lib/theme';
+import { makeStyles, useColors, useUi } from '@/lib/theme';
 
 const mealsText = (n: number) => (n === 1 ? '1 meal' : `${n} meals`);
 
@@ -12,6 +12,9 @@ const mealsText = (n: number) => (n === 1 ? '1 meal' : `${n} meals`);
  * protein in protein mode, calories otherwise; the other one is the muted line.
  */
 export function TodayCard({ totals, mealCount, profile }: { totals: Macros; mealCount: number; profile: Profile | null }) {
+  const styles = useStyles();
+  const ui = useUi();
+  const c = useColors();
   const protein = Math.round(totals.protein_g || 0);
   const kcal = Math.round(totals.calories || 0);
   const headline = profile?.protein_mode
@@ -35,28 +38,31 @@ export function TodayCard({ totals, mealCount, profile }: { totals: Macros; meal
               <View style={[styles.fill, { width: `${pct}%` }]} />
             </View>
           ) : null}
-          <Text style={ui.muted}>
+          <Text style={ui.detail}>
             {headline.other} · {mealsText(mealCount)}
           </Text>
         </View>
-        <FontAwesome name="chevron-right" color={colors.muted} />
+        <FontAwesome name="chevron-right" color={c.textSecondary} />
       </Pressable>
     </Link>
   );
 }
 
 // Children of <Link asChild> must get one style object — expo-router throws on style arrays.
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   card: {
-    ...StyleSheet.flatten(ui.card),
+    backgroundColor: c.card,
+    borderColor: c.border,
+    borderWidth: 1,
+    borderRadius: 12,
     padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
   },
   headline: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 },
-  label: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
-  amount: { color: colors.text, fontSize: 20, lineHeight: 24, fontWeight: '700' },
-  track: { height: 8, borderRadius: 4, backgroundColor: colors.border, overflow: 'hidden' },
-  fill: { height: '100%', backgroundColor: colors.accent },
-});
+  label: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '600' },
+  amount: { color: c.text, fontSize: size(20), lineHeight: size(24), fontWeight: '700', flexShrink: 1, textAlign: 'right' },
+  track: { height: 8, borderRadius: 4, backgroundColor: c.border, overflow: 'hidden' },
+  fill: { height: '100%', backgroundColor: c.accent },
+}));

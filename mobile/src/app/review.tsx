@@ -5,11 +5,12 @@ import { Button } from '@/components/Button';
 import { ErrorCard, Loading } from '@/components/States';
 import { api, type ReviewItem } from '@/lib/api';
 import { candidateName, describeReview, isUnnamedAdd } from '@/lib/review';
-import { colors, ui } from '@/lib/theme';
+import { useColors, useUi } from '@/lib/theme';
 import { useApi } from '@/lib/useApi';
 
 export default function Review() {
   const { data, error, loading, reload } = useApi(api.review);
+  const ui = useUi();
 
   if (loading && !data) return <Loading />;
 
@@ -18,7 +19,7 @@ export default function Review() {
       {error && <ErrorCard message={error} />}
       {data?.length === 0 && (
         <View style={ui.card}>
-          <Text style={ui.muted}>Nothing to review.</Text>
+          <Text style={ui.detail}>Nothing to review.</Text>
         </View>
       )}
       {data?.map((r) => <ReviewCard key={r.id} review={r} onResolved={reload} />)}
@@ -30,6 +31,8 @@ function ReviewCard({ review: r, onResolved }: { review: ReviewItem; onResolved:
   const unnamed = isUnnamedAdd(r);
   const [name, setName] = useState(candidateName(r) ?? '');
   const [status, setStatus] = useState<string | null>(null);
+  const ui = useUi();
+  const c = useColors();
 
   async function resolve(body: Parameters<typeof api.resolveReview>[1]) {
     try {
@@ -49,7 +52,7 @@ function ReviewCard({ review: r, onResolved }: { review: ReviewItem; onResolved:
         <TextInput
           style={ui.input}
           placeholder="e.g. Milk"
-          placeholderTextColor={colors.muted}
+          placeholderTextColor={c.muted}
           value={name}
           onChangeText={setName}
         />
@@ -72,7 +75,7 @@ function ReviewCard({ review: r, onResolved }: { review: ReviewItem; onResolved:
           />
         )}
       </View>
-      {status && <Text style={ui.muted}>{status}</Text>}
+      {status && <Text style={ui.detail}>{status}</Text>}
     </View>
   );
 }

@@ -173,6 +173,16 @@ ALLERGEN_TERMS: dict[str, set[str]] = {
 }
 
 
+# Someone allergic to one tree nut can't eat "1 cup nuts" or "add the nuts" either.
+TREE_NUTS = {"walnut", "pecan", "almond", "cashew", "hazelnut", "pistachio", "macadamia", "tree nut"}
+
+
+def allergy_terms(allergy: str) -> set[str]:
+    key = allergy.strip().lower().rstrip("s")
+    terms = ALLERGEN_TERMS.get(key, set()) | {key}
+    return terms | {"nut"} if key in TREE_NUTS else terms
+
+
 def _word_pattern(term: str) -> re.Pattern:
     """Whole words, plurals included: 'egg' finds 'eggs' but not 'eggplant'."""
     if re.search(r"[^aeiou]y$", term):
@@ -186,9 +196,7 @@ def allergen_found(text: str, allergies: list[str]) -> tuple[str, str] | None:
     """(allergy as the person wrote it, the word in `text` that conflicts), or None."""
     for allergy in allergies:
         a = allergy.strip().lower()
-        key = a.rstrip("s")
-        terms = ALLERGEN_TERMS.get(key, set()) | {key}
-        for term in sorted(terms, key=len, reverse=True):
+        for term in sorted(allergy_terms(a), key=len, reverse=True):
             if term and (m := _word_pattern(term).search(text)):
                 return a, m.group(0).lower()
     return None

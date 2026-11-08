@@ -1,8 +1,8 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useState } from 'react';
-import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, Text, TextInput, View } from 'react-native';
 
-import { colors, ui } from '@/lib/theme';
+import { makeStyles, useColors, useUi } from '@/lib/theme';
 
 /** Pick one. The selected chip is filled because the saved value matches it. */
 export function ChoiceChips<T extends string>({
@@ -16,6 +16,7 @@ export function ChoiceChips<T extends string>({
   onChange: (value: T) => void;
   label: string;
 }) {
+  const styles = useStyles();
   return (
     <View style={styles.wrap} role="radiogroup" accessibilityLabel={label}>
       {options.map((o) => {
@@ -29,7 +30,7 @@ export function ChoiceChips<T extends string>({
             hitSlop={6}
             style={[styles.chip, selected && styles.selected]}
           >
-            <Text style={[styles.text, selected && { color: colors.onAccent }]}>{o.label}</Text>
+            <Text style={[styles.text, selected && styles.selectedText]}>{o.label}</Text>
           </Pressable>
         );
       })}
@@ -54,6 +55,9 @@ export function ListField({
   onChange: (values: string[]) => void;
 }) {
   const [text, setText] = useState('');
+  const styles = useStyles();
+  const ui = useUi();
+  const c = useColors();
   const add = () => {
     const value = text.trim().toLowerCase();
     setText('');
@@ -62,7 +66,7 @@ export function ListField({
   return (
     <View style={{ gap: 8 }}>
       {values.length === 0 ? (
-        <Text style={ui.muted}>None set</Text>
+        <Text style={ui.detail}>None set</Text>
       ) : (
         <View style={styles.wrap}>
           {values.map((v) => (
@@ -75,7 +79,7 @@ export function ListField({
               style={[styles.chip, styles.removable]}
             >
               <Text style={styles.text}>{v}</Text>
-              <FontAwesome name="close" size={14} color={colors.muted} />
+              <FontAwesome name="close" size={14} color={c.textSecondary} />
             </Pressable>
           ))}
         </View>
@@ -87,7 +91,7 @@ export function ListField({
           onChangeText={setText}
           onSubmitEditing={add}
           placeholder={placeholder}
-          placeholderTextColor={colors.muted}
+          placeholderTextColor={c.muted}
           returnKeyType="done"
           accessibilityLabel={`Add to ${label}`}
         />
@@ -99,28 +103,30 @@ export function ListField({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: {
-    minHeight: 32,
+    minHeight: 36,
     paddingHorizontal: 12,
+    paddingVertical: 4,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: colors.muted,
+    borderColor: c.muted,
     alignItems: 'center',
     justifyContent: 'center',
   },
   removable: { flexDirection: 'row', gap: 8 },
-  selected: { backgroundColor: colors.accent, borderColor: colors.accent },
-  text: { color: colors.text, fontSize: 15 },
+  selected: { backgroundColor: c.accent, borderColor: c.accent },
+  selectedText: { color: c.onAccent },
+  text: { color: c.text, fontSize: size(15), lineHeight: size(20) },
   add: {
     minHeight: 48,
     minWidth: 64,
     paddingHorizontal: 16,
     borderRadius: 8,
-    backgroundColor: colors.border,
+    backgroundColor: c.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  addText: { color: colors.text, fontSize: 16, fontWeight: '600' },
-});
+  addText: { color: c.text, fontSize: size(16), fontWeight: '600' },
+}));

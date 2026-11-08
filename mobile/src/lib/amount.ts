@@ -1,6 +1,8 @@
 export type Unit = 'g' | 'count' | 'ml';
 
-const COUNT_WORDS = ['egg', 'lemon', 'lime', 'apple', 'avocado', 'onion', 'pepper', 'tomato'];
+const COUNT_WORDS = [
+  'egg', 'lemon', 'lime', 'apple', 'avocado', 'onion', 'pepper', 'tomato', 'banana', 'orange', 'potato', 'bagel', 'roll', 'muffin',
+];
 const ML_WORDS = ['milk', 'juice', 'oil', 'cream', 'broth', 'soda'];
 const NOT_A_UNIT = ['sour cream', 'cream cheese', 'ice cream', 'peppercorn', 'eggplant', 'pepper flake'];
 const PLURAL_ES = new Set(['tomato', 'potato', 'mango']);
@@ -11,8 +13,8 @@ const hasWord = (text: string, stem: string) => new RegExp(`\\b${stem}(e?s)?\\b`
 export function guessUnit(name: string): Unit {
   const text = name.toLowerCase();
   if (NOT_A_UNIT.some((w) => text.includes(w))) return 'g';
+  if (ML_WORDS.some((w) => hasWord(text, w))) return 'ml'; // "orange juice" is poured, not counted
   if (COUNT_WORDS.some((w) => hasWord(text, w))) return 'count';
-  if (ML_WORDS.some((w) => hasWord(text, w))) return 'ml';
   return 'g';
 }
 
@@ -30,7 +32,7 @@ function plural(word: string): string {
 }
 
 /** "egg"/"eggs" from a product name like "Eggs" or "Large Brown Eggs"; leftovers are counted in servings. */
-function countNoun(name: string | undefined, n: number): string {
+export function countNoun(name: string | undefined, n: number): string {
   const last = name?.trim().toLowerCase().split(/\s+/).pop();
   const one = last === 'leftovers' ? 'serving' : last ? singular(last) : 'piece';
   return n === 1 ? one : plural(one);

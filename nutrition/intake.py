@@ -100,3 +100,15 @@ def eat_from_fridge(db: Database, product_id: int, grams: float, name: str, sour
         inv_events.apply_consume(db, item["id"], take, meta={"meal_id": meal_id})
         left -= take
     return {"meal_id": meal_id, "grams": grams, **meal}
+
+
+def eat_product(db: Database, product_id: int, grams: float | None = None) -> dict | None:
+    """Ate some of a product as it is; one unit (a serving of leftovers, an egg) when `grams` is left out.
+    Leftovers are logged under the recipe's name. None when there's none left."""
+    product = db.get_product(product_id)
+    if product is None:
+        return None
+    leftovers = product["recipe_id"] is not None
+    name = product["name"].removesuffix(" leftovers") if leftovers else product["name"]
+    return eat_from_fridge(db, product_id, grams or product["grams_per_unit"], name,
+                           source="leftovers" if leftovers else "fridge")

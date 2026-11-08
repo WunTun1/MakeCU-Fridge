@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/Button';
@@ -7,7 +7,7 @@ import { Segmented } from '@/components/Segmented';
 import { Stepper } from '@/components/Stepper';
 import { formatAmount } from '@/lib/amount';
 import { api, type CookLine, type Made, type Nutrition } from '@/lib/api';
-import { colors, ui } from '@/lib/theme';
+import { makeStyles, useColors, useUi } from '@/lib/theme';
 import { capitalize, whenWord } from '@/lib/time';
 
 const MAX_SERVINGS = 12;
@@ -21,10 +21,15 @@ const MADE_OPTIONS: { value: Made; label: string }[] = [
 /** Whether a line takes everything there is (within a gram). */
 export const usesAll = (line: CookLine) => line.grams_used >= line.grams_on_hand - 1;
 
-/** "Chicken breast: 400 g of 683 g", "Baby spinach: all 150 g". */
+/** "Chicken breast: 400 g of 683 g", "Baby spinach: all 150 g"; counted: "Eggs: 2 of 6", "Eggs: all 3", "Eggs: your last egg". */
 function lineText(line: CookLine): string {
-  const amount = (g: number) => formatAmount(g, line.unit, line.grams_per_unit, line.item);
   const name = capitalize(line.item.toLowerCase());
+  if (line.unit === 'count') {
+    const have = Math.max(1, Math.round(line.grams_on_hand / line.grams_per_unit));
+    if (!usesAll(line)) return `${name}: ${Math.max(1, Math.round(line.grams_used / line.grams_per_unit))} of ${have}`;
+    return have === 1 ? `${name}: your last ${formatAmount(line.grams_per_unit, 'count', line.grams_per_unit, line.item).replace(/^1 /, '')}` : `${name}: all ${have}`;
+  }
+  const amount = (g: number) => formatAmount(g, line.unit, line.grams_per_unit, line.item);
   return usesAll(line) ? `${name}: all ${amount(line.grams_on_hand)}` : `${name}: ${amount(line.grams_used)} of ${amount(line.grams_on_hand)}`;
 }
 
@@ -76,6 +81,9 @@ export function CookSheet({
   onLog: (made: Made, servingsEaten: number) => Promise<void>;
 }) {
   const insets = useSafeAreaInsets();
+  const styles = useStyles();
+  const ui = useUi();
+  const c = useColors();
   const [made, setMade] = useState<Made>(1);
   const [eaten, setEaten] = useState(1);
   const [lines, setLines] = useState<CookLine[] | null>(null);
@@ -117,13 +125,13 @@ export function CookSheet({
         <View style={styles.question}>
           <Text style={styles.label}>How much did you make?</Text>
           <Segmented label="How much did you make?" options={MADE_OPTIONS} value={made} onChange={setMade} />
-          <Text style={ui.muted}>{yieldText(servings, made)}</Text>
+          <Text style={ui.detail}>{yieldText(servings, made)}</Text>
         </View>
 
         <View style={{ gap: 4 }}>
-          <Text style={ui.muted}>This takes from your fridge and pantry:</Text>
-          {error && <Text style={ui.muted}>Couldn&apos;t work it out: {error}</Text>}
-          {!lines && !error && <ActivityIndicator color={colors.accent} style={{ alignSelf: 'flex-start' }} />}
+          <Text style={ui.detail}>This takes from your fridge and pantry:</Text>
+          {error && <Text style={ui.detail}>Couldn&apos;t work it out: {error}</Text>}
+          {!lines && !error && <ActivityIndicator color={c.accent} style={{ alignSelf: 'flex-start' }} />}
           {lines?.length === 0 && <Text style={ui.text}>Nothing you track. It only logs the meal.</Text>}
           {lines?.map((line) => (
             <Text key={line.product_id} style={ui.text}>
@@ -145,11 +153,11 @@ export function CookSheet({
               onPlus={() => setEaten((s) => s + 1)}
             />
           </View>
-          <Text style={ui.muted}>
+          <Text style={ui.detail}>
             {eaten === 1 ? '1 serving' : `${eaten} servings`}
             {logs ? `. ${logs}` : ''}
           </Text>
-          {leftover && <Text style={ui.muted}>{leftover}</Text>}
+          {leftover && <Text style={ui.detail}>{leftover}</Text>}
         </View>
 
         <View style={{ minHeight: 48, flexDirection: 'row' }}>
@@ -160,18 +168,18 @@ export function CookSheet({
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   backdrop: { flex: 1, backgroundColor: '#000a' },
   sheet: {
-    backgroundColor: colors.card,
+    backgroundColor: c.card,
     borderTopLeftRadius: 12,
     borderTopRightRadius: 12,
-    borderColor: colors.border,
+    borderColor: c.border,
     borderWidth: 1,
     padding: 16,
     gap: 16,
   },
-  title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '700' },
+  title: { color: c.text, fontSize: size(22), lineHeight: size(28), fontWeight: '700' },
   question: { gap: 8 },
-  label: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
-});
+  label: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '600', flexShrink: 1 },
+}));

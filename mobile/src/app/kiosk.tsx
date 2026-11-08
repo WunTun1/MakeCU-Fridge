@@ -18,8 +18,8 @@ import { ScreenSimulator } from '@/components/kiosk/ScreenSimulator';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount } from '@/lib/amount';
 import { api, type InventoryEntry, type ProductUsage } from '@/lib/api';
-import { expiryTone, expiryWord, LEFT_WHEN_BAD, leftWhenBad } from '@/lib/expiry';
-import { palettes, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
+import { expiryTone, expiryWord, LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
+import { palettes, TextScaleContext, ThemeContext, useColors, type Palette, type ThemeMode } from '@/lib/theme';
 import { capitalize, whenWord } from '@/lib/time';
 import { useApi } from '@/lib/useApi';
 
@@ -63,10 +63,13 @@ export default function Kiosk() {
 
   return (
     <ThemeContext.Provider value={palettes[mode]}>
-      <Stack.Screen options={{ headerShown: false }} />
-      <ScreenSimulator>
-        <KioskScreen mode={mode} onToggleTheme={toggle} />
-      </ScreenSimulator>
+      {/* The phone's Large text setting doesn't apply here: the fridge screen has its own type scale. */}
+      <TextScaleContext.Provider value={1}>
+        <Stack.Screen options={{ headerShown: false }} />
+        <ScreenSimulator>
+          <KioskScreen mode={mode} onToggleTheme={toggle} />
+        </ScreenSimulator>
+      </TextScaleContext.Provider>
     </ThemeContext.Provider>
   );
 }
@@ -271,8 +274,7 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
 
   const d = item.expires_in_days;
   const tone = expiryTone(d);
-  const left = leftWhenBad(item);
-  const runsOut = item.days_left == null ? 'Not enough history' : capitalize(whenWord(item.days_left));
+  const wasted = item.leftovers ? null : likelyWasted(item);
   return (
     <KioskModal visible title={item.name} onClose={onClose}>
       <View style={styles.stats}>
@@ -282,10 +284,10 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
           color={d == null ? colors.muted : tone ? colors[tone] : undefined}
         />
         <Stat label="Have" value={capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name))} />
-        {left ? (
-          <Stat label={LEFT_WHEN_BAD} value={left} />
+        {wasted ? (
+          <Stat label={LIKELY_WASTED} value={wasted} />
         ) : (
-          <Stat label="Runs out" value={runsOut} color={item.days_left == null ? colors.muted : undefined} />
+          !item.leftovers && item.days_left != null && <Stat label="Runs out" value={capitalize(whenWord(item.days_left))} />
         )}
       </View>
       {usage && (

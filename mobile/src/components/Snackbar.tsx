@@ -1,15 +1,15 @@
 import { usePathname } from 'expo-router';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors } from '@/lib/theme';
+import { makeStyles } from '@/lib/theme';
 
 export type Snack = { message: string; action?: { label: string; onPress: () => void } };
 
 const PLAIN_MS = 5000;
 const WITH_ACTION_MS = 8000;
-export const TAB_BAR_HEIGHT = 56;
+export const TAB_BAR_HEIGHT = 60;
 const TAB_PATHS = new Set(['/', '/search', '/grocery', '/chat', '/profile']);
 
 const SnackbarContext = createContext<(snack: Snack) => void>(() => {});
@@ -21,6 +21,7 @@ export function SnackbarProvider({ children }: { children: ReactNode }) {
   const [current, setCurrent] = useState<(Snack & { key: number }) | null>(null);
   const insets = useSafeAreaInsets();
   const pathname = usePathname();
+  const styles = useStyles();
 
   const show = useCallback((snack: Snack) => setCurrent({ ...snack, key: Date.now() }), []);
 
@@ -58,7 +59,7 @@ export function SnackbarProvider({ children }: { children: ReactNode }) {
   );
 }
 
-const styles = StyleSheet.create({
+const useStyles = makeStyles((c, size) => ({
   bar: {
     position: 'absolute',
     left: 16,
@@ -71,9 +72,9 @@ const styles = StyleSheet.create({
     paddingRight: 8,
     paddingVertical: 4,
     borderRadius: 8,
-    backgroundColor: colors.border,
+    backgroundColor: c.border,
   },
-  message: { flex: 1, color: colors.text, fontSize: 15, lineHeight: 20, paddingVertical: 8 },
+  message: { flex: 1, color: c.text, fontSize: size(15), lineHeight: size(20), paddingVertical: 8 },
   action: { minHeight: 44, minWidth: 64, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center' },
-  actionLabel: { color: colors.accent, fontSize: 15, fontWeight: '700' },
-});
+  actionLabel: { color: c.accent, fontSize: size(15), fontWeight: '700' },
+}));

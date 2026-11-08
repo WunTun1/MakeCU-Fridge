@@ -45,10 +45,12 @@ export function clockTime(isoTimestamp: string): string {
   return new Date(isoTimestamp).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
-/** "Shop by Tue, Nov 10 · covers until Tue, Nov 17": one source for Home and Grocery. */
+/** "Shop today · covers until Sat, Nov 14", "Shop by Tue, Nov 10 · ...": one source for Home and Grocery. */
 export function tripText(tripDate: string | null, coversUntil: string | null): string {
   if (!tripDate || !coversUntil) return 'No trip needed in the next two weeks';
-  return `Shop by ${calendarDate(tripDate)} · covers until ${calendarDate(coversUntil)}`;
+  const days = daysUntil(tripDate);
+  const when = days <= 0 ? 'Shop today' : days === 1 ? 'Shop tomorrow' : `Shop by ${calendarDate(tripDate)}`;
+  return `${when} · covers until ${calendarDate(coversUntil)}`;
 }
 
 function weeks(days: number): string {

@@ -1,11 +1,14 @@
-import { createContext, useContext } from 'react';
-import { StyleSheet } from 'react-native';
+import { createContext, useContext, useMemo } from 'react';
+import { StyleSheet, type ImageStyle, type TextStyle, type ViewStyle } from 'react-native';
 
 export const darkColors = {
   bg: '#0f1115',
   card: '#1a1d24',
   border: '#2a2e37',
   text: '#e8e9ec',
+  /** Detail lines a person acts on ("Buy feta cheese", "Uses your spinach"). */
+  textSecondary: '#c4c8d0',
+  /** Captions and metadata only. */
   muted: '#9aa0ac',
   accent: '#4ade80',
   onAccent: '#06230f',
@@ -17,12 +20,13 @@ export const darkColors = {
 export type Palette = typeof darkColors;
 export type ThemeMode = 'dark' | 'light';
 
-/** Warm ivory and clay, after Claude's light theme. */
+/** The fridge screen's light theme: warm ivory and clay, after Claude's light theme. */
 export const lightColors: Palette = {
   bg: '#faf9f5',
   card: '#ffffff',
   border: '#e5e2d9',
   text: '#141413',
+  textSecondary: '#5e5d59',
   muted: '#6f6e69',
   accent: '#ad5233',
   onAccent: '#ffffff',
@@ -31,37 +35,69 @@ export const lightColors: Palette = {
   input: '#f0eee6',
 };
 
+/** Fridge screen palettes (it has its own toggle). */
 export const palettes: Record<ThemeMode, Palette> = { dark: darkColors, light: lightColors };
 
-/** Static palette for screens that don't support switching (the phone app). */
-export const colors = darkColors;
+/** The phone keeps green for action / have it in both themes. */
+export const phonePalettes: Record<ThemeMode, Palette> = {
+  dark: darkColors,
+  light: { ...lightColors, accent: '#1f6b42', onAccent: '#ffffff' },
+};
 
 /** Live palette. Defaults to dark, so components outside a provider look as before. */
 export const ThemeContext = createContext<Palette>(darkColors);
-export const useColors = () => useContext(ThemeContext);
+/** 1 at Default text size, 1.2 at Large. The fridge screen always uses 1. */
+export const TextScaleContext = createContext(1);
 
-export const ui = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+export const useColors = () => useContext(ThemeContext);
+export const useTextScale = () => useContext(TextScaleContext);
+
+/** A type size at the current text scale, in whole px. */
+export type Size = (px: number) => number;
+
+/**
+ * Styles that follow the theme and text size: `const useStyles = makeStyles((c, size) => ({...}))`
+ * at module level, then `const styles = useStyles()` in the component.
+ */
+type Styles = Record<string, ViewStyle | TextStyle | ImageStyle>;
+
+export function makeStyles<T extends Styles>(factory: (c: Palette, size: Size) => T & Styles) {
+  return function useStyles(): Readonly<T> {
+    const c = useColors();
+    const scale = useTextScale();
+    return useMemo(() => StyleSheet.create(factory(c, (px) => Math.round(px * scale))), [c, scale]);
+  };
+}
+
+/**
+ * Shared roles (design_principles.md type scale): text = Body 15/20, detail = Detail 15/20 in
+ * textSecondary (lines a person acts on), muted = Caption 13/18 (metadata only), h2 = Title M 17/22,
+ * label = Label 13/16 (badges).
+ */
+export const useUi = makeStyles((c, size) => ({
+  screen: { flex: 1, backgroundColor: c.bg },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
   card: {
-    backgroundColor: colors.card,
-    borderColor: colors.border,
+    backgroundColor: c.card,
+    borderColor: c.border,
     borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
+    borderRadius: 12,
+    padding: 16,
   },
-  h2: { color: colors.text, fontSize: 17, fontWeight: '600', marginTop: 4 },
-  text: { color: colors.text, fontSize: 15 },
-  muted: { color: colors.muted, fontSize: 13 },
+  h2: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '600', marginTop: 4 },
+  text: { color: c.text, fontSize: size(15), lineHeight: size(20) },
+  detail: { color: c.textSecondary, fontSize: size(15), lineHeight: size(20) },
+  muted: { color: c.muted, fontSize: size(13), lineHeight: size(18) },
+  label: { fontSize: size(13), lineHeight: size(16), fontWeight: '600' },
   input: {
-    backgroundColor: colors.input,
-    borderColor: colors.border,
+    backgroundColor: c.input,
+    borderColor: c.muted,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 8,
     padding: 12,
-    color: colors.text,
-    fontSize: 16,
+    color: c.text,
+    fontSize: size(16),
   },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  divider: { borderBottomColor: colors.border, borderBottomWidth: StyleSheet.hairlineWidth },
-});
+  divider: { borderBottomColor: c.border, borderBottomWidth: StyleSheet.hairlineWidth },
+}));

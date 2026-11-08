@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 
 from .database import REMNANT_UNITS, Database
+from .units import format_amount
 
 # A shelf drop within this much of a frozen item's weight is that item leaving, not a mystery.
 PICKUP_TOLERANCE_G, PICKUP_TOLERANCE_PCT = 50.0, 0.15
@@ -122,7 +123,17 @@ def apply_waste(db: Database, item_id: int, grams: float | None = None) -> int |
     return event_id
 
 
-UNDOABLE = {"consume", "waste", "store"}
+UNDOABLE = {"consume", "waste", "store", "adjust"}
+
+
+def apply_adjust(db: Database, item_id: int, grams: float, meta: dict | None = None) -> int | None:
+    """A person says there's more than recorded: the item grows, and the event can be undone."""
+    item = db.get_item(item_id)
+    if item is None or item["status"] != "active":
+        return None
+    db.update_item_grams(item_id, item["grams"] + grams)
+    return db.log_event("adjust", product_id=item["product_id"], item_id=item_id, grams_delta=grams,
+                        shelf=item["shelf"], meta=meta)
 
 
 def move_storage(db: Database, item_id: int, location: str, expiration_date: str | None) -> int | None:
@@ -142,7 +153,8 @@ def move_storage(db: Database, item_id: int, location: str, expiration_date: str
 def undo_events(db: Database, event_ids: list[int]) -> None:
     """Put back what consume/waste events took, as if they never happened:
     the grams return (reactivating emptied items) and the events are deleted,
-    so usage rates don't change either. A storage move goes back to its old place and date."""
+    so usage rates don't change either. A storage move goes back to its old place and date;
+    an adjustment comes off again."""
     for event_id in event_ids:
         event = db.get_event(event_id)
         if event is None or event["event_type"] not in UNDOABLE or event["item_id"] is None:
@@ -184,3 +196,39 @@ def apply_needs_review(
         "needs_review", product_id=product_id, item_id=item_id,
         grams_delta=0, shelf=shelf, resolved=False, meta=meta,
     )
+
+
+def _amount(product, grams: float) -> str:
+    """'400 g chicken breast', '2 eggs', '1 serving of Chili leftovers'."""
+    amount = format_amount(grams, product["unit"], product["grams_per_unit"], product["name"])
+    if product["recipe_id"] is not None:
+        return f"{amount} of {product['name']}"
+    return amount if product["unit"] == "count" else f"{amount} {product['name'].lower()}"
+
+
+def undo_summary(db: Database, events: list) -> str | None:
+    """What undoing these events does, in words: 'puts back 400 g chicken breast, 30 g butter and
+    removes 3 leftover servings'. None when they changed no stock."""
+    back: dict[int, float] = {}
+    removed: dict[int, float] = {}
+    for e in events:
+        if e["product_id"] is None:
+            continue
+        if e["event_type"] in ("consume", "waste"):
+            back[e["product_id"]] = back.get(e["product_id"], 0.0) - e["grams_delta"]
+        elif e["event_type"] in ("add", "adjust"):
+            removed[e["product_id"]] = removed.get(e["product_id"], 0.0) + e["grams_delta"]
+    parts = []
+    if back:
+        parts.append("puts back " + ", ".join(_amount(db.get_product(p), g) for p, g in back.items()))
+    if removed:
+        words = []
+        for p, g in removed.items():
+            product = db.get_product(p)
+            if product["recipe_id"] is not None:
+                n = round(g / product["grams_per_unit"])
+                words.append("1 leftover serving" if n == 1 else f"{n} leftover servings")
+            else:
+                words.append(_amount(product, g))
+        parts.append("removes " + ", ".join(words))
+    return " and ".join(parts) or None
