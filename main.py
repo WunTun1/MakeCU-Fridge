@@ -39,6 +39,17 @@ def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
     return shelf / num_shelves, (shelf + 1) / num_shelves
 
 
+# A changed patch smaller than this share of the frame isn't a food someone put in.
+MIN_FOOD_FRACTION = 0.01
+
+
+def _band_box(band: tuple[float, float], shape) -> tuple[int, int, int, int]:
+    """The shelf's whole slice of the frame, as an x, y, w, h box."""
+    h, w = shape[:2]
+    y0, y1 = int(band[0] * h), int(band[1] * h)
+    return 0, y0, w, max(y1 - y0, 1)
+
+
 def _in_band(bbox, frame_h: int, band: tuple[float, float]) -> bool:
     _, y, _, h = bbox
     center = (y + h / 2) / frame_h
@@ -109,6 +120,11 @@ def _handle_trip(
                 inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": d.note, "grams": d.grams})
         elif d.kind == "add":
             box = d.region.bbox if d.region and d.region.bbox else None
+            if box and box[2] * box[3] < MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]:
+                # Too small to be the food: a reflection or a speck, not what was put in. Show
+                # Gemini the whole shelf instead of a sliver.
+                log.info("Changed patch too small (%dx%d); sending the whole shelf", box[2], box[3])
+                box = _band_box(band, after_frame.shape)
             region_crop = crop(after_frame, box) if box else after_frame
             view.gemini_sending(box)
             # Every snapshot is kept (data/snapshots), with what came of it, for the live camera page.
@@ -146,12 +162,24 @@ def _handle_trip(
 LOOP_INTERVAL_S = 0.1  # ~10 fps; a remote Pi camera is fetched over HTTP each tick
 
 
+# A trip that moved the scale less than this changed nothing on it: the hand tracker can lose a
+# hand for a moment while it's still holding the food.
+TRIP_MIN_GRAMS = 15.0
+
+
 def _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=None):
     """Weigh + photograph, reconcile every shelf against the reference, and
-    return the new reference for the next trip."""
+    return the new reference for the next trip.
+
+    When no shelf's weight moved, the before photo is kept: if the hand tracker lost a hand
+    mid-placement, the food is in this photo but not yet on the scale, and taking it as the new
+    before photo would hide that food from the real trip a moment later."""
     new_weights = scale.weigh_all()
     if after_frame is None:
         after_frame = cam.read_frame()
+    moved = any(abs(new_weights.get(s, w) - w) >= TRIP_MIN_GRAMS for s, w in reference_weights.items())
+    if not moved:
+        return reference_frame, reference_weights
     for shelf, before_w in reference_weights.items():
         _handle_trip(
             db, shelf, scale.num_shelves, reference_frame, after_frame, before_w, new_weights.get(shelf, before_w)
@@ -164,6 +192,24 @@ def _weights_text(scale) -> str:
 
 
 QUIET_FRAMES = 5  # recent hand-free frames, median-combined into the "before"/"after" photos
+# When the door switch reports closed, the door has already been swinging shut (darkening the view,
+# its edge crossing the picture) for about a second. The door-close check uses the steady view from
+# before that, and never a frame much darker than the scene it's compared with.
+CLOSE_GUARD_S = 1.5
+DARKER_THAN_REFERENCE = 0.7
+
+
+def _open_view(history, reference_frame, now: float):
+    """The steady view of the open fridge for the door-close check, from `history` (time, frame)
+    pairs of hand-free frames: the last few from before the door began to close. None if there
+    are none, so the check is skipped rather than run against a half-dark picture."""
+    import numpy as np
+
+    from vision.change import steady_frame
+
+    floor = DARKER_THAN_REFERENCE * float(np.mean(reference_frame))
+    usable = [f for t, f in history if t <= now - CLOSE_GUARD_S and float(np.mean(f)) >= floor]
+    return steady_frame(usable[-QUIET_FRAMES:]) if usable else None
 
 
 def run_fridge_loop(stop_event: threading.Event) -> None:
@@ -186,6 +232,7 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
     with make_camera() as cam:
         reference_frame = reference_weights = None
         quiet: deque = deque(maxlen=QUIET_FRAMES)  # hand-free frames since the last time someone was in view
+        history: deque = deque(maxlen=60)  # (time, frame) for the same frames, ~6 s, for the door-close check
         door_was_open = False
         log.info("Fridge loop started (scale: %s, camera: %s, hands: %s)",
                  scale.source, type(cam).__name__, trip_detector.method)
@@ -198,6 +245,7 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
                 if door_open and not door_was_open:
                     trip_detector.on_door_open()
                     quiet.clear()
+                    history.clear()
                     reference_frame = None  # taken once the scene is steady (below)
                     reference_weights = scale.snapshot()
                     status = "Door opened - learning the scene"
@@ -206,8 +254,10 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
                     signal = trip_detector.process_frame(frame)
                     if signal["hand_present"] or trip_detector.motion_boxes:
                         quiet.clear()
+                        history.clear()
                     else:
                         quiet.append(frame)
+                        history.append((time.monotonic(), frame))
                     if reference_frame is None and len(quiet) == QUIET_FRAMES:
                         reference_frame = steady_frame(list(quiet))
                     status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
@@ -225,12 +275,16 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
 
                 elif door_was_open and reference_frame is not None:
                     # Door just closed: final weight check. The camera is inside a now-dark
-                    # fridge, so compare against the last steady view from while it was open.
-                    if quiet:
-                        _measure_trip(db, cam, scale, reference_frame, reference_weights,
-                                      after_frame=steady_frame(list(quiet)))
+                    # fridge, so compare against the last steady view from before it began closing.
+                    after = _open_view(history, reference_frame, time.monotonic())
+                    if after is not None:
+                        _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=after)
+                    else:
+                        log.info("Door closed with no clear view since the last check; weight change left for review")
+                        _measure_trip(db, cam, scale, reference_frame, reference_weights, after_frame=reference_frame)
                     reference_frame = reference_weights = None
                     quiet.clear()
+                    history.clear()
                     status = "Door closed - final check done"
                 else:
                     status = "Door closed"
