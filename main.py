@@ -95,6 +95,25 @@ def _which_was_taken(db, items, info: dict, grams: float):
     return None
 
 
+SHOW_MIN_FRACTION = 0.005  # the live page outlines changed spots at least this share of the picture
+
+
+def _show_change(before_frame, after_frame) -> None:
+    """For the live camera page only: outline where the before and after photos differ, and flash
+    the picture green while Gemini is asked. Nothing here feeds the inventory or Gemini, and a
+    failure only means no outline."""
+    try:
+        from vision.change import detect_changes
+        from vision.debug import view
+
+        floor = SHOW_MIN_FRACTION * after_frame.shape[0] * after_frame.shape[1]
+        boxes = [r.bbox for r in detect_changes(before_frame, after_frame) if r.area >= floor]
+        view.changes(boxes)
+        view.gemini_sending(max(boxes, key=lambda b: b[2] * b[3]) if boxes else None)
+    except Exception:
+        log.debug("Couldn't draw the change on the live page", exc_info=True)
+
+
 def handle_change(db, shelf: int, before_frame, after_frame, grams_before: float, grams_after: float) -> None:
     """The scale says something was put in or taken out; the two whole photos and Gemini say what."""
     from intelligence.expiry import resolve_expiration
@@ -109,6 +128,7 @@ def handle_change(db, shelf: int, before_frame, after_frame, grams_before: float
     # The camera page keeps the photo that shows the item: after for put in, before for taken out.
     photo = snapshots.save(after_frame if delta > 0 else before_frame, grams=delta)
     log.info("Shelf %d: %+.0f g, asking what changed (%s)", shelf, delta, photo.name)
+    _show_change(before_frame, after_frame)
     if identify_items_enabled():
         info = identify_change(before_frame, after_frame, delta, names)
     else:

@@ -4,9 +4,11 @@ The fridge loop reports into the shared `view`; the backend serves the latest
 annotated frame at GET /api/vision/frame.jpg, and the simulated fridge's
 control page shows it.
 
-  orange  you — person outline + hand skeleton (MediaPipe), or motion boxes
-  cyan    what changed after the hand left (the item put in / taken out)
-  green   the picture sent to Gemini, then Gemini's answer
+  orange  you: person outline + hand skeleton (MediaPipe), or motion boxes (no longer drawn by the
+          scale-triggered loop)
+  cyan    where the before and after photos differ, after the scale settled on a change
+  green   the whole picture while Gemini is asked, then the biggest change in green (sure) or
+          yellow (not sure)
 """
 from __future__ import annotations
 

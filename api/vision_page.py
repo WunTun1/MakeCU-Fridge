@@ -34,7 +34,7 @@ VISION_PAGE = """<!doctype html>
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--gap); padding: var(--gap); min-height: 0; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); min-height: 0; }
 
-  .feed { display: grid; grid-template-rows: minmax(0, 1fr); padding: 12px; }
+  .feed { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; padding: 12px; }
   .screen { position: relative; min-height: 0; background: #0d0d0d; border-radius: 10px; overflow: hidden;
             display: grid; place-items: center; }
   .screen img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -96,6 +96,11 @@ VISION_PAGE = """<!doctype html>
     <div class="screen">
       <img id="feed" alt="Live camera">
       <div class="waiting" id="waiting">No camera</div>
+    </div>
+    <div class="legend">
+      <span><i style="background:#00dcff"></i>What changed</span>
+      <span><i style="background:#3cdc50"></i>Asking Gemini, then sure</span>
+      <span><i style="background:#ffd200"></i>Not sure</span>
     </div>
   </section>
   <section class="card photos">
@@ -174,7 +179,13 @@ VISION_PAGE = """<!doctype html>
     try {
       const list = await (await fetch('/api/vision/snapshots')).json();
       const fresh = newest !== null && list.length && list[0].name !== newest;
-      if (fresh) { $('toast').classList.add('on'); setTimeout(() => $('toast').classList.remove('on'), 2200); }
+      if (fresh) {
+        // The weight change, and what it was once Gemini has said.
+        const g = list[0].grams, d = describe(list[0]);
+        $('toast').textContent = (g != null ? (g > 0 ? '+' : '') + Math.round(g) + ' g' : 'Changed') +
+          (list[0].status === 'pending' ? '' : ' · ' + cap(d.name));
+        $('toast').classList.add('on'); setTimeout(() => $('toast').classList.remove('on'), 3500);
+      }
       newest = list.length ? list[0].name : '';
       $('count').textContent = list.length ? list.length : '';
       $('clear').disabled = !list.length;
