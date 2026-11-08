@@ -62,7 +62,7 @@ def _item_at(db, shelf: int, region, frame, exclude: set[int]) -> int | None:
     return min(inside, key=lambda i: (i["position_x"] - cx) ** 2 + (i["position_y"] - cy) ** 2)["id"]
 
 
-def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int]) -> int | None:
+def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int], after_frame=None) -> int | None:
     """Which item was where `region` is, in the before photo: one whose saved spot is inside it,
     else the one Gemini picks from the shelf's items, else the only one there could be."""
     from vision.camera import crop
@@ -76,7 +76,7 @@ def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int]) -> 
         return spot
     if identify_items_enabled():
         names = [db.get_product(i["product_id"])["name"] for i in candidates]
-        picked = which_item(crop(before_frame, region.bbox), before_frame, names)
+        picked = which_item(crop(before_frame, region.bbox), before_frame, names, after=after_frame, box=region.bbox)
         if picked is not None:
             return candidates[picked]["id"]
     return candidates[0]["id"] if len(candidates) == 1 else None
@@ -146,7 +146,7 @@ def _handle_trip(
     result.new_regions = ins
     for r in outs:
         photo = snapshots.save(crop(before_frame, r.bbox), grams=None)
-        item_id = _what_was_there(db, shelf, r, before_frame, accounted)
+        item_id = _what_was_there(db, shelf, r, before_frame, accounted, after_frame)
         if item_id is None:
             snapshots.record_removed(photo, None)
             inv_events.apply_needs_review(db, shelf=shelf, meta={"reason": "taken out, not sure what",
@@ -191,7 +191,7 @@ def _handle_trip(
             photo = snapshots.save(region_crop, grams=d.grams)
             log.info("Snapshot of the new item: %s", photo)
             if identify_items_enabled():
-                info = identify_item(region_crop, after_frame, d.grams)
+                info = identify_item(region_crop, after_frame, d.grams, before=before_frame, box=box)
             else:
                 # Testing without AI: the snapshot shows what Gemini would get, and the
                 # person names the item in the phone app instead.

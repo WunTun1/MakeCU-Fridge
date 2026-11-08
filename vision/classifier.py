@@ -26,7 +26,9 @@ LOW_CONFIDENCE_THRESHOLD = 0.6
 
 SYSTEM_PROMPT = (
     "You identify grocery items from a fridge camera for an inventory system. "
-    "Look at the cropped item photo (and the full shelf photo for context). "
+    "You get a cropped photo of where something was just put in, and the whole shelf before and "
+    "after, with that spot outlined in green. Name the item that is in the outlined spot after but "
+    "was not there before; ignore everything that is in both photos. "
     "Respond with ONLY compact JSON: "
     '{"item_name": str, "category": "produce|dairy|meat|seafood|leftovers|drink|packaged|other", '
     '"visible_expiration_date": "YYYY-MM-DD" or null, "days_until_expired": int or null, '
@@ -37,6 +39,16 @@ SYSTEM_PROMPT = (
     "null if you can't tell. If you aren't confident what the item is, say so with a low confidence score "
     "rather than guessing a specific brand."
 )
+
+
+def _outlined(frame: np.ndarray, box: tuple[int, int, int, int] | None) -> np.ndarray:
+    """A copy of the whole photo with the spot outlined in green, so the model knows where to look."""
+    if box is None:
+        return frame
+    x, y, w, h = box
+    out = frame.copy()
+    cv2.rectangle(out, (x, y), (x + w, y + h), (60, 220, 80), max(2, frame.shape[1] // 320))
+    return out
 
 
 def _encode_jpeg(frame: np.ndarray) -> bytes:
@@ -50,6 +62,8 @@ def identify_item(
     crop: np.ndarray,
     shelf_context: np.ndarray | None,
     measured_grams: float,
+    before: np.ndarray | None = None,
+    box: tuple[int, int, int, int] | None = None,
 ) -> dict:
     """Returns {"item_name", "category", "visible_expiration_date",
     "days_until_expired", "confidence", "needs_confirmation"}. Falls back to an
@@ -66,9 +80,12 @@ def identify_item(
         + "Cropped item photo:",
         types.Part.from_bytes(data=_encode_jpeg(crop), mime_type="image/jpeg"),
     ]
+    if before is not None:
+        parts.append("Whole shelf BEFORE it was put in (the spot outlined):")
+        parts.append(types.Part.from_bytes(data=_encode_jpeg(_outlined(before, box)), mime_type="image/jpeg"))
     if shelf_context is not None:
-        parts.append("Full shelf photo for context:")
-        parts.append(types.Part.from_bytes(data=_encode_jpeg(shelf_context), mime_type="image/jpeg"))
+        parts.append("Whole shelf AFTER (the spot outlined):")
+        parts.append(types.Part.from_bytes(data=_encode_jpeg(_outlined(shelf_context, box)), mime_type="image/jpeg"))
 
     try:
         response = client.models.generate_content(
@@ -94,14 +111,21 @@ def identify_item(
 
 
 WHICH_PROMPT = (
-    "Something was just taken out of a fridge. The first photo is a crop of where it sat, from "
-    "before it was taken; the second is the whole shelf before. Which of the listed items is it? "
+    "Something was just taken out of a fridge. You get a crop of where it sat, from before it was "
+    "taken, and the whole shelf before and after with that spot outlined in green: the item is in the "
+    "spot before and gone after. Which of the listed items is it? "
     'Respond with ONLY compact JSON: {"index": int or null, "confidence": 0-1}. index is the '
     "item's number in the list; null if none of them fits."
 )
 
 
-def which_item(crop: np.ndarray, shelf_context: np.ndarray | None, names: list[str]) -> int | None:
+def which_item(
+    crop: np.ndarray,
+    shelf_context: np.ndarray | None,
+    names: list[str],
+    after: np.ndarray | None = None,
+    box: tuple[int, int, int, int] | None = None,
+) -> int | None:
     """Which of `names` the crop shows (an index into it), or None if Gemini is off, unsure, or
     sees none of them."""
     client = make_client()
@@ -111,7 +135,11 @@ def which_item(crop: np.ndarray, shelf_context: np.ndarray | None, names: list[s
     parts = [f"Items on the shelf:\n{listing}\nCrop of where it was:",
              types.Part.from_bytes(data=_encode_jpeg(crop), mime_type="image/jpeg")]
     if shelf_context is not None:
-        parts += ["Whole shelf, before:", types.Part.from_bytes(data=_encode_jpeg(shelf_context), mime_type="image/jpeg")]
+        parts += ["Whole shelf BEFORE (the spot outlined):",
+                  types.Part.from_bytes(data=_encode_jpeg(_outlined(shelf_context, box)), mime_type="image/jpeg")]
+    if after is not None:
+        parts += ["Whole shelf AFTER (the spot outlined):",
+                  types.Part.from_bytes(data=_encode_jpeg(_outlined(after, box)), mime_type="image/jpeg")]
     try:
         response = client.models.generate_content(
             model=model_name(), contents=parts,
