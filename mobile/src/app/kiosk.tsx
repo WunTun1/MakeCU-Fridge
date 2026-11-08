@@ -187,7 +187,7 @@ function HeadsUp({
     <View style={[styles.panel, { padding: grid }]}>
       <Text style={styles.section}>Heads up</Text>
       {top.length === 0 ? (
-        <Text style={styles.muted}>Nothing to worry about.</Text>
+        <Text style={styles.muted}>All good</Text>
       ) : (
         top.map((line) => (
           <View key={line.key} style={styles.alertRow}>
@@ -364,9 +364,7 @@ function RecipeIdeas({
       </View>
       {updating && <UpdatingBar />}
       {recipes.length === 0 && !updating && (
-        <Text style={styles.muted}>
-          Ideas show up once there&apos;s food in the fridge.
-        </Text>
+        <Text style={styles.muted}>Empty</Text>
       )}
       {recipes.map((r) => (
         <View
@@ -391,11 +389,11 @@ function RecipeIdeas({
                 Uses up {r.uses_expiring.join(", ")}
               </Text>
             ) : null}
-            <Text style={styles.recipeNote} numberOfLines={1}>
-              {r.missing.length === 0
-                ? "You have everything"
-                : `Need ${r.missing.join(", ")}`}
-            </Text>
+            {r.missing.length > 0 && (
+              <Text style={styles.recipeNote} numberOfLines={1}>
+                Need {r.missing.join(", ")}
+              </Text>
+            )}
           </View>
         </View>
       ))}
@@ -455,13 +453,6 @@ function Shelf({
     <View style={[styles.shelf, { padding: grid, gap: grid * 0.75 }]}>
       <View style={styles.shelfHeader}>
         <Text style={styles.section}>{title}</Text>
-        <Text style={styles.shelfCount}>
-          {items.length === 0
-            ? ""
-            : items.length === 1
-              ? "1 item"
-              : `${items.length} items, soonest to go bad first`}
-        </Text>
       </View>
       <View
         style={{
@@ -543,7 +534,7 @@ function groupRows(ranked: InventoryEntry[]): Row[] {
     {
       key: "rest",
       title: "Everything else",
-      empty: "Nothing else at the moment.",
+      empty: "Empty",
       items: ranked.filter((item) => !onShelf(item)),
     },
   ];
@@ -580,7 +571,6 @@ const makeStyles = (colors: Palette) =>
       letterSpacing: 1,
       textTransform: "uppercase",
     },
-    shelfCount: { color: colors.muted, fontSize: 13 },
     emptyShelf: { flex: 1, alignItems: "center", justifyContent: "center" },
     muted: { color: colors.muted, fontSize: 14 },
     panel: {

@@ -34,10 +34,10 @@ VISION_PAGE = """<!doctype html>
   main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--gap); padding: var(--gap); min-height: 0; }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); min-height: 0; }
 
-  .feed { display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 12px; padding: 12px; }
+  .feed { display: grid; grid-template-rows: minmax(0, 1fr); padding: 12px; }
   .screen { position: relative; min-height: 0; background: #0d0d0d; border-radius: 10px; overflow: hidden;
             display: grid; place-items: center; }
-  .screen img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .screen img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
   .screen .waiting { position: absolute; inset: 0; display: grid; place-items: center; color: #bdbdbd;
                      background: #0d0d0d; font-size: 15px; text-align: center; padding: 24px; }
   .legend { display: flex; gap: 18px; flex-wrap: wrap; color: var(--soft); font-size: 13px; padding: 0 4px; }
@@ -96,11 +96,6 @@ VISION_PAGE = """<!doctype html>
     <div class="screen">
       <img id="feed" alt="Live camera">
       <div class="waiting" id="waiting">No camera</div>
-    </div>
-    <div class="legend">
-      <span><i style="background:#ff8c00"></i>Person and hands</span>
-      <span><i style="background:#00dcff"></i>What changed</span>
-      <span><i style="background:#3cdc50"></i>Photo taken</span>
     </div>
   </section>
   <section class="card photos">
