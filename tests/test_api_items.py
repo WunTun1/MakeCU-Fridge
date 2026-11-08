@@ -121,3 +121,15 @@ def test_the_web_page_is_rechecked_every_load_but_bundles_can_be_cached(client, 
     bundle = client.get("/_expo/static/js/entry-abc123.js")
     assert bundle.status_code == 200 and "cache-control" not in bundle.headers
     assert client.get("/index.html").headers["cache-control"] == "no-cache"
+
+
+def test_adding_a_food_the_restock_plan_lists_makes_it_yours(client):
+    from intelligence import grocery_list
+
+    server = pytest.importorskip("api.server")
+    db = server.db
+    norm = grocery_list.normalize("Eggs")
+    plan_id = db.add_grocery_entry("Eggs", norm, "plan", trip_date=db.get_setting(grocery_list.TRIP_KEY))
+    own_id, new = grocery_list.add_entry(db, "Eggs", "manual")
+    assert new and own_id != plan_id
+    assert db.get_grocery_entry(own_id)["source"] == "manual"

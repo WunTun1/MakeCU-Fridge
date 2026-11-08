@@ -1,246 +1,375 @@
-import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import FontAwesome from "@expo/vector-icons/FontAwesome";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 
-import { Button } from '@/components/Button';
-import { Segmented } from '@/components/Segmented';
-import { useSnackbar } from '@/components/Snackbar';
-import { ErrorCard } from '@/components/States';
-import { formatAmount } from '@/lib/amount';
-import { api, type GroceryEntry, type GroceryList, type Horizon, type UseFirst } from '@/lib/api';
-import { likelyWasted } from '@/lib/expiry';
-import { makeStyles, useColors, useUi } from '@/lib/theme';
-import { sentenceCase, tripText, whenWord } from '@/lib/time';
-import { useAddToGrocery } from '@/lib/useAddToGrocery';
-import { useApi } from '@/lib/useApi';
+import { useSnackbar } from "@/components/Snackbar";
+import { ErrorCard } from "@/components/States";
+import { formatAmount } from "@/lib/amount";
+import {
+  api,
+  type GroceryEntry,
+  type GroceryList,
+  type InventoryEntry,
+} from "@/lib/api";
+import { makeStyles, useColors, useUi } from "@/lib/theme";
+import { capitalize, sentenceCase, whenWord } from "@/lib/time";
+import { useApi } from "@/lib/useApi";
 
-const HORIZONS: { value: Horizon; label: string }[] = [
-  { value: null, label: 'Auto' },
-  { value: 1, label: 'Tomorrow' },
-  { value: 3, label: 'In 3 days' },
-  { value: 7, label: 'In a week' },
-];
+/** "Running low": runs out within this many days, or this little of the package left. */
+const LOW_DAYS = 4;
+const LOW_FRACTION = 0.25;
 
-const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+const sameName = (a: string, b: string) =>
+  a.trim().toLowerCase() === b.trim().toLowerCase();
 
-/** Why it's on the list, in words: "Runs out Monday · You use about 250 ml a day". */
-function reasonFor(entry: GroceryEntry): string {
-  const p = entry.plan;
-  const parts = [entry.source === 'manual' ? 'Added by you' : entry.source === 'recipe' ? `For ${entry.recipe_name ?? 'a recipe'}` : ''];
-  if (p) {
-    const rate = formatAmount(p.rate_g_per_day, entry.unit, entry.grams_per_unit, entry.name).replace(/^about /, '');
-    parts.push(
-      p.on_hand_g <= 0 || p.runs_out_in_days == null ? "You're out" : `Runs out ${whenWord(p.runs_out_in_days)}`,
-      `You use about ${rate} a day`,
-    );
-  }
-  return parts.filter(Boolean).join(' · ');
-}
-
-/** How much a count is bought in: "12" eggs; anything else as it's measured, "700 g", "1 L". */
-function buyAmount(grams: number, unit: GroceryEntry['unit'], gramsPerUnit: number, name: string): string {
-  return unit === 'count' ? String(Math.round(grams / gramsPerUnit)) : formatAmount(grams, unit, gramsPerUnit, name);
-}
-
-/** "Apples · 6", "Milk · 2 L": the amount you gave, else what the plan wants to buy. */
+/** "Apples · 6", "Milk · 2 L": the amount given, else what the restock plan would buy. */
 function titleFor(entry: GroceryEntry): string {
   const p = entry.plan;
-  const amount = entry.amount ?? (p && buyAmount(p.buy_grams, entry.unit, entry.grams_per_unit, entry.name));
-  return amount ? `${sentenceCase(entry.name)} · ${amount}` : sentenceCase(entry.name);
+  const amount =
+    entry.amount ??
+    (p &&
+      (entry.unit === "count"
+        ? String(Math.round(p.buy_grams / entry.grams_per_unit))
+        : formatAmount(
+            p.buy_grams,
+            entry.unit,
+            entry.grams_per_unit,
+            entry.name,
+          )));
+  return amount
+    ? `${sentenceCase(entry.name)} · ${amount}`
+    : sentenceCase(entry.name);
 }
 
+/** Food you're about to run out of, soonest first (leftovers and the freezer aside). */
+function runningLow(inventory: InventoryEntry[]): InventoryEntry[] {
+  return inventory
+    .filter((i) => !i.leftovers && i.location !== "freezer")
+    .filter(
+      (i) =>
+        (i.days_left != null && i.days_left <= LOW_DAYS) ||
+        (i.fill_fraction != null && i.fill_fraction <= LOW_FRACTION),
+    )
+    .sort(
+      (a, b) =>
+        (a.days_left ?? Infinity) - (b.days_left ?? Infinity) ||
+        a.name.localeCompare(b.name),
+    );
+}
+
+type Section = {
+  key: string;
+  title: string;
+  recipeId: number | null;
+  items: GroceryEntry[];
+};
+
+/** The list by where it came from: each recipe, then what you added. Checked items go to "In the cart". */
+function sections(items: GroceryEntry[]): Section[] {
+  const out: Section[] = [];
+  for (const e of items) {
+    if (e.checked || e.source === "plan") continue; // the restock plan shows as "Running low" above
+    const key =
+      e.source === "recipe"
+        ? `recipe-${e.recipe_id ?? e.recipe_name}`
+        : "manual";
+    let s = out.find((x) => x.key === key);
+    if (!s) {
+      s =
+        e.source === "recipe"
+          ? {
+              key,
+              title: `For ${e.recipe_name ?? "a recipe"}`,
+              recipeId: e.recipe_id,
+              items: [],
+            }
+          : { key, title: "Added by you", recipeId: null, items: [] };
+      out.push(s);
+    }
+    s.items.push(e);
+  }
+  // Recipes first (in the order they were added), what you typed last.
+  return [
+    ...out.filter((s) => s.key !== "manual"),
+    ...out.filter((s) => s.key === "manual"),
+  ];
+}
+
+/**
+ * Grocery: a row of what you're about to run out of (add any with one tap), then your list —
+ * what recipes need, grouped by recipe, and what you added — with what's in the cart at the end.
+ */
 export default function Grocery() {
   const [list, setList] = useState<GroceryList | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const unlock = useApi(api.unlock);
+  const summary = useApi(api.summary, 5000);
   const showSnack = useSnackbar();
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
 
   const run = useCallback(async (request: () => Promise<GroceryList>) => {
-    setBusy(true);
     try {
       setList(await request());
       setError(null);
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setBusy(false);
     }
   }, []);
-
   const reload = useCallback(() => {
     run(api.grocery);
   }, [run]);
   useFocusEffect(reload);
-  const addToGrocery = useAddToGrocery(reload);
 
   if (!list) {
     return (
       <View style={[ui.screen, ui.content]}>
-        {error ? <ErrorCard message={error} /> : <ActivityIndicator color={c.accent} style={{ marginTop: 48 }} />}
+        {error ? (
+          <ErrorCard message={error} />
+        ) : (
+          <ActivityIndicator color={c.accent} style={{ marginTop: 48 }} />
+        )}
       </View>
     );
   }
 
-  const setHorizon = (h: Horizon) => {
-    setList({ ...list, trip_in_days: h });
-    run(() => api.setHorizon(h));
-  };
+  const onList = (name: string) =>
+    list.items.some(
+      (i) => !i.checked && i.source !== "plan" && sameName(i.name, name),
+    ); // plan rows aren't shown
+  const add = (names: string[]) =>
+    run(() => api.addToGrocery({ names, source: "manual" }).then(api.grocery));
 
   const toggle = (entry: GroceryEntry) => {
-    setList({ ...list, items: list.items.map((i) => (i.id === entry.id ? { ...i, checked: !i.checked } : i)) });
-    api.checkGrocery(entry.id, !entry.checked).catch(() => run(api.grocery));
+    setList({
+      ...list,
+      items: list.items.map((i) =>
+        i.id === entry.id ? { ...i, checked: !i.checked } : i,
+      ),
+    });
+    api.checkGrocery(entry.id, !entry.checked).catch(reload);
   };
 
   const remove = (entry: GroceryEntry) => {
     setList({ ...list, items: list.items.filter((i) => i.id !== entry.id) });
-    const name = sentenceCase(entry.name);
     api.hideGrocery(entry.id, true).then(
       () =>
         showSnack({
-          message: entry.source === 'plan' ? `Removed ${name} for this trip` : `Removed ${name}`,
-          action: { label: 'Undo', onPress: () => run(() => api.hideGrocery(entry.id, false).then(api.grocery)) },
+          message: `Removed ${sentenceCase(entry.name)}`,
+          action: {
+            label: "Undo",
+            onPress: () =>
+              run(() => api.hideGrocery(entry.id, false).then(api.grocery)),
+          },
         }),
-      () => run(api.grocery),
+      reload,
     );
   };
 
-  const add = (names: string[], extra?: { recipe_id: number; recipe_name: string }) =>
-    run(() => api.addToGrocery({ names, source: extra ? 'recipe' : 'manual', ...extra }).then(api.grocery));
-
-  const open = list.items.filter((i) => !i.checked);
+  const low = runningLow(summary.data?.inventory ?? []);
+  const groups = sections(list.items);
   const inCart = list.items.filter((i) => i.checked);
+  const empty = groups.length === 0 && inCart.length === 0;
 
   return (
-    <ScrollView style={ui.screen} contentContainerStyle={ui.content} keyboardShouldPersistTaps="handled">
-      <View style={{ gap: 8 }}>
-        <Text style={styles.fieldLabel}>Next shopping trip</Text>
-        <Segmented label="Next shopping trip" options={HORIZONS} value={list.trip_in_days} onChange={setHorizon} />
-        <View style={styles.progressTrack}>{busy && <View style={styles.progress} />}</View>
-        <Text style={ui.text}>{tripText(list.trip_date, list.trip_days_away, list.covers_until)}</Text>
-      </View>
+    <ScrollView
+      style={ui.screen}
+      contentContainerStyle={ui.content}
+      keyboardShouldPersistTaps="handled"
+    >
+      {low.length > 0 && (
+        <>
+          <View>
+            <Text style={ui.h2}>Running low</Text>
+            <Text style={ui.muted}>About to run out in your kitchen</Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.bleed}
+            contentContainerStyle={styles.carousel}
+          >
+            {low.map((item) => (
+              <LowCard
+                key={`${item.product_id}-${item.location}`}
+                item={item}
+                listed={onList(item.name)}
+                onAdd={() => add([item.name])}
+              />
+            ))}
+          </ScrollView>
+        </>
+      )}
 
       {error && <ErrorCard message={error} />}
 
-      {list.use_first.length > 0 && (
-        <View>
-          <Text style={ui.h2}>Use first</Text>
-          {list.use_first.map((u) => (
-            <UseFirstRow
-              key={u.product_id}
-              row={u}
-              onAdd={(amount) => addToGrocery(`${u.name} ${amount}`, `${amount} ${u.name.toLowerCase()}`)}
-            />
-          ))}
-        </View>
-      )}
-
-      <View style={[ui.card, { paddingVertical: 4 }, busy && { opacity: 0.6 }]}>
-        <AddRow onAdd={(name) => add([name])} />
-        {open.length === 0 && inCart.length === 0 && <Text style={[ui.detail, styles.row]}>Nothing to buy yet.</Text>}
-        {open.map((entry) => (
-          <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} onRemove={() => remove(entry)} />
-        ))}
+      <View style={styles.listHeader}>
+        <Text style={ui.h2}>Your list</Text>
         {inCart.length > 0 && (
-          <>
-            <View style={styles.cartHeader}>
-              <Text style={[ui.detail, { fontWeight: '600' }]}>In the cart ({inCart.length})</Text>
-              <Pressable onPress={() => run(() => api.clearCheckedGrocery().then(api.grocery))} hitSlop={8} style={styles.textButton}>
-                <Text style={styles.link}>Clear checked</Text>
-              </Pressable>
-            </View>
-            {inCart.map((entry) => (
-              <GroceryRow key={entry.id} entry={entry} onToggle={() => toggle(entry)} onRemove={() => remove(entry)} />
-            ))}
-          </>
+          <Pressable
+            onPress={() =>
+              run(() => api.clearCheckedGrocery().then(api.grocery))
+            }
+            hitSlop={8}
+            style={styles.textButton}
+          >
+            <Text style={styles.link}>Clear checked</Text>
+          </Pressable>
         )}
       </View>
 
-      {unlock.data && unlock.data.length > 0 && (
-        <>
-          <Text style={ui.h2}>One item away</Text>
-          <Text style={ui.detail}>Buying one of these completes recipes you&apos;d likely cook</Text>
-          {unlock.data.map((u) => {
-            const onList = u.buy.every((b) => list.items.some((i) => sameName(i.name, b)));
-            const label = u.buy.join(' and ');
-            return (
-              <View key={u.buy.join('+')} style={[ui.card, { gap: 8 }]}>
-                <Text style={[ui.text, { fontWeight: '700' }]}>{sentenceCase(label)}</Text>
-                <Text style={ui.detail}>
-                  Completes {u.unlocks} recipe{u.unlocks === 1 ? '' : 's'}: {u.examples.join(', ')}
-                </Text>
-                <View style={[ui.row, { gap: 16 }]}>
-                  <Button
-                    variant="outline"
-                    title={onList ? 'On your list' : `Add ${label} to list`}
-                    disabled={onList || busy}
-                    onPress={() => add(u.buy, { recipe_id: u.recipe_ids[0], recipe_name: u.examples[0] })}
-                  />
-                  {u.recipe_ids[0] != null && (
-                    <Pressable
-                      onPress={() => router.push({ pathname: '/recipe/[id]', params: { id: u.recipe_ids[0] } })}
-                      style={styles.textButton}
-                    >
-                      <Text style={styles.link}>See recipe</Text>
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-            );
-          })}
-        </>
+      <AddRow onAdd={(name) => add([name])} />
+
+      {empty && (
+        <Text style={ui.detail}>
+          Nothing to buy yet. On a recipe, tap the green button to add what it
+          needs — or type an item above.
+        </Text>
+      )}
+
+      {groups.map((g) => (
+        <View key={g.key} style={{ gap: 6 }}>
+          {g.recipeId != null ? (
+            <Pressable
+              onPress={() =>
+                router.push({
+                  pathname: "/recipe/[id]",
+                  params: { id: g.recipeId! },
+                })
+              }
+              accessibilityRole="link"
+              style={styles.groupTitle}
+            >
+              <Text style={[styles.groupText, { flex: 1 }]} numberOfLines={1}>
+                {g.title}
+              </Text>
+              <FontAwesome
+                name="chevron-right"
+                size={12}
+                color={c.textSecondary}
+              />
+            </Pressable>
+          ) : (
+            <Text style={[styles.groupText, styles.groupTitle]}>{g.title}</Text>
+          )}
+          <View style={[ui.card, { paddingVertical: 2 }]}>
+            {g.items.map((entry, i) => (
+              <GroceryRow
+                key={entry.id}
+                entry={entry}
+                last={i === g.items.length - 1}
+                onToggle={() => toggle(entry)}
+                onRemove={() => remove(entry)}
+              />
+            ))}
+          </View>
+        </View>
+      ))}
+
+      {inCart.length > 0 && (
+        <View style={{ gap: 6 }}>
+          <Text style={[styles.groupText, styles.groupTitle]}>
+            In the cart ({inCart.length})
+          </Text>
+          <View style={[ui.card, { paddingVertical: 2 }]}>
+            {inCart.map((entry, i) => (
+              <GroceryRow
+                key={entry.id}
+                entry={entry}
+                last={i === inCart.length - 1}
+                onToggle={() => toggle(entry)}
+                onRemove={() => remove(entry)}
+              />
+            ))}
+          </View>
+        </View>
       )}
     </ScrollView>
   );
 }
 
-/** "Chicken breast / About 413 g goes bad Monday", the same words as Home; "Add 700 g" if you need more anyway. */
-function UseFirstRow({ row, onAdd }: { row: UseFirst; onAdd: (amount: string) => void }) {
+/** One food you're about to run out of: when, how much is left, and Add. */
+function LowCard({
+  item,
+  listed,
+  onAdd,
+}: {
+  item: InventoryEntry;
+  listed: boolean;
+  onAdd: () => void;
+}) {
   const ui = useUi();
   const styles = useStyles();
-  const grams = row.restock_g;
-  const amount = grams != null ? buyAmount(grams, row.unit, row.grams_per_unit, row.name) : null;
-  const label = grams != null ? formatAmount(grams, row.unit, row.grams_per_unit, row.name) : null;
+  const c = useColors();
+  const when =
+    item.days_left != null && item.days_left <= LOW_DAYS
+      ? `Runs out ${whenWord(item.days_left)}`
+      : "Almost gone";
   return (
-    <View style={styles.useFirst}>
+    <View style={styles.low}>
+      <Text style={[ui.text, { fontWeight: "600" }]} numberOfLines={2}>
+        {item.name}
+      </Text>
+      <Text style={[styles.lowWhen, { color: c.warn }]} numberOfLines={1}>
+        {when}
+      </Text>
+      <Text style={ui.muted} numberOfLines={1}>
+        {capitalize(
+          formatAmount(item.grams, item.unit, item.grams_per_unit, item.name),
+        )}{" "}
+        left
+      </Text>
+      <View style={{ flex: 1 }} />
       <Pressable
-        onPress={() => router.push({ pathname: '/item/[id]', params: { id: row.product_id } })}
-        style={styles.useFirstText}
-        accessibilityRole="link"
+        onPress={onAdd}
+        disabled={listed}
+        accessibilityRole="button"
+        accessibilityLabel={
+          listed
+            ? `${item.name} is on your list`
+            : `Add ${item.name} to your list`
+        }
+        style={({ pressed }) => [
+          styles.lowButton,
+          listed && styles.lowListed,
+          pressed && { opacity: 0.8 },
+        ]}
       >
-        <Text style={ui.text}>{sentenceCase(row.name)}</Text>
-        <Text style={ui.detail}>
-          {likelyWasted(row)} goes bad {whenWord(row.expires_in_days)}
+        <FontAwesome
+          name={listed ? "check" : "plus"}
+          size={14}
+          color={listed ? c.good : "#ffffff"}
+        />
+        <Text style={[styles.lowButtonText, listed && { color: c.good }]}>
+          {listed ? "On list" : "Add"}
         </Text>
       </Pressable>
-      {amount && (
-        <Pressable onPress={() => onAdd(amount)} style={styles.textButton} accessibilityRole="button">
-          <Text style={styles.link}>Add {label}</Text>
-        </Pressable>
-      )}
     </View>
   );
 }
 
 function AddRow({ onAdd }: { onAdd: (name: string) => void }) {
-  const [text, setText] = useState('');
-  const ui = useUi();
+  const [text, setText] = useState("");
   const styles = useStyles();
   const c = useColors();
   const submit = () => {
     if (!text.trim()) return;
     onAdd(text.trim());
-    setText('');
+    setText("");
   };
   return (
-    <View style={[styles.row, ui.divider]}>
+    <View style={styles.addRow}>
       <TextInput
-        style={[ui.input, { flex: 1 }]}
-        placeholder="e.g. apples 6"
+        style={styles.addInput}
+        placeholder="Add an item, e.g. apples 6"
         placeholderTextColor={c.muted}
         value={text}
         onChangeText={setText}
@@ -248,16 +377,30 @@ function AddRow({ onAdd }: { onAdd: (name: string) => void }) {
         returnKeyType="done"
         accessibilityLabel="Add an item"
       />
-      <Pressable onPress={submit} style={styles.addButton} accessibilityRole="button" accessibilityLabel="Add to list">
-        <FontAwesome name="plus" size={20} color={c.onAccent} />
+      <Pressable
+        onPress={submit}
+        style={styles.addButton}
+        accessibilityRole="button"
+        accessibilityLabel="Add to list"
+      >
+        <FontAwesome name="plus" size={18} color="#ffffff" />
       </Pressable>
     </View>
   );
 }
 
-function GroceryRow({ entry, onToggle, onRemove }: { entry: GroceryEntry; onToggle: () => void; onRemove: () => void }) {
+function GroceryRow({
+  entry,
+  last,
+  onToggle,
+  onRemove,
+}: {
+  entry: GroceryEntry;
+  last: boolean;
+  onToggle: () => void;
+  onRemove: () => void;
+}) {
   const done = entry.checked;
-  const name = sentenceCase(entry.name);
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
@@ -266,50 +409,121 @@ function GroceryRow({ entry, onToggle, onRemove }: { entry: GroceryEntry; onTogg
       onPress={onToggle}
       role="checkbox"
       aria-checked={done}
-      style={[styles.row, done && { opacity: 0.6 }]}
+      style={[styles.row, !last && ui.divider, done && { opacity: 0.55 }]}
     >
-      <FontAwesome name={done ? 'check-square' : 'square-o'} size={24} color={done ? c.accent : c.textSecondary} />
-      <View style={{ flex: 1 }}>
-        <Text style={[ui.text, done && { textDecorationLine: 'line-through' }]}>{titleFor(entry)}</Text>
-        <Text style={ui.detail}>{reasonFor(entry)}</Text>
+      <View style={[styles.check, done && styles.checkDone]}>
+        {done && <FontAwesome name="check" size={13} color="#ffffff" />}
       </View>
+      <Text
+        style={[
+          ui.text,
+          { flex: 1 },
+          done && { textDecorationLine: "line-through" },
+        ]}
+      >
+        {titleFor(entry)}
+      </Text>
       <Pressable
         onPress={onRemove}
         style={styles.remove}
         accessibilityRole="button"
-        accessibilityLabel={`Remove ${name}`}
+        accessibilityLabel={`Remove ${sentenceCase(entry.name)}`}
       >
-        <FontAwesome name="close" size={20} color={c.textSecondary} />
+        <FontAwesome name="close" size={18} color={c.muted} />
       </Pressable>
     </Pressable>
   );
 }
 
 const useStyles = makeStyles((c, size) => ({
-  row: { flexDirection: 'row', alignItems: 'center', gap: 12, minHeight: 48, paddingVertical: 8 },
-  cartHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderTopColor: c.border,
-    borderTopWidth: 1,
-    marginTop: 4,
-    paddingTop: 4,
+  // The row runs to the screen's edges, while its first card lines up with the content.
+  bleed: { marginHorizontal: -16 },
+  carousel: { gap: 12, paddingHorizontal: 16 },
+  low: {
+    width: 156,
+    minHeight: size(20) * 2 + size(20) + size(18) + 70,
+    padding: 12,
+    gap: 4,
+    backgroundColor: c.card,
+    borderColor: c.border,
+    borderWidth: 1,
+    borderRadius: 14,
   },
-  fieldLabel: { color: c.text, fontSize: size(15), lineHeight: size(20), fontWeight: '600' },
-  remove: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
-  textButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
-  useFirst: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
-  useFirstText: { flex: 1, minHeight: 44, justifyContent: 'center' },
-  link: { color: c.accent, fontSize: size(15), fontWeight: '600' },
+  lowWhen: { fontSize: size(14), lineHeight: size(19), fontWeight: "600" },
+  lowButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minHeight: 36,
+    marginTop: 8,
+    borderRadius: 999,
+    backgroundColor: c.good,
+  },
+  lowListed: { backgroundColor: c.card, borderWidth: 1, borderColor: c.good },
+  lowButtonText: { color: "#ffffff", fontSize: size(14), fontWeight: "700" },
+  listHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  addRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  addInput: {
+    flex: 1,
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: c.input,
+    color: c.text,
+    fontSize: size(16),
+  },
   addButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 8,
-    backgroundColor: c.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: c.good,
+    alignItems: "center",
+    justifyContent: "center",
   },
-  progressTrack: { height: 2, overflow: 'hidden' },
-  progress: { height: 2, backgroundColor: c.accent },
+  groupTitle: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+    paddingHorizontal: 4,
+  },
+  groupText: {
+    color: c.textSecondary,
+    fontSize: size(13),
+    lineHeight: size(18),
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    minHeight: 48,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  check: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: c.muted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkDone: { backgroundColor: c.good, borderColor: c.good },
+  remove: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  textButton: { minHeight: 36, justifyContent: "center", paddingHorizontal: 4 },
+  link: { color: c.accent, fontSize: size(15), fontWeight: "600" },
 }));

@@ -139,7 +139,10 @@ def add_entry(
     norm = normalize(name)
     trip = db.get_setting(TRIP_KEY)
     rows = [e for e in db.grocery_entries() if e["norm"] == norm and _visible(e, trip)]
-    existing = next((e for e in rows if e["source"] != "plan"), rows[0] if rows else None)
+    # Adding a food yourself (or from a recipe) makes it your own row, even when the restock plan
+    # already lists it: the plan's row then steps aside (see grocery()). Only the plan reuses plan rows.
+    own = next((e for e in rows if e["source"] != "plan"), None)
+    existing = own if source != "plan" else (own or (rows[0] if rows else None))
     if existing:
         db.set_grocery_checked(existing["id"], False)
         if amount and existing["source"] != "plan":
