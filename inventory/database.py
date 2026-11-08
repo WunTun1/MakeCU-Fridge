@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS chat_turns (
     occurred_at TEXT NOT NULL,
     meal_ids TEXT NOT NULL,     -- json list: meals it logged (their tagged events go with them)
     event_ids TEXT NOT NULL,    -- json list: other inventory events (an add, a consume)
+    grocery_ids TEXT NOT NULL DEFAULT '[]',  -- json list: grocery rows it added
     undone INTEGER NOT NULL DEFAULT 0
 );
 
@@ -201,6 +202,9 @@ class Database:
                     "UPDATE products SET unit = ?, grams_per_unit = ? WHERE id = ?",
                     (unit, default_grams_per_unit(row["name"], unit), row["id"]),
                 )
+        turn_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(chat_turns)")}
+        if "grocery_ids" not in turn_columns:
+            self._conn.execute("ALTER TABLE chat_turns ADD COLUMN grocery_ids TEXT NOT NULL DEFAULT '[]'")
         self._finish_remnants_once()
 
     def _finish_remnants_once(self) -> None:
@@ -589,10 +593,10 @@ class Database:
         with self.cursor() as cur:
             cur.execute("DELETE FROM chat_memory")
 
-    def add_chat_turn(self, meal_ids: list[int], event_ids: list[int]) -> int:
+    def add_chat_turn(self, meal_ids: list[int], event_ids: list[int], grocery_ids: list[int] = ()) -> int:
         with self.cursor() as cur:
-            cur.execute("INSERT INTO chat_turns (occurred_at, meal_ids, event_ids) VALUES (?, ?, ?)",
-                        (now_iso(), json.dumps(meal_ids), json.dumps(event_ids)))
+            cur.execute("INSERT INTO chat_turns (occurred_at, meal_ids, event_ids, grocery_ids) VALUES (?, ?, ?, ?)",
+                        (now_iso(), json.dumps(meal_ids), json.dumps(event_ids), json.dumps(list(grocery_ids))))
             return cur.lastrowid
 
     def get_chat_turn(self, turn_id: int) -> Optional[sqlite3.Row]:
@@ -684,6 +688,10 @@ class Database:
                 (name, norm, source, recipe_id, recipe_name, trip_date, now_iso(), amount),
             )
             return cur.lastrowid
+
+    def delete_grocery_entry(self, entry_id: int) -> None:
+        with self.cursor() as cur:
+            cur.execute("DELETE FROM grocery_entries WHERE id = ?", (entry_id,))
 
     def set_grocery_checked(self, entry_id: int, checked: bool) -> None:
         with self.cursor() as cur:

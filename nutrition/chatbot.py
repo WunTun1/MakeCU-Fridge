@@ -16,13 +16,14 @@ import threading
 from gemini import make_client, model_name, types
 from inventory import events as inv_events
 from inventory.database import Database
-from intelligence import taste
+from intelligence import grocery_list, taste
 from intelligence.consumption import grams_on_hand
 from intelligence.fridge_view import chat_inventory, day_word, fact_block, inventory_entries, leftovers_line
 from nutrition.intake import eat_product, get_intake, log_meal_eaten, log_nutrition, protein_mode
 from nutrition.lookup import lookup_nutrition_usda
 from recipes.engine import RecipeEngine, card
-from recipes.ingredients import TREE_NUTS, allergen_found, allergen_hits
+from recipes.ingredients import (TREE_NUTS, allergen_found, allergen_hits, dislike_pattern, food_terms,
+                                 sentence_words)
 from recipes.store import CUISINES, get_store
 
 log = logging.getLogger("refridge.nutrition.chatbot")
@@ -30,6 +31,8 @@ log = logging.getLogger("refridge.nutrition.chatbot")
 MAX_TOOL_ROUNDS = 6
 MAX_CARDS = 4
 SAFE_CARDS = 3  # cards shown after an allergy block, from the same search without the allergen
+NEAR_CARDS = 3  # "without shopping" with nothing makeable: the best recipes needing one thing
+NEAR_POOL = 50
 # "40 g protein per serving" with nothing that high: look again this much lower and say so.
 PROTEIN_RELAX_G = 10
 # Words that say how you're asking, not what you want to eat (offline keyword mode).
@@ -38,7 +41,21 @@ OFFLINE_STOPWORDS = {
     "can", "could", "what", "with", "need", "more", "a", "an", "the", "for", "me", "to", "and", "or",
     "today", "tonight", "dinner", "lunch", "breakfast", "please", "high", "protein", "quick", "fast",
     "easy", "recipe", "recipes", "idea", "ideas", "of", "in", "my", "fridge", "have", "do", "is", "it",
+    "without", "shopping", "buying", "besides", "other", "than", "not", "no", "except", "under", "minutes",
 }
+# "besides salad", "other than pasta", "no soup": titles with that word are left out, in code.
+EXCLUDE = re.compile(r"\b(?:besides|other than|except|not|no|without)\s+(?:any\s+|the\s+|a\s+)?"
+                     r"([a-z][a-z'-]*)(?:\s+([a-z][a-z'-]*))?", re.I)
+NOT_A_FOOD = OFFLINE_STOPWORDS | {
+    "too", "much", "more", "longer", "thanks", "thank", "problem", "worries", "way", "matter", "sure", "so",
+    "please", "dishes", "dish", "this", "that", "one", "ones", "again", "spicy", "heavy", "meat", "and", "or",
+    "but", "longer", "worry", "need", "time", "hassle", "fuss", "cooking", "oven", "stove", "sweet",
+}
+WITHOUT_SHOPPING = re.compile(r"\b(?:without|no)\s+(?:shopping|buying|going to the store)\b|\bonly what i have\b"
+                              r"|\bwith what i have\b", re.I)
+GROCERY_ADD = re.compile(r"\badd\s+(.+?)\s+to\s+(?:my\s+|the\s+)?(?:grocery|shopping)\s+list\b", re.I)
+LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+", re.I)
+UNDER_MINUTES = re.compile(r"\b(?:under|less than|within)\s+(\d+)\s*min", re.I)
 
 # Eating is not cooking: these messages never take a recipe's ingredients out of the fridge.
 LEFTOVER_WORDS = re.compile(r"\bleft\s*-?\s*overs?\b", re.I)
@@ -58,11 +75,11 @@ SYSTEM_PROMPT = """You are ReFridge's assistant in the phone app. Keep replies s
 Write plain text only: no markdown, no asterisks or bold, no headings; for recipe steps use short lines \
 starting with "1.", "2.".
 
-The fridge: each message ends with "Fridge facts from the app". They are exact and current; use them \
-and never guess. For what to eat (tonight, supper, lunch, "what should I have"), name the leftovers \
-first, with their servings and the day they keep until. For what's going bad, list exactly the items in \
-the facts, all of them, with their day words, and nothing else. Call get_inventory for anything else. \
-Never mention the facts note itself.
+The fridge: the fridge facts note below is exact and current; use it and never guess. For what to eat \
+(tonight, supper, lunch, "what should I have"), name the leftovers first, with their servings and the day \
+they keep until. For what's going bad, name exactly the items in the note, all of them, with their day \
+words, in your own sentences, and nothing else. Call get_inventory for anything else. Never quote, copy \
+or mention the note itself.
 
 Recipes: ONLY suggest recipes returned by find_recipes; never invent a recipe, ingredient list, or \
 nutrition numbers. Turn the user's request into find_recipes arguments (e.g. "I want Italian" -> \
@@ -70,8 +87,14 @@ cuisine="italian"; "something with chicken, quick" -> query="chicken", max_minut
 -> high_protein=true). Supper, dinner and tonight searches return only dinner-sized main dishes. Recipe \
 cards are shown to the user automatically, so don't list every ingredient; say which one or two you'd \
 pick and why (uses something expiring, matches their goals, swaps they can make, what they'd need to \
-buy). Call get_recipe before walking through steps. If the user narrows things down ("no, something \
-lighter"), call find_recipes again with new arguments.
+buy). Name an ingredient only if it is in that recipe's have or buy list from find_recipes, and call a \
+recipe "the <title> card"; never say "on your screen". Call get_recipe before walking through steps. If \
+the user narrows things down ("no, something lighter"), call find_recipes again with new arguments.
+
+Grocery list: "add soy sauce and 6 lemons to my list" -> add_to_grocery. Its confirmation is written by \
+code; don't write your own. If the user asks for something no tool does, say which screen does it: \
+"Open Grocery and tap a row to check it off", "Open Profile to change your goals or allergies", "Open the \
+item from Home and tap Fix date".
 
 Meal prep: "meal prep", "batch" or "for the week" -> min_servings=4. A protein number ("40 g protein \
 per serving") -> min_protein_g=40. If a tool result has a "say" field, that sentence is already shown \
@@ -210,6 +233,29 @@ TOOLS = [
         },
     },
     {
+        "name": "add_to_grocery",
+        "description": "Adds things to the grocery list, the same as the Grocery screen's + button. Something "
+                        "already on the list isn't added twice.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "e.g. 'soy sauce', 'lemons'"},
+                            "amount": {"type": "number", "description": "How many or how much, if the user said."},
+                            "unit": {"type": "string", "description": "g, kg, ml, L, lb or oz; leave out for a count."},
+                        },
+                        "required": ["name"],
+                    },
+                },
+            },
+            "required": ["items"],
+        },
+    },
+    {
         "name": "update_item",
         "description": "Adjusts how much of a pantry item is left, e.g. 'I used the last of the rice'.",
         "parameters": {
@@ -238,10 +284,12 @@ class NutritionistChatbot:
         self._turn_must_say: list[str] = []
         self._turn_logged: list[str] = []
         self._turn_blocked = False
+        self._turn_code_only = False  # the reply is code's sentences alone (nothing makeable now)
         self._turn_message = ""
         # What this turn changed, so the reply can offer one Undo for all of it.
         self._turn_meals: list[int] = []
         self._turn_events: list[int] = []
+        self._turn_grocery: dict[int, str] = {}  # grocery rows it added -> how the reply named them
         self._lock = threading.Lock()
 
     @property
@@ -261,7 +309,9 @@ class NutritionistChatbot:
 
     def _find_recipes(self, args: dict) -> dict:
         cuisine = (args.get("cuisine") or "").strip() or None
-        query = (args.get("query") or "").strip() or None
+        excluded = exclusions(self._turn_message)
+        query = " ".join(w for w in (args.get("query") or "").split()
+                         if not any(w.lower().rstrip("s") == x.rstrip("s") for x in excluded)) or None
         blocked = allergen_found(f"{query or ''} {cuisine or ''}", self._get_goals()["allergies"])
         if blocked:
             return self._blocked(blocked, args, query)
@@ -270,8 +320,9 @@ class NutritionistChatbot:
         search = dict(
             query=query, cuisine=cuisine, max_minutes=args.get("max_minutes") or None,
             high_protein=bool(args.get("high_protein")) or protein_mode(self.db.get_profile()),
-            must_have_all=bool(args.get("must_have_all")), min_servings=args.get("min_servings") or None,
-            dinner=bool(DINNER_WORDS.search(self._turn_message)),
+            must_have_all=bool(args.get("must_have_all") or WITHOUT_SHOPPING.search(self._turn_message)),
+            min_servings=args.get("min_servings") or None, dinner=bool(DINNER_WORDS.search(self._turn_message)),
+            exclude_titles=[p for p in map(dislike_pattern, excluded) if p],
         )
         matches = self.engine.suggest(**search, min_protein_g=min_protein)
         result: dict = {}
@@ -282,19 +333,43 @@ class NutritionistChatbot:
                 result["say"] = f"Nothing has {min_protein:.0f} g protein per serving. Closest is {closest:.0f} g per serving."
                 self._say(result["say"])
         taste.record_request(self.db, cuisine=cuisine)
+        if search["must_have_all"] and not matches:
+            return self._nothing_makeable(search)
         # A new search replaces the cards on screen.
         self._turn_cards = []
         self._remember_cards([card(m) for m in matches])
-        result["recipes"] = [
-            {"id": m.recipe.id, "name": m.recipe.name, "cuisine": m.recipe.cuisine, "minutes": m.recipe.minutes,
-             "servings": m.recipe.servings,
-             "protein_g": m.recipe.nutrition.get("protein_g"), "calories": m.recipe.nutrition.get("calories"),
-             "have": len(m.have), "missing": m.missing,
-             "short": [f"{s['name']} (you have {s['on_hand']})" for s in m.short], "swaps": [f"{s.missing} -> {s.use}" for s in m.swaps],
-             "uses_expiring": m.uses_expiring, "why": m.reasons}
-            for m in matches
-        ]
+        if excluded and matches:
+            what = f"{query.lower()} recipes" if query else "recipes"
+            self._say(f"Here are {what} without {_join(excluded)}.")
+        result["recipes"] = [_recipe_facts(m) for m in matches]
         return result
+
+    def _nothing_makeable(self, search: dict) -> dict:
+        """Nothing uses only what you have: leftovers first, then the best recipes needing one thing.
+        Code writes the whole reply, so it can't say "there are no recipes"."""
+        pantry = self.engine.pantry()
+        left_cards, left_names = [], []
+        for e in self._leftovers_entries():
+            product = self.db.get_product(e["product_id"])
+            recipe = self.engine.store.get(product["recipe_id"]) if e["location"] != "freezer" else None
+            if recipe is not None:
+                left_cards.append(card(self.engine.analyze(recipe, pantry)))
+                left_names.append(f"{recipe.name} leftovers ({_servings(round(e['grams'] / product['grams_per_unit']))})")
+        pool = self.engine.suggest(**{**search, "must_have_all": False}, limit=NEAR_POOL)
+        near = [m for m in pool if len(m.to_buy) == 1][:NEAR_CARDS]
+        say = "Nothing in the library uses only what you have."
+        if left_names:
+            say += f" Your {_join(left_names)} are ready"
+            say += ", and these need one thing." if near else "."
+        elif near:
+            say += " These need one thing."
+        else:
+            say += " Open Grocery to see what to buy."
+        self._turn_cards = []
+        self._remember_cards(left_cards + [card(m) for m in near])
+        self._turn_code_only = True
+        self._say(say)
+        return {"recipes": [], "say": say, "need_one_thing": [_recipe_facts(m) for m in near]}
 
     def _blocked(self, blocked: tuple[str, str], args: dict, query: str | None) -> dict:
         """The allergy sentence, then the same search without the allergen word when anything is left of
@@ -309,7 +384,7 @@ class NutritionistChatbot:
             self._turn_cards = self._turn_cards[:SAFE_CARDS]
             if self._turn_cards:
                 without = "nuts" if allergy.rstrip("s") in TREE_NUTS else allergy
-                say += f" Here are {_plural(' '.join(rest))} without {without}."
+                say += f" Here are {' '.join(rest).lower()} recipes without {without}."
         self._turn_blocked = True
         self._say(say)
         return {"recipes": [], "blocked": allergy, "say": say,
@@ -515,6 +590,34 @@ class NutritionistChatbot:
         self._turn_events += [e["id"] for e in self.db.events_for_item(item_id)]
         return {"item_id": item_id, "product_id": product_id}
 
+    def _add_to_grocery(self, items: list) -> dict:
+        """Grocery's + button, from chat. The reply is written here: 'Added soy sauce and 6 lemons to
+        your grocery list.', 'Lemons were already on your list.'"""
+        added, already = [], []
+        for item in items or []:
+            item = dict(item)
+            name = " ".join(str(item.get("name") or "").split())
+            if not name:
+                continue
+            amount = _amount_text(item.get("amount"), item.get("unit"))
+            if amount is None:
+                name, amount = grocery_list.parse_entry(name)
+            entry_id, new = grocery_list.add_entry(self.db, name, "manual", amount=amount)
+            if new:
+                self._turn_grocery[entry_id] = name.lower()
+                added.append(f"{amount} {name.lower()}" if amount else name.lower())
+            else:
+                already.append(name.lower())
+        if added:
+            self._turn_must_say.append(f"Added {_join(added)} to your grocery list.")
+        if already:
+            verb = "was" if len(already) == 1 and not already[0].endswith("s") else "were"
+            names = _join(already)
+            self._turn_must_say.append(f"{names[:1].upper()}{names[1:]} {verb} already on your list.")
+        if not (added or already):
+            self._turn_must_say.append("I didn't catch what to add. Open Grocery and tap + to add it there.")
+        return {"added": added, "already_on_list": already}
+
     def _update_item_tool(self, name: str, remaining_grams: float) -> dict:
         product = self.db.find_product_by_name(name)
         if product is None:
@@ -558,6 +661,8 @@ class NutritionistChatbot:
             return self._add_item_tool(tool_input["name"], tool_input["grams"], tool_input["location"])
         if name == "update_item":
             return self._update_item_tool(tool_input["name"], tool_input["remaining_grams"])
+        if name == "add_to_grocery":
+            return self._add_to_grocery(tool_input.get("items") or [])
         return {"error": f"unknown tool {name}"}
 
     # ------------------------------------------------------------------ chat
@@ -567,8 +672,8 @@ class NutritionistChatbot:
         # One conversation turn at a time keeps each turn's cards and changes from mixing.
         with self._lock:
             self._turn_cards, self._turn_say, self._turn_must_say, self._turn_logged = [], [], [], []
-            self._turn_meals, self._turn_events = [], []
-            self._turn_blocked = False
+            self._turn_meals, self._turn_events, self._turn_grocery = [], [], {}
+            self._turn_blocked = self._turn_code_only = False
             self._turn_message = user_message
             self.db.add_chat_message("user", user_message)
             client = make_client()
@@ -582,21 +687,46 @@ class NutritionistChatbot:
                     reply = "Sorry, I couldn't reach the assistant just now — here are some ideas anyway."
                     if not (self._turn_cards or self._turn_meals or self._turn_events):
                         self._offline_reply(user_message)
-            reply = self._with_code_sentences(plain_text(reply))
+            body = plain_text(reply)
+            cards = order_by_mention(self._turn_cards, body)[:SAFE_CARDS if self._turn_blocked else MAX_CARDS]
+            if cards and body:
+                body = drop_unshown_foods(body, self._shown_foods(cards), self._food_vocabulary())
+                body = body or f"Here {'is 1 recipe' if len(cards) == 1 else f'are {len(cards)} recipes'} for that."
+            reply = self._with_code_sentences(body)
             self.db.add_chat_message("assistant", reply)
-            cards = order_by_mention(self._turn_cards, reply)[:SAFE_CARDS if self._turn_blocked else MAX_CARDS]
+            cards = order_by_mention(cards, reply)
             if cards:
                 self._on_screen = cards
             return {"reply": reply, "recipes": cards, **self._record_turn()}
 
+    def _shown_foods(self, cards: list[dict]) -> list[str]:
+        """Every food the shown cards stand for: their recipes' ingredients, swaps and titles, plus
+        the leftovers in the fridge (which the assistant names first)."""
+        foods = [sentence_words(e["name"]) for e in self._leftovers_entries()]
+        for c in cards:
+            recipe = self.engine.store.get(c["id"])
+            if recipe is not None:
+                foods += recipe.canon_ingredients + [sentence_words(recipe.name)]
+            foods += [sentence_words(s["use"]) for s in c.get("swaps", [])]
+        return foods
+
+    def _food_vocabulary(self) -> set[str]:
+        with self.db.cursor() as cur:
+            cur.execute("SELECT name FROM products")
+            products = [sentence_words(r["name"]) for r in cur.fetchall()]
+        return food_terms() | {p for p in products if p}
+
     def _record_turn(self) -> dict:
-        """Saves what this turn changed. Only a turn that changed stock offers an Undo."""
-        if not (self._turn_meals or self._turn_events):
+        """Saves what this turn changed. Only a turn that changed stock or the grocery list offers an Undo."""
+        if not (self._turn_meals or self._turn_events or self._turn_grocery):
             return {"turn_id": None, "undo": None}
         events = [e for m in self._turn_meals for e in self.db.events_for_meal(m)]
         events += [e for e in map(self.db.get_event, self._turn_events) if e is not None]
-        summary = inv_events.undo_summary(self.db, events)
-        turn_id = self.db.add_chat_turn(self._turn_meals, self._turn_events)
+        parts = [inv_events.undo_summary(self.db, events)] if events else []
+        if self._turn_grocery:
+            parts.append(f"takes {_join(list(self._turn_grocery.values()))} off your grocery list")
+        summary = "; ".join(p for p in parts if p)
+        turn_id = self.db.add_chat_turn(self._turn_meals, self._turn_events, list(self._turn_grocery))
         return {"turn_id": turn_id if summary else None, "undo": f"Undo: {summary}" if summary else None}
 
     def undo_turn(self, turn_id: int) -> bool | None:
@@ -615,6 +745,8 @@ class NutritionistChatbot:
                 if e["event_type"] == "add":
                     self.db.delete_item(e["item_id"])
             inv_events.undo_events(self.db, [e["id"] for e in events if e["event_type"] != "add"])
+            for entry_id in json.loads(turn["grocery_ids"] or "[]"):
+                self.db.delete_grocery_entry(entry_id)
             self.db.mark_chat_turn_undone(turn_id)
             return True
 
@@ -622,7 +754,7 @@ class NutritionistChatbot:
         """What tools did is said by code, not paraphrased by the model: an allergy block replaces
         the reply (the model may still offer the blocked food), and a logging turn is answered with
         exactly what was logged and what wasn't. Other tool sentences go before the model's text."""
-        if self._turn_blocked:
+        if self._turn_blocked or self._turn_code_only:
             return " ".join(self._turn_say)
         if self._turn_logged or self._turn_must_say:
             logged = [f"Logged {'; '.join(self._turn_logged)}."] if self._turn_logged else []
@@ -636,19 +768,14 @@ class NutritionistChatbot:
         """Gemini function-calling loop: the model asks for tools, we run them
         against the real database, until it answers in plain text."""
         config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT, tools=[types.Tool(function_declarations=TOOLS)],
+            system_instruction=self._system_instruction(), tools=[types.Tool(function_declarations=TOOLS)],
         )
+        # The history is only what was said; this turn's facts live in the system instruction.
         contents = [
             types.Content(role=("model" if m["role"] == "assistant" else "user"),
                           parts=[types.Part.from_text(text=m["content"])])
             for m in self.db.recent_chat(limit=20)
         ]
-        if contents:
-            contents[-1].parts.append(types.Part.from_text(text=fact_block(self.db)))
-        if self._on_screen and contents:
-            shown = "; ".join(f"{i}. {c['name']} (recipe_id {c['id']})" for i, c in enumerate(self._on_screen, 1))
-            contents[-1].parts.append(types.Part.from_text(
-                text=f"[Recipe cards currently on the user's screen, in order: {shown}]"))
 
         for _ in range(MAX_TOOL_ROUNDS):
             response = client.models.generate_content(model=model_name(), contents=contents, config=config)
@@ -666,9 +793,20 @@ class NutritionistChatbot:
 
         return "Sorry, I'm having trouble pulling that together right now — could you try rephrasing?"
 
+    def _system_instruction(self) -> str:
+        """The prompt, then this turn's fridge facts and the cards the person is looking at."""
+        notes = [SYSTEM_PROMPT, fact_block(self.db)]
+        if self._on_screen:
+            shown = "; ".join(f"{i}. the {c['name']} card (recipe_id {c['id']})" for i, c in enumerate(self._on_screen, 1))
+            notes.append(f"Recipe cards the user is looking at, in order: {shown}.")
+        return "\n\n".join(notes)
+
     def _offline_reply(self, user_message: str) -> str:
         """No Gemini: read the request with plain keywords and still search real recipes."""
         text = user_message.lower()
+        if grocery := GROCERY_ADD.search(user_message):
+            self._add_to_grocery([{"name": n} for n in LIST_SPLIT.split(grocery.group(1)) if n.strip()])
+            return ""
         if LEFTOVER_WORDS.search(text):
             if LOG_WORDS.search(text) and not text.rstrip().endswith("?"):
                 count = re.search(r"\b(\d+|one|two|three|four|a|an)\s+servings?\b", text)
@@ -678,20 +816,57 @@ class NutritionistChatbot:
             left = [leftovers_line(e) for e in self._leftovers_entries() if e["location"] != "freezer"]
             return f"You have {_join(left)}." if left else "You don't have any leftovers right now."
         cuisine = next((c for c in CUISINES if c.replace("-", " ") in text), None)
+        excluded = {w for x in exclusions(user_message) for w in x.split()}
         words = [w for w in re.findall(r"[a-z]+", text)
-                 if w not in OFFLINE_STOPWORDS and (cuisine is None or w not in cuisine.split("-"))]
+                 if w not in OFFLINE_STOPWORDS and w not in excluded and (cuisine is None or w not in cuisine.split("-"))]
+        under = UNDER_MINUTES.search(text)
         self._find_recipes({
             "query": " ".join(words[:6]),
             "cuisine": cuisine,
             "high_protein": "protein" in text,
-            "max_minutes": 30 if any(w in text for w in ("quick", "fast", "easy")) else None,
+            "max_minutes": int(under.group(1)) if under else 30 if any(w in text for w in ("quick", "fast", "easy")) else None,
         })
-        if self._turn_blocked:
+        if self._turn_blocked or self._turn_code_only or self._turn_say:
             return ""
         if not self._turn_cards:
             return "I couldn't find a match for that — try a cuisine like Italian or an ingredient you have."
         lead = f"Here are some {cuisine.replace('-', ' ').title()} ideas" if cuisine else "Here are some ideas"
         return lead + " based on what's in your fridge. (Add a Gemini key for full conversation.)"
+
+
+def exclusions(message: str) -> list[str]:
+    """'salmon besides salad' -> ['salad']; 'not chicken soup' -> ['chicken soup']; 'no thanks' -> []."""
+    out = []
+    for m in EXCLUDE.finditer(message):
+        first, second = m.group(1).lower(), (m.group(2) or "").lower()
+        if first in NOT_A_FOOD:
+            continue
+        phrase = f"{first} {second}" if second and second not in NOT_A_FOOD else first
+        if phrase not in out:
+            out.append(phrase)
+    return out
+
+
+def _recipe_facts(m) -> dict:
+    """What the model may say about a card: its exact have and buy lists."""
+    r = m.recipe
+    return {"id": r.id, "name": r.name, "cuisine": r.cuisine, "minutes": r.total_minutes, "servings": r.servings,
+            "protein_g": r.nutrition.get("protein_g"), "calories": r.nutrition.get("calories"),
+            "have": m.have, "buy": m.to_buy, "swaps": [f"{s.missing} -> {s.use}" for s in m.swaps],
+            "uses_expiring": m.uses_expiring, "why": m.reasons}
+
+
+def _amount_text(amount, unit) -> str | None:
+    """6 -> '6'; 2, 'L' -> '2 L'; nothing -> None."""
+    if amount in (None, "") or isinstance(amount, bool):
+        return None
+    try:
+        number = f"{float(amount):g}"
+    except (TypeError, ValueError):
+        return None
+    unit = (unit or "").strip()
+    unit = "" if unit.lower() in ("count", "x", "pcs", "pieces") else ("L" if unit.lower() == "l" else unit)
+    return f"{number} {unit}".strip()
 
 
 def _logged_text(item: dict) -> str:
@@ -712,27 +887,50 @@ def _servings(n: float) -> str:
     return f"{text} serving" if n == 1 else f"{text} servings"
 
 
-def _plural(phrase: str) -> str:
-    """'banana bread' -> 'banana breads', 'stir fry' -> 'stir fries'."""
-    if re.search(r"[^aeiou]y$", phrase):
-        return phrase[:-1] + "ies"
-    if re.search(r"(s|x|z|ch|sh)$", phrase):
-        return phrase + "es"
-    return phrase + "s"
-
-
 def _join(names: list[str]) -> str:
     """'whey', 'whey and oats', 'whey, oats and chia'."""
     return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
 
 
+SENTENCE = re.compile(r"(?<=[.!?])\s+")
+INTERNAL_START = re.compile(r"^\W*(?:leftovers:|going bad within|fridge facts)", re.I)
+
+
+def _internal(text: str) -> bool:
+    """A line of the fridge facts note: never shown to the person."""
+    return bool(INTERNAL_START.match(text)) or "soonest first" in text.lower()
+
+
+def _keep_sentences(text: str, drop) -> str:
+    """Each line minus the sentences `drop` flags; lines left empty go."""
+    lines = []
+    for line in text.split("\n"):
+        kept = [s for s in SENTENCE.split(line.strip()) if s and not drop(s)]
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def plain_text(reply: str) -> str:
-    """The screens show plain text; drop markdown emphasis/headings if the model adds them anyway."""
+    """The screens show plain text; drop markdown emphasis/headings if the model adds them anyway,
+    and any line of the internal fact note the model echoed."""
     reply = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), reply)
     reply = re.sub(r"(?m)^\s*#{1,6}\s*", "", reply)
     reply = re.sub(r"(?m)^(\s*)[*•-]\s+", r"\1• ", reply)
     reply = re.sub(r"\s*\[?Fridge facts from the app[^\]\n]*\]?\.?", "", reply)  # the model citing its own note
-    return reply.strip()
+    reply = "\n".join(line for line in reply.split("\n") if not INTERNAL_START.match(line))
+    return _keep_sentences(reply, _internal)
+
+
+def drop_unshown_foods(reply: str, shown: list[str], vocabulary: set[str]) -> str:
+    """Sentences naming a food that none of the shown recipes uses go: the text describes only the
+    cards under it. `shown` and `vocabulary` are lower-case singular phrases."""
+    def stray(sentence: str) -> bool:
+        words = sentence_words(sentence)
+        return any(re.search(rf"\b{re.escape(term)}\b", words)
+                   and not any(re.search(rf"\b{re.escape(term)}\b", food) for food in shown)
+                   for term in vocabulary)
+    return _keep_sentences(reply, stray)
 
 
 def _name_variants(name: str) -> list[str]:

@@ -314,6 +314,7 @@ class RecipeEngine:
         min_servings: float | None = None,
         min_protein_g: float | None = None,
         dinner: bool = False,
+        exclude_titles: list[re.Pattern] | None = None,
     ) -> list[Match]:
         """`automatic` is for lists nobody asked for (Cook tonight): dinner-sized main dishes only,
         dislikes excluded outright, ranked by how little there is to buy (tonight_order). `dinner` is
@@ -345,6 +346,8 @@ class RecipeEngine:
         for recipe in self.store.get_many([i for i, _ in hits]):
             if has_allergen(recipe, allergies):
                 continue  # hard filter, never shown
+            if exclude_titles and any(p.search(recipe.name) for p in exclude_titles):
+                continue  # "besides salad"
             if max_minutes and (recipe.total_minutes or 0) > max_minutes:
                 continue  # "under 30 minutes" counts the marinating too
             if min_servings and (recipe.servings is None or recipe.servings < min_servings):

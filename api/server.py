@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -48,10 +50,25 @@ QUICK_ADD_MIN_PROTEIN_G, QUICK_ADD_LIMIT = 10.0, 4
 QUICK_ADD_PORTION_G, QUICK_ADD_PORTION_COUNT = 200.0, 2
 RAW_CATEGORIES = {"meat", "seafood", "poultry"}
 
-app = FastAPI(title="ReFridge API")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    _rebuild_tonight_soon()  # Home's first visit finds Cook tonight ready
+    yield
+
+
+app = FastAPI(title="ReFridge API", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _rebuild_after_writes(request: Request, call_next):
+    """Any change through the API may change what you can cook: rebuild Cook tonight off the request path."""
+    response = await call_next(request)
+    if request.method != "GET" and request.url.path.startswith("/api/"):
+        _rebuild_tonight_soon()
+    return response
 
 db = get_db(os.getenv("DATABASE_PATH", "refridge.db"))
 chatbot = NutritionistChatbot(db)
@@ -604,15 +621,49 @@ def suggest_recipes(q: str | None = None, cuisine: str | None = None, max_minute
     return [card(m) for m in matches]
 
 
-_tonight_cache: dict = {}
+_tonight: dict = {"key": None, "at": 0.0, "value": None, "building": False}
+_tonight_lock = threading.Lock()
+
+
+def _tonight_fresh() -> bool:
+    return _tonight["key"] == _fridge_version() and time.monotonic() - _tonight["at"] <= TONIGHT_CACHE_SECONDS
+
+
+def _build_tonight() -> None:
+    """Builds until the list matches the fridge (it may change while a build runs)."""
+    while not _tonight_fresh():
+        key = _fridge_version()
+        value = [card(m) for m in chatbot.engine.suggest(
+            limit=TONIGHT_LIMIT, automatic=True, high_protein=protein_mode(db.get_profile()))]
+        _tonight.update(key=key, at=time.monotonic(), value=value)
+
+
+def _build_in_background() -> None:
+    try:
+        _build_tonight()
+    except Exception:
+        log.exception("Cook tonight rebuild failed")
+    finally:
+        _tonight["building"] = False
+
+
+def _rebuild_tonight_soon() -> None:
+    with _tonight_lock:
+        if _tonight["building"]:
+            return
+        _tonight["building"] = True
+    threading.Thread(target=_build_in_background, daemon=True).start()
 
 
 @app.get("/api/recipes/tonight")
 def recipes_tonight():
-    """Cook tonight: dinner-sized main dishes from what you have. Cached until the fridge or
-    profile changes (up to 10 minutes) so the home screen shows them at once."""
-    return _cached(_tonight_cache, TONIGHT_CACHE_SECONDS, lambda: [card(m) for m in chatbot.engine.suggest(
-        limit=TONIGHT_LIMIT, automatic=True, high_protein=protein_mode(db.get_profile()))])
+    """Cook tonight: dinner-sized main dishes from what you have. Built in the background after every
+    change, so this answers at once with the latest list (rebuilding when it's out of date)."""
+    if _tonight["value"] is None:
+        _build_tonight()
+    elif not _tonight_fresh():
+        _rebuild_tonight_soon()
+    return _tonight["value"]
 
 
 @app.get("/api/recipes/{recipe_id}")

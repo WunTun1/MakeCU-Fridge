@@ -119,24 +119,30 @@ def build_list(db: Database) -> dict:
             "covers_until": covers_until(trip), "items": items}
 
 
+def add_entry(
+    db: Database, name: str, source: str, recipe_id: int | None = None, recipe_name: str | None = None,
+    amount: str | None = None,
+) -> tuple[int, bool]:
+    """(row id, whether it's new). A name already on the list isn't added again, just un-checked."""
+    name = " ".join(name.split())
+    norm = normalize(name)
+    trip = db.get_setting(TRIP_KEY)
+    existing = next((e for e in db.grocery_entries() if e["norm"] == norm and _visible(e, trip)), None)
+    if existing:
+        db.set_grocery_checked(existing["id"], False)
+        return existing["id"], False
+    return db.add_grocery_entry(name, norm, source, recipe_id, recipe_name, amount=amount), True
+
+
 def add_entries(
     db: Database, names: list[str], source: str, recipe_id: int | None = None, recipe_name: str | None = None
 ) -> list[int]:
-    """Adds each name unless it's already on the list (then it's just un-checked).
-    'apples 6' is stored as apples, amount 6."""
-    trip = db.get_setting(TRIP_KEY)
+    """Grocery's + button: 'apples 6' is stored as apples, amount 6."""
     ids = []
     for text in (n.strip() for n in names):
-        if not text:
-            continue
-        name, amount = parse_entry(text)
-        norm = normalize(name)
-        existing = next((e for e in db.grocery_entries() if e["norm"] == norm and _visible(e, trip)), None)
-        if existing:
-            db.set_grocery_checked(existing["id"], False)
-            ids.append(existing["id"])
-        else:
-            ids.append(db.add_grocery_entry(name, norm, source, recipe_id, recipe_name, amount=amount))
+        if text:
+            name, amount = parse_entry(text)
+            ids.append(add_entry(db, name, source, recipe_id, recipe_name, amount)[0])
     return ids
 
 

@@ -296,7 +296,7 @@ def test_walnut_banana_bread_names_the_allergy_and_shows_nut_free_cards(db, tmp_
     _offline(monkeypatch)
     out = bot.chat("walnut banana bread")
     assert out["reply"] == ("You listed walnuts as an allergy, so I won't suggest recipes with them. "
-                            "Here are banana breads without nuts.")
+                            "Here are banana bread recipes without nuts.")
     assert [c["name"] for c in out["recipes"]] == ["Classic Banana Bread"]
     for c in out["recipes"]:
         recipe = bot.engine.store.get(c["id"])

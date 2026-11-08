@@ -114,6 +114,33 @@ COOKING_LIQUID = re.compile(r"\b(reserved|cooking liquid|cooking water|from the 
 PLAIN_WATER_WORDS = {"boiling", "lukewarm", "filtered", "tap", "cool", "fluid", "pure", "bottled", "ice"}
 
 
+# Foods the assistant might name, to catch a sentence about an ingredient no shown card uses.
+COMMON_FOODS = {
+    "feta", "parmesan", "mozzarella", "cheddar", "ricotta", "goat cheese", "cream cheese", "sour cream", "cream",
+    "yogurt", "milk", "butter", "egg", "tofu", "tempeh", "chicken", "beef", "pork", "lamb", "turkey", "bacon",
+    "sausage", "ham", "salmon", "tuna", "cod", "shrimp", "scallop", "crab", "anchovy", "chickpea", "lentil",
+    "black bean", "kidney bean", "bean", "rice", "quinoa", "pasta", "noodle", "couscous", "bread", "tortilla",
+    "potato", "sweet potato", "tomato", "sun-dried tomato", "spinach", "kale", "lettuce", "arugula", "cabbage",
+    "broccoli", "cauliflower", "carrot", "celery", "cucumber", "zucchini", "eggplant", "mushroom", "bell pepper",
+    "jalapeno", "chile", "corn", "pea", "green bean", "asparagus", "avocado", "olive", "caper", "artichoke",
+    "lemon", "lime", "orange", "apple", "pineapple", "mango", "banana", "berry", "strawberry", "blueberry",
+    "raisin", "cranberry", "walnut", "almond", "pecan", "cashew", "peanut", "pine nut", "sesame", "coconut",
+    "coconut milk", "ginger", "garlic", "shallot", "scallion", "green onion", "leek", "cilantro", "parsley",
+    "mint", "dill", "chive", "adobo", "creole seasoning", "cajun seasoning", "salsa", "pesto", "hummus", "tahini",
+    "miso", "honey", "maple syrup", "mustard", "mayonnaise", "ketchup", "hot sauce", "sriracha", "teriyaki sauce",
+    "worcestershire sauce", "fish sauce", "oyster sauce", "hoisin sauce", "wine", "beer", "broth",
+}
+
+
+def sentence_words(text: str) -> str:
+    """'Sun-dried Tomatoes, feta.' -> 'sun-dried tomato feta': lower case, singular, for phrase lookups."""
+    return " ".join(_singular(w) for w in re.findall(r"[a-z][a-z\-']*", text.lower()))
+
+
+def food_terms() -> set[str]:
+    return COMMON_FOODS | _SPICE_FORMS | {s for s in PANTRY_STAPLES if s not in {"water", "ice"}}
+
+
 def raw_words(name: str) -> str:
     """The ingredient as written, minus amounts and asides, descriptors kept: 'dried thyme leaves'."""
     text = re.sub(r"\(.*?(\)|$)", " ", name.lower()).split(",")[0]
