@@ -56,3 +56,24 @@ def test_best_recipe_uses_the_food_most_at_risk(db):
     assert best["recipe"] == {"name": "Spinach Pie"}
     assert best["why"] and "spinach" in best["why"][0] and "tomorrow" in best["why"][0]
     assert [f["name"] for f in best["foods"]] == ["Baby Spinach"]  # the cheese gets eaten in time
+
+
+def test_stock_score_compares_today_with_your_usual(db):
+    # Milk: normally ~2 days of supply; today 6 days' worth on hand -> overstocked.
+    pid = db.get_or_create_product("Milk")
+    now = clock.utc_now()
+    inv_events.apply_add(db, pid, 500, location="fridge")
+    for d in range(1, 15):
+        db.log_event("consume", product_id=pid, grams_delta=-250, occurred_at=(now - timedelta(days=d)).isoformat())
+        db.log_event("add", product_id=pid, grams_delta=250, occurred_at=(now - timedelta(days=d, hours=1)).isoformat())
+    inv_events.apply_add(db, pid, 1000, location="fridge")
+    report = analytics.stock_score(db, days=14)
+    assert report["source"] == "local"
+    assert report["score"] > 25 and report["band"] == "over"
+    assert [f["name"] for f in report["high"]] == ["Milk"]
+    assert len(report["history"]) == 14 and report["history"][-1]["score"] == report["score"]
+
+
+def test_stock_score_is_balanced_with_no_history(db):
+    report = analytics.stock_score(db)
+    assert report["score"] == 0 and report["band"] == "balanced" and report["history"] == []

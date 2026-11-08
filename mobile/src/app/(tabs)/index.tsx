@@ -15,13 +15,13 @@ import {
   type CarouselItem,
 } from "@/components/RecipeCarousel";
 import { ErrorCard, Loading } from "@/components/States";
+import { StockDial, StockVerdict } from "@/components/StockDial";
 import { TodayCard } from "@/components/TodayCard";
 import {
   api,
   type BestRecipe,
   type InventoryEntry,
   type RecipeCard,
-  type RestockReport,
 } from "@/lib/api";
 import { keepsText } from "@/lib/expiry";
 import { makeStyles, useColors, useUi } from "@/lib/theme";
@@ -38,23 +38,6 @@ function byExpiry(a: InventoryEntry, b: InventoryEntry): number {
     (a.expires_in_days ?? Infinity) - (b.expires_in_days ?? Infinity) ||
     a.name.localeCompare(b.name)
   );
-}
-
-/** "1.3 kg", "450 g". */
-function weight(g: number): string {
-  return g >= 1000 ? `${(g / 1000).toFixed(1)} kg` : `${Math.round(g)} g`;
-}
-
-/** This week's food use against last week's, over everything you use. */
-function trendOf(report: RestockReport | null): number | null {
-  if (!report || report.items.length === 0) return null;
-  let last = 0;
-  let prev = 0;
-  for (const item of report.items) {
-    last += item.series.slice(-7).reduce((a, b) => a + b, 0);
-    prev += item.series.slice(-14, -7).reduce((a, b) => a + b, 0);
-  }
-  return prev > 0 ? Math.round(((last - prev) / prev) * 100) : null;
 }
 
 /**
@@ -87,8 +70,48 @@ function carouselItems(
   return items.slice(0, CAROUSEL_MAX);
 }
 
+/** The dial up top: how stocked you are against your own normal. Tap it for the history. */
+function StockCard() {
+  const ui = useUi();
+  const styles = useStyles();
+  const c = useColors();
+  const stock = useApi(api.stockScore, ANALYTICS_POLL_MS, "stock");
+  const s = stock.data;
+  return (
+    <Link href="/stock" asChild>
+      <Pressable
+        style={styles.stockCard}
+        accessibilityRole="button"
+        accessibilityLabel="Stock score. Open the history"
+      >
+        {s ? (
+          <>
+            <StockDial score={s.score} size={220} />
+            <StockVerdict score={s.score} />
+            <View style={[ui.row, { gap: 6, marginTop: 4 }]}>
+              {s.source === "tiger" && (
+                <FontAwesome name="database" size={11} color={c.muted} />
+              )}
+              <Text style={ui.muted}>
+                {s.source === "tiger" ? "Tiger Data · " : ""}See your stock
+                history
+              </Text>
+              <FontAwesome name="chevron-right" size={10} color={c.muted} />
+            </View>
+          </>
+        ) : (
+          <View
+            style={{ height: 190 }}
+            accessibilityLabel="Loading your stock score"
+          />
+        )}
+      </Pressable>
+    </Link>
+  );
+}
+
 /**
- * Home: a few quick numbers about your eating, then what to cook tonight (photos that turn by
+ * Home: how stocked you are (a dial), then what to cook tonight (photos that turn by
  * themselves), then today's log, the fridge, the grocery list and what you have. Alerts live
  * behind the bell, settings behind the gear.
  */
@@ -98,7 +121,6 @@ export default function Home() {
   const best = useApi(api.bestRecipe, ANALYTICS_POLL_MS, "best");
   const ready = useApi(api.readyRecipes, ANALYTICS_POLL_MS, "ready");
   const tonight = useApi(api.tonight, POLL_MS, "tonight");
-  const restock = useApi(api.restockReport, ANALYTICS_POLL_MS, "restock");
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
@@ -126,21 +148,7 @@ export default function Home() {
     >
       {summary.error && <ErrorCard message={summary.error} />}
 
-      {s && (
-        <Kpis
-          proteinG={s.today_intake.totals.protein_g || 0}
-          proteinGoal={profile.data?.daily_protein_g ?? null}
-          atRiskG={
-            best.data
-              ? best.data.foods.reduce((sum, f) => sum + f.at_risk_g, 0)
-              : null
-          }
-          trend={trendOf(restock.data)}
-          fromTiger={
-            best.data?.source === "tiger" || restock.data?.source === "tiger"
-          }
-        />
-      )}
+      <StockCard />
 
       <View style={{ gap: 10 }}>
         <Text style={ui.h2}>Cook tonight</Text>
@@ -253,98 +261,17 @@ export default function Home() {
   );
 }
 
-/** Three quick numbers about your eating, side by side. */
-function Kpis({
-  proteinG,
-  proteinGoal,
-  atRiskG,
-  trend,
-  fromTiger,
-}: {
-  proteinG: number;
-  proteinGoal: number | null;
-  atRiskG: number | null;
-  trend: number | null;
-  fromTiger: boolean;
-}) {
-  const ui = useUi();
-  const styles = useStyles();
-  const c = useColors();
-  const kpis = [
-    {
-      label: "Protein today",
-      value: `${Math.round(proteinG)} g`,
-      sub: proteinGoal ? `of ${Math.round(proteinGoal)} g` : "logged so far",
-      color: c.text,
-    },
-    {
-      label: "At risk",
-      value: atRiskG == null ? "—" : weight(atRiskG),
-      sub: "may go to waste",
-      color: atRiskG ? c.warn : c.text,
-    },
-    {
-      label: "Food use",
-      value:
-        trend == null
-          ? "—"
-          : `${trend > 0 ? "+" : trend < 0 ? "−" : ""}${Math.abs(trend)}%`,
-      sub: "vs last week",
-      color: c.text,
-    },
-  ];
-  return (
-    <View style={{ gap: 6 }}>
-      <View style={styles.kpis}>
-        {kpis.map((k, i) => (
-          <View
-            key={k.label}
-            style={[styles.kpi, i > 0 && styles.kpiDivider]}
-            accessibilityLabel={`${k.label}: ${k.value} ${k.sub}`}
-          >
-            <Text style={styles.kpiLabel} numberOfLines={1}>
-              {k.label}
-            </Text>
-            <Text
-              style={[styles.kpiValue, { color: k.color }]}
-              numberOfLines={1}
-            >
-              {k.value}
-            </Text>
-            <Text style={ui.muted} numberOfLines={1}>
-              {k.sub}
-            </Text>
-          </View>
-        ))}
-      </View>
-      {fromTiger && (
-        <View style={[ui.row, { gap: 6, alignSelf: "flex-end" }]}>
-          <FontAwesome name="database" size={11} color={c.muted} />
-          <Text style={ui.muted}>Insights by Tiger Data</Text>
-        </View>
-      )}
-    </View>
-  );
-}
-
-const useStyles = makeStyles((c, size) => ({
-  kpis: {
-    flexDirection: "row",
+const useStyles = makeStyles((c) => ({
+  stockCard: {
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
     backgroundColor: c.card,
     borderColor: c.border,
     borderWidth: 1,
     borderRadius: 16,
-    paddingVertical: 14,
   },
-  kpi: { flex: 1, paddingHorizontal: 12, gap: 2 },
-  kpiDivider: { borderLeftColor: c.border, borderLeftWidth: 1 },
-  kpiLabel: {
-    color: c.textSecondary,
-    fontSize: size(12),
-    lineHeight: size(16),
-    fontWeight: "600",
-  },
-  kpiValue: { fontSize: size(22), lineHeight: size(28), fontWeight: "700" },
   linkCard: {
     backgroundColor: c.card,
     borderColor: c.border,

@@ -789,6 +789,13 @@ def analytics_restock():
     return analytics.restock(db)
 
 
+@app.get("/api/analytics/stock")
+def analytics_stock():
+    """Home's dial: how stocked you are against your own normal, -100 (understocked) to +100
+    (overstocked), with 30 days of history and the foods pulling it each way. On Tiger Data."""
+    return analytics.stock_score(db)
+
+
 @app.get("/api/analytics/status")
 def analytics_status():
     return {**tiger.status, "enabled": tiger.enabled(), "household": tiger.household()}

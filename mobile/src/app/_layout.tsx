@@ -58,6 +58,7 @@ function ThemedApp() {
           <Stack.Screen name="today" options={{ title: "Today" }} />
           <Stack.Screen name="settings" options={{ title: "Settings" }} />
           <Stack.Screen name="alerts" options={{ title: "Alerts" }} />
+          <Stack.Screen name="stock" options={{ title: "Stock score" }} />
           <Stack.Screen
             name="identify"
             options={{ title: "Name what the camera saw" }}

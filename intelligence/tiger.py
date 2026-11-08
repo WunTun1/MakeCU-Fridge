@@ -317,3 +317,45 @@ def pressure(limit: int = 6) -> list[dict]:
     return [{"product_id": r[0], "name": r[1], "grams": float(r[2]), "expires_in_days": float(r[3]),
              "at_risk_g": float(r[4]), "score": float(r[4]) / (1 + max(float(r[3]), 0))}
             for r in rows if r[4] and r[4] > 0]
+
+
+# How stocked you are, day by day: each food's level rebuilt from the event history (a running
+# sum of every add, use, removal and return), turned into days of supply at your usual pace, and
+# compared with your own usual for that food (its median over the window). The day's score is
+# the log2 of that ratio (clipped to ±2), averaged with the foods you eat most counting most:
+# 0 is your normal, -1 half (or less) of it, +1 double (or more).
+_STOCK_HISTORY = f"""
+    WITH rates AS ({_RATES}),
+    days AS (
+        SELECT generate_series(date_trunc('day', now() AT TIME ZONE %(tz)s) - (%(days)s - 1) * INTERVAL '1 day',
+                               date_trunc('day', now() AT TIME ZONE %(tz)s), INTERVAL '1 day') AS day
+    ),
+    first_seen AS (  -- days before a food's first record aren't "out of it", they're unknown
+        SELECT product_id, date_trunc('day', min(time) AT TIME ZONE %(tz)s) AS first_day
+        FROM fridge_events WHERE household = %(h)s GROUP BY product_id
+    ),
+    level AS (
+        SELECT d.day, r.product_id, r.rate_g_per_day AS rate,
+               greatest((SELECT coalesce(sum(e.grams_delta), 0) FROM fridge_events e
+                         WHERE e.household = %(h)s AND e.product_id = r.product_id
+                           AND e.time < (d.day + INTERVAL '1 day') AT TIME ZONE %(tz)s), 0) AS grams
+        FROM days d CROSS JOIN rates r JOIN first_seen f USING (product_id)
+        WHERE r.rate_g_per_day > 0 AND d.day >= f.first_day
+    ),
+    supply AS (SELECT day, product_id, rate, grams / rate AS days_of_supply FROM level),
+    usual AS (
+        SELECT product_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY days_of_supply) AS usual_days
+        FROM supply GROUP BY product_id
+    )
+    SELECT s.day, s.product_id, s.rate, s.days_of_supply, u.usual_days,
+           greatest(least(ln((s.days_of_supply + 0.25) / (u.usual_days + 0.25)) / ln(2), 2), -2) / 2 AS item_score
+    FROM supply s JOIN usual u USING (product_id)
+    ORDER BY s.day, s.product_id
+"""
+
+
+def stock_history(days: int = 30) -> list[dict]:
+    """Per day and food: rate, days of supply, your usual days of supply, and that food's score (-1..1)."""
+    rows = query(_STOCK_HISTORY, _params(days=days))
+    return [{"day": r[0].date().isoformat(), "product_id": r[1], "rate": float(r[2]),
+             "days_of_supply": float(r[3]), "usual_days": float(r[4]), "score": float(r[5])} for r in rows]

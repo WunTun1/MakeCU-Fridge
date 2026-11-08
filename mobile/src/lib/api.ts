@@ -323,6 +323,27 @@ export type UnidentifiedItem = {
   seen_at: string;
 };
 
+/** A food pulling the stock score: how many days it'll last now, against your usual. */
+export type StockFood = {
+  product_id: number;
+  name: string;
+  days_of_supply: number;
+  usual_days: number;
+};
+
+/** Home's dial: -100 understocked, 0 balanced, +100 overstocked, against your own normal (Tiger Data). */
+export type StockScore = {
+  source: "tiger" | "local";
+  score: number;
+  band: "under" | "balanced" | "over";
+  /** Share of what you have that'll likely go bad before you finish it. */
+  waste_share: number;
+  history: { day: string; score: number }[];
+  low: StockFood[];
+  high: StockFood[];
+  at_risk: { name: string; at_risk_g: number; expires_in_days: number }[];
+};
+
 export type RestockReport = {
   source: "tiger" | "local";
   window_days: number;
@@ -521,6 +542,7 @@ export const api = {
     ),
   /** How fast you go through each food, and when to restock how much (Tiger Data analysis). */
   restockReport: () => request<RestockReport>("/api/analytics/restock"),
+  stockScore: () => request<StockScore>("/api/analytics/stock"),
   recipe: (id: number) => request<RecipeDetail>(`/api/recipes/${id}`),
   cookPreview: (id: number, made: Made) =>
     request<CookLine[]>(`/api/recipes/${id}/cooked/preview?made=${made}`),
