@@ -196,6 +196,10 @@ QUIET_FRAMES = 5  # recent hand-free frames, median-combined into the "before"/"
 # its edge crossing the picture) for about a second. The door-close check uses the steady view from
 # before that, and never a frame much darker than the scene it's compared with.
 CLOSE_GUARD_S = 1.5
+# The camera's auto-exposure and white balance keep shifting for a few seconds after the door opens
+# and the light changes, so the before photo waits this long: taken sooner, the whole picture reads
+# as changed next to the after photo, and the new food is lost among the differences.
+LIGHT_SETTLE_S = float(os.getenv("LIGHT_SETTLE_S", "6"))
 DARKER_THAN_REFERENCE = 0.7
 
 
@@ -234,6 +238,7 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
         quiet: deque = deque(maxlen=QUIET_FRAMES)  # hand-free frames since the last time someone was in view
         history: deque = deque(maxlen=60)  # (time, frame) for the same frames, ~6 s, for the door-close check
         door_was_open = False
+        door_opened_at = 0.0
         log.info("Fridge loop started (scale: %s, camera: %s, hands: %s)",
                  scale.source, type(cam).__name__, trip_detector.method)
 
@@ -246,8 +251,9 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
                     trip_detector.on_door_open()
                     quiet.clear()
                     history.clear()
-                    reference_frame = None  # taken once the scene is steady (below)
+                    reference_frame = None  # taken once the camera has adjusted and the scene is steady (below)
                     reference_weights = scale.snapshot()
+                    door_opened_at = time.monotonic()
                     status = "Door opened - learning the scene"
 
                 elif door_open:
@@ -258,9 +264,11 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
                     else:
                         quiet.append(frame)
                         history.append((time.monotonic(), frame))
-                    if reference_frame is None and len(quiet) == QUIET_FRAMES:
+                    adjusting = time.monotonic() - door_opened_at < LIGHT_SETTLE_S
+                    if reference_frame is None and not adjusting and len(quiet) == QUIET_FRAMES:
                         reference_frame = steady_frame(list(quiet))
                     status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
+                              else "Adjusting to the light" if reference_frame is None and adjusting
                               else "Ready - put something in or take something out")
                     if signal["hand_left"]:
                         # The one photo for this trip: the steady view once the hand is gone.
