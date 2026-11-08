@@ -86,6 +86,11 @@ class Recipe:
         return None if self.minutes is None else self.minutes + self.inactive_min
 
 
+def source_text(text: str) -> str:
+    r"""Food.com text escaped once or twice: 'salt \u0026 pepper', 'Mac &amp; Cheese' -> plain characters."""
+    return html.unescape(re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), text))
+
+
 def _fts_terms(text: str) -> list[str]:
     return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1]
 
@@ -199,17 +204,17 @@ class RecipeStore:
         # shows them (the search index keeps the raw title).
         ingredients = json.loads(row["ingredients"])
         for ing in ingredients:
-            ing["name"] = html.unescape(ing["name"])
+            ing["name"] = source_text(ing["name"])
             # Recomputed on read so improvements to ingredient matching apply without a rebuild.
             ing["canon"] = canonical(ing["name"])
         return Recipe(
-            id=row["id"], name=clean_title(html.unescape(row["name"])), cuisine=row["cuisine"], minutes=row["minutes"],
+            id=row["id"], name=clean_title(source_text(row["name"])), cuisine=row["cuisine"], minutes=row["minutes"],
             servings=row["servings"],
             nutrition={k: row[k] for k in ("calories", "protein_g", "fat_g", "carbs_g", "fiber_g", "sugar_g", "sodium_mg")},
             image_url=row["image_url"],
-            description=html.unescape(row["description"]) if row["description"] else None,
+            description=source_text(row["description"]) if row["description"] else None,
             tags=json.loads(row["tags"]), ingredients=ingredients,
-            steps=clean_steps([html.unescape(s) for s in json.loads(row["steps"])]),
+            steps=clean_steps([source_text(s) for s in json.loads(row["steps"])]),
         )
 
 

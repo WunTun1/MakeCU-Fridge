@@ -106,12 +106,12 @@ def test_chat_adds_to_the_grocery_list_and_undo_removes_only_those(kitchen, db, 
 def test_without_shopping_offers_leftovers_then_one_item_away(kitchen, monkeypatch):
     monkeypatch.setattr(chatbot_module, "make_client", lambda: None)
     out = kitchen.chat("What can I make without shopping?")
-    assert out["reply"].startswith("Nothing in the library uses only what you have. Your Drastic Chicken "
-                                   "leftovers (1 serving) are ready, and these need one thing.")
-    assert "There are no recipes" not in out["reply"]
-    names = [c["name"] for c in out["recipes"]]
-    assert names[0] == "Drastic Chicken" and len(names) >= 2
-    assert all(len(c["missing"]) + len(c["short"]) == 1 for c in out["recipes"][1:])
+    assert out["reply"] == ("Your Drastic Chicken leftovers (1 serving) are ready. "
+                            "These need one thing from the store.")
+    leftovers, *near = out["recipes"]
+    assert leftovers["name"] == "Drastic Chicken leftovers" and leftovers["leftovers"]["servings"] == 1
+    assert leftovers["missing"] == [] and leftovers["short"] == []  # never a Buy line under "ready"
+    assert near and all(len(c["missing"]) + len(c["short"]) == 1 for c in near)
 
 
 # ------------------------------------------------------------ exclusions, card-true text

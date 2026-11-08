@@ -78,6 +78,8 @@ export type InventoryEntry = Measured & {
   shelf: number | null;
   /** Cooked food from a recipe, counted in servings. */
   leftovers: boolean;
+  /** Leftovers whose recipe has a profile allergen: ["soy"]. */
+  contains: string[];
 };
 
 export type Macros = { calories: number; protein_g: number; carbs_g: number; fat_g: number };
@@ -166,12 +168,24 @@ export type GroceryEntry = Measured & {
 
 export type Horizon = 1 | 3 | 7 | null;
 
+/** Food you'll likely throw some of away, so the list doesn't restock it. */
+export type UseFirst = Measured & {
+  product_id: number;
+  name: string;
+  expires_in_days: number;
+  likely_wasted_g: number;
+  days_left: number | null;
+  /** What a normal restock would buy; null when it wouldn't buy any. */
+  restock_g: number | null;
+};
+
 export type GroceryList = {
   trip_in_days: Horizon;
   trip_date: string | null;
   trip_days_away: number | null;
   covers_until: string | null;
   items: GroceryEntry[];
+  use_first: UseFirst[];
 };
 
 export type ReviewItem = {
@@ -230,6 +244,8 @@ export type RecipeCard = {
   swaps: Swap[];
   uses_expiring: string[];
   reasons: string[];
+  /** A chat card for leftovers in the fridge: ready to eat, nothing to buy. */
+  leftovers?: { servings: number; expires_in_days: number | null };
 };
 
 export type RecipeLine = {
@@ -240,6 +256,10 @@ export type RecipeLine = {
   on_hand?: string;
   use?: string;
   note?: string;
+  /** "Butter": the alternative you have in an "X or Y" line. */
+  using?: string;
+  /** The profile allergy this line conflicts with. */
+  allergy?: string;
 };
 
 export type RecipeDetail = RecipeCard & {
@@ -252,6 +272,8 @@ export type RecipeDetail = RecipeCard & {
   leftovers: { product_id: number; servings: number } | null;
   /** Cooked and logged today. */
   logged_meal_id: number | null;
+  /** Profile allergies in this recipe, with the ingredient lines that carry them. */
+  allergens: { allergy: string; lines: string[] }[];
 };
 
 /** One product an "I made this" takes from. */
@@ -290,7 +312,7 @@ export const api = {
   grocery: () => request<GroceryList>('/api/grocery'),
   setHorizon: (tripInDays: Horizon) => request<GroceryList>('/api/grocery/horizon', { method: 'PUT', body: JSON.stringify({ trip_in_days: tripInDays }) }),
   addToGrocery: (body: { names: string[]; source?: 'manual' | 'recipe'; recipe_id?: number; recipe_name?: string }) =>
-    post<{ ids: number[] }>('/api/grocery/items', body),
+    post<{ ids: number[]; new: boolean[] }>('/api/grocery/items', body),
   checkGrocery: (id: number, checked: boolean) => patch<{ ok: true }>(`/api/grocery/items/${id}`, { checked }),
   /** Removes a row (or brings it back); an automatic row stays off for this trip. */
   hideGrocery: (id: number, hidden: boolean) => patch<{ ok: true }>(`/api/grocery/items/${id}`, { hidden }),

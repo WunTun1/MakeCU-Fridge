@@ -2,12 +2,14 @@ import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 
+import { Button } from '@/components/Button';
 import { ErrorCard } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
 import { api, type SearchResult } from '@/lib/api';
 import { LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
 import { useColors, useUi } from '@/lib/theme';
 import { relativeDays } from '@/lib/time';
+import { useAddToGrocery } from '@/lib/useAddToGrocery';
 
 const DEBOUNCE_MS = 250;
 
@@ -57,7 +59,7 @@ export default function Search() {
         accessibilityLabel="Search your food"
       />
       {error && <ErrorCard message={error} />}
-      {q !== '' && visible.length === 0 && !error && <Text style={ui.detail}>No food matches &quot;{q}&quot;.</Text>}
+      {q !== '' && visible.length === 0 && !error && <NotInFridge query={q} />}
       {visible.map((r) => (
         <Link key={r.product_id} href={{ pathname: '/item/[id]', params: { id: r.product_id } }} asChild>
           <Pressable style={ui.card}>
@@ -69,5 +71,20 @@ export default function Search() {
         </Link>
       ))}
     </ScrollView>
+  );
+}
+
+/** Nothing found: say so, and offer the next step. */
+function NotInFridge({ query }: { query: string }) {
+  const ui = useUi();
+  const addToGrocery = useAddToGrocery();
+  const name = query.toLowerCase();
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={ui.detail}>No {name} in the fridge</Text>
+      <View style={{ flexDirection: 'row' }}>
+        <Button variant="outline" title={`Add ${name} to grocery list`} onPress={() => addToGrocery(name, name)} />
+      </View>
+    </View>
   );
 }

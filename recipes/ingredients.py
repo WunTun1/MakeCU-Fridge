@@ -199,7 +199,7 @@ SPECIFIC_FORMS = {"breast", "thigh", "leg", "drumstick", "wing", "tenderloin", "
 MATCH_DESCRIPTORS = {
     "greek", "plain", "whole", "skim", "low-fat", "nonfat", "fat-free", "unsalted", "salted", "sweet",
     "fresh", "frozen", "large", "small", "boneless", "skinless", "shredded", "grated", "sharp", "mild",
-    "light", "heavy",
+    "light", "heavy", "leftover", "quick-cooking",
 }
 
 
@@ -219,6 +219,20 @@ def matches(recipe_ingredient: str, inventory_name: str) -> bool:
     return len(small) == 1 and len(extra) == 1 and extra <= SPECIFIC_FORMS
 
 
+# Foods made from an allergen, which don't say so in their name: teriyaki is soy sauce.
+_SOY_FOODS = {"soya", "soy sauce", "soybean", "tamari", "shoyu", "teriyaki", "hoisin", "ponzu", "natto", "lecithin"}
+_GLUTEN_FOODS = {"soy sauce", "teriyaki", "panko", "seitan", "beer", "bulgur", "semolina", "farro"}
+_DAIRY_FOODS = {"half-and-half", "sour cream", "casein", "custard"}
+MADE_FROM: dict[str, set[str]] = {
+    "dairy": _DAIRY_FOODS,
+    "milk": _DAIRY_FOODS,
+    "egg": {"aioli", "meringue"},
+    "gluten": _GLUTEN_FOODS | {"rye"},
+    "wheat": _GLUTEN_FOODS,
+    "fish": {"fish sauce", "worcestershire", "anchovy", "caesar"},
+    "soy": _SOY_FOODS,
+}
+
 # Allergy keywords -> ingredient words that contain that allergen. Allergies are a
 # hard filter in code, never left to the AI.
 ALLERGEN_TERMS: dict[str, set[str]] = {
@@ -235,6 +249,8 @@ ALLERGEN_TERMS: dict[str, set[str]] = {
     "soy": {"soy", "tofu", "edamame", "tempeh", "miso"},
     "sesame": {"sesame", "tahini"},
 }
+for _allergy, _foods in MADE_FROM.items():
+    ALLERGEN_TERMS[_allergy] |= _foods
 
 
 # Someone allergic to one tree nut can't eat "1 cup nuts" or "add the nuts" either.
@@ -269,3 +285,38 @@ def allergen_found(text: str, allergies: list[str]) -> tuple[str, str] | None:
 def allergen_hits(texts: list[str], allergies: list[str]) -> list[str]:
     """Ingredient lines (or titles, steps) that conflict with any allergy."""
     return [t for t in texts if allergen_found(t, allergies)]
+
+
+def made_from(food: str, allergy: str) -> bool:
+    """'teriyaki' is made from soy; 'tofu' is soy itself, and 'shrimp' a kind of shellfish."""
+    key = allergy.strip().lower().rstrip("s")
+    return _singular(food.lower()) in MADE_FROM.get(key, set())
+
+
+# Single-use or pricey things a "cheap" ask never sends you out to buy.
+SPECIALTY = {"berbere", "saffron", "truffle", "pine nut", "dripping", "chorizo", "prosciutto", "lobster", "crab",
+             "scallop", "vanilla bean", "sumac", "mascarpone"}
+
+
+def is_specialty(name: str) -> bool:
+    return any(_word_pattern(term).search(name) for term in SPECIALTY)
+
+
+_ALTERNATIVE_SPLIT = re.compile(r"\s+or\s+|(?<=[a-z])\s*/\s*(?=[a-z])", re.I)
+
+
+def _without_amount(text: str) -> str:
+    """'4 cups leftover cooked rice' -> 'leftover cooked rice'."""
+    words = text.split()
+    while words and re.fullmatch(r"[\d/.\-]+", words[0]):
+        words.pop(0)
+    if len(words) > 1 and words[0].lower().rstrip(".") in UNITS:
+        words.pop(0)
+    return " ".join(words)
+
+
+def alternatives(name: str) -> list[str]:
+    """'margarine or 1/4 cup butter' -> ['margarine', 'butter']; just [name] when there's no choice."""
+    text = re.sub(r"\(.*?(\)|$)", " ", name).split(",")[0]
+    alts = [a for a in (_without_amount(p) for p in _ALTERNATIVE_SPLIT.split(text)) if canonical(a)]
+    return alts if len(alts) > 1 else [name]

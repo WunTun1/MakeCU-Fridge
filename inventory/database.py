@@ -697,6 +697,10 @@ class Database:
         with self.cursor() as cur:
             cur.execute("UPDATE grocery_entries SET checked = ? WHERE id = ?", (int(checked), entry_id))
 
+    def set_grocery_amount(self, entry_id: int, amount: str | None) -> None:
+        with self.cursor() as cur:
+            cur.execute("UPDATE grocery_entries SET amount = ? WHERE id = ?", (amount, entry_id))
+
     def set_grocery_hidden(self, entry_id: int, hidden: bool) -> None:
         with self.cursor() as cur:
             cur.execute("UPDATE grocery_entries SET hidden = ? WHERE id = ?", (int(hidden), entry_id))

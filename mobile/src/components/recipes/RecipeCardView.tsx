@@ -2,6 +2,7 @@ import { Pressable, Text } from 'react-native';
 
 import type { RecipeCard } from '@/lib/api';
 import { makeStyles, useTextScale } from '@/lib/theme';
+import { whenWord } from '@/lib/time';
 
 /** At Large text "30 min · 22 g protein · 764 kcal" needs two lines; at Default it fits in one. */
 const metaLines = (scale: number) => (scale > 1 ? 2 : 1);
@@ -42,9 +43,17 @@ function metaText(card: RecipeCard, proteinFirst: boolean): string {
   return (proteinFirst ? [protein, kcal, time] : [time, protein, kcal]).filter(Boolean).join(' · ');
 }
 
+/** "1 serving · keeps until Tuesday". */
+function leftoversText({ servings, expires_in_days: days }: NonNullable<RecipeCard['leftovers']>): string {
+  const amount = servings === 1 ? '1 serving' : `${servings} servings`;
+  if (days == null) return amount;
+  return `${amount} · ${days < 0 ? 'past its keep-by day' : `keeps until ${whenWord(days)}`}`;
+}
+
 /**
  * A recipe in the Cook tonight row or under a chat reply. Text only (the photo is on the recipe
- * page) and one fixed height, so a row of cards never leaves gaps or jumps.
+ * page) and one fixed height, so a row of cards never leaves gaps or jumps. Leftovers in the fridge
+ * say how much and until when, and that they're ready: never a Buy line.
  */
 export function RecipeCardView({
   card,
@@ -58,6 +67,21 @@ export function RecipeCardView({
 }) {
   const styles = useRecipeCardStyles();
   const scale = useTextScale();
+  if (card.leftovers) {
+    return (
+      <Pressable
+        onPress={onPress}
+        accessibilityRole="button"
+        style={({ pressed }) => [styles.card, pressed && { opacity: 0.75 }]}
+      >
+        <Text style={styles.name} numberOfLines={2}>
+          {card.name}
+        </Text>
+        <Text style={styles.detail}>{leftoversText(card.leftovers)}</Text>
+        <Text style={[styles.detail, styles.ready]}>Ready to eat</Text>
+      </Pressable>
+    );
+  }
   const lines = buyLines(card);
   const buy = [lines.buy, lines.short && (lines.buy ? lines.short.toLowerCase() : lines.short)].filter(Boolean).join(' · ');
   return (

@@ -146,11 +146,13 @@ def test_taste_learning_reorders_suggestions(engine):
     assert names[0] == "Chicken Tacos"
 
 
-def test_unlock_suggestions_name_purchases_that_complete_recipes(engine):
+def test_unlock_suggestions_name_one_purchase_that_completes_recipes(engine):
+    engine.store.add(_recipe(5, "Chicken Caprese", "italian", ["chicken breast", "mozzarella cheese"], protein=40))
+    engine.store.add(_recipe(6, "Saffron Chicken", "italian", ["chicken breast", "saffron"], protein=40))
+    engine.store.commit()
     picks = unlock_suggestions(engine.db, engine)
-    bought = [tuple(p.buy) for p in picks]
-    assert ("mozzarella cheese", "tomato sauce") in bought or ("salsa", "tortilla") in bought
-    assert all(p.unlocks >= 1 and p.examples for p in picks)
+    assert [p.buy for p in picks] == [["mozzarella cheese"]]  # two-item recipes and saffron are left out
+    assert picks[0].examples == ["Chicken Caprese"]
 
 
 def test_cook_preview_changes_nothing_and_undo_restores_everything(engine):

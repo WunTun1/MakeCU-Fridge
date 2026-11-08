@@ -8,9 +8,11 @@ import { Segmented } from '@/components/Segmented';
 import { useSnackbar } from '@/components/Snackbar';
 import { ErrorCard } from '@/components/States';
 import { formatAmount } from '@/lib/amount';
-import { api, type GroceryEntry, type GroceryList, type Horizon } from '@/lib/api';
+import { api, type GroceryEntry, type GroceryList, type Horizon, type UseFirst } from '@/lib/api';
+import { likelyWasted } from '@/lib/expiry';
 import { makeStyles, useColors, useUi } from '@/lib/theme';
 import { sentenceCase, tripText, whenWord } from '@/lib/time';
+import { useAddToGrocery } from '@/lib/useAddToGrocery';
 import { useApi } from '@/lib/useApi';
 
 const HORIZONS: { value: Horizon; label: string }[] = [
@@ -36,14 +38,15 @@ function reasonFor(entry: GroceryEntry): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-/** "Apples · 6", "Milk · 2 L"; plan rows show what the plan wants to buy. */
+/** How much a count is bought in: "12" eggs; anything else as it's measured, "700 g", "1 L". */
+function buyAmount(grams: number, unit: GroceryEntry['unit'], gramsPerUnit: number, name: string): string {
+  return unit === 'count' ? String(Math.round(grams / gramsPerUnit)) : formatAmount(grams, unit, gramsPerUnit, name);
+}
+
+/** "Apples · 6", "Milk · 2 L": the amount you gave, else what the plan wants to buy. */
 function titleFor(entry: GroceryEntry): string {
   const p = entry.plan;
-  const amount = !p
-    ? entry.amount
-    : entry.unit === 'count'
-      ? String(Math.round(p.buy_grams / entry.grams_per_unit))
-      : formatAmount(p.buy_grams, entry.unit, entry.grams_per_unit, entry.name);
+  const amount = entry.amount ?? (p && buyAmount(p.buy_grams, entry.unit, entry.grams_per_unit, entry.name));
   return amount ? `${sentenceCase(entry.name)} · ${amount}` : sentenceCase(entry.name);
 }
 
@@ -69,11 +72,11 @@ export default function Grocery() {
     }
   }, []);
 
-  useFocusEffect(
-    useCallback(() => {
-      run(api.grocery);
-    }, [run]),
-  );
+  const reload = useCallback(() => {
+    run(api.grocery);
+  }, [run]);
+  useFocusEffect(reload);
+  const addToGrocery = useAddToGrocery(reload);
 
   if (!list) {
     return (
@@ -122,6 +125,19 @@ export default function Grocery() {
       </View>
 
       {error && <ErrorCard message={error} />}
+
+      {list.use_first.length > 0 && (
+        <View>
+          <Text style={ui.h2}>Use first</Text>
+          {list.use_first.map((u) => (
+            <UseFirstRow
+              key={u.product_id}
+              row={u}
+              onAdd={(amount) => addToGrocery(`${u.name} ${amount}`, `${amount} ${u.name.toLowerCase()}`)}
+            />
+          ))}
+        </View>
+      )}
 
       <View style={[ui.card, { paddingVertical: 4 }, busy && { opacity: 0.6 }]}>
         <AddRow onAdd={(name) => add([name])} />
@@ -179,6 +195,34 @@ export default function Grocery() {
         </>
       )}
     </ScrollView>
+  );
+}
+
+/** "Chicken breast / About 413 g goes bad Monday", the same words as Home; "Add 700 g" if you need more anyway. */
+function UseFirstRow({ row, onAdd }: { row: UseFirst; onAdd: (amount: string) => void }) {
+  const ui = useUi();
+  const styles = useStyles();
+  const grams = row.restock_g;
+  const amount = grams != null ? buyAmount(grams, row.unit, row.grams_per_unit, row.name) : null;
+  const label = grams != null ? formatAmount(grams, row.unit, row.grams_per_unit, row.name) : null;
+  return (
+    <View style={styles.useFirst}>
+      <Pressable
+        onPress={() => router.push({ pathname: '/item/[id]', params: { id: row.product_id } })}
+        style={styles.useFirstText}
+        accessibilityRole="link"
+      >
+        <Text style={ui.text}>{sentenceCase(row.name)}</Text>
+        <Text style={ui.detail}>
+          {likelyWasted(row)} goes bad {whenWord(row.expires_in_days)}
+        </Text>
+      </Pressable>
+      {amount && (
+        <Pressable onPress={() => onAdd(amount)} style={styles.textButton} accessibilityRole="button">
+          <Text style={styles.link}>Add {label}</Text>
+        </Pressable>
+      )}
+    </View>
   );
 }
 
@@ -255,6 +299,8 @@ const useStyles = makeStyles((c, size) => ({
   fieldLabel: { color: c.text, fontSize: size(15), lineHeight: size(20), fontWeight: '600' },
   remove: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   textButton: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 4 },
+  useFirst: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 8 },
+  useFirstText: { flex: 1, minHeight: 44, justifyContent: 'center' },
   link: { color: c.accent, fontSize: size(15), fontWeight: '600' },
   addButton: {
     width: 48,

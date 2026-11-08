@@ -12,17 +12,20 @@ from datetime import date, timedelta
 
 from intelligence import clock
 from inventory.database import Database
-from intelligence.grocery import DEFAULT_TRIP_CADENCE_DAYS, grocery_plan, next_trip_date
+from intelligence.grocery import DEFAULT_TRIP_CADENCE_DAYS, grocery_plan, next_trip_date, use_first
 from recipes.ingredients import canonical, matches
 from recipes.titles import clean_title
 
 HORIZON_KEY = "grocery.horizon"
 TRIP_KEY = "grocery.trip_date"
 HORIZONS = (1, 3, 7)
+USE_FIRST_ROWS = 3
 
 _UNIT = r"(?:kg|g|l|ml|lb|lbs|oz)"
 _LEADING = re.compile(rf"^(\d+(?:\.\d+)?)\s*({_UNIT})?\s+(.+)$", re.I)     # "6 apples", "2 L milk"
 _TRAILING = re.compile(rf"^(.+?)\s+(\d+(?:\.\d+)?)\s*({_UNIT})?$", re.I)   # "apples 6", "milk 2 L"
+# "a dozen eggs" is 12 eggs; longest phrase first.
+AMOUNT_WORDS = [("half a dozen", 6), ("a dozen", 12), ("a couple of", 2), ("a couple", 2), ("an", 1), ("a", 1)]
 
 
 def normalize(name: str) -> str:
@@ -30,8 +33,11 @@ def normalize(name: str) -> str:
 
 
 def parse_entry(text: str) -> tuple[str, str | None]:
-    """'apples 6' / '6 apples' -> ('apples', '6'); '2 L milk' -> ('milk', '2 L')."""
+    """'apples 6' / '6 apples' -> ('apples', '6'); '2 L milk' -> ('milk', '2 L'); 'a dozen eggs' -> ('eggs', '12')."""
     text = " ".join(text.split())
+    for words, count in AMOUNT_WORDS:
+        if text.lower().startswith(words + " ") and len(text) > len(words) + 1:
+            return text[len(words) + 1:], str(count)
     lead = _LEADING.match(text)
     if lead:
         number, unit, name = lead.groups()
@@ -105,8 +111,8 @@ def build_list(db: Database) -> dict:
         if not _visible(e, trip_iso):
             continue
         p = plan_by_norm.get(e["norm"])
-        if e["source"] == "plan" and p is None:
-            continue  # the plan no longer needs it
+        if e["source"] == "plan" and (p is None or e["norm"] in own_norms):
+            continue  # the plan no longer needs it, or your own row for that food stands for it
         unit, per = units.get(p.product_id, ("g", 1.0)) if p else ("g", 1.0)
         items.append({
             "id": e["id"], "name": e["name"], "amount": e["amount"], "source": e["source"],
@@ -115,23 +121,44 @@ def build_list(db: Database) -> dict:
             "unit": unit, "grams_per_unit": per,
             "plan": p.__dict__ if p else None,
         })
+    listed = {normalize(i["name"]) for i in items if not i["checked"]}
     return {"trip_in_days": horizon, "trip_date": trip_iso, "trip_days_away": days_away(trip),
-            "covers_until": covers_until(trip), "items": items}
+            "covers_until": covers_until(trip), "items": items,
+            "use_first": [u for u in use_first(db, horizon) if normalize(u["name"]) not in listed][:USE_FIRST_ROWS]}
 
 
 def add_entry(
     db: Database, name: str, source: str, recipe_id: int | None = None, recipe_name: str | None = None,
     amount: str | None = None,
 ) -> tuple[int, bool]:
-    """(row id, whether it's new). A name already on the list isn't added again, just un-checked."""
+    """(row id, whether it's new). A food already on the list isn't added again: the row is un-checked
+    and a manual amount is added to its own ('Eggs · 6' plus 'a dozen eggs' is 'Eggs · 18')."""
     name = " ".join(name.split())
+    if amount is None:
+        name, amount = parse_entry(name)
     norm = normalize(name)
     trip = db.get_setting(TRIP_KEY)
-    existing = next((e for e in db.grocery_entries() if e["norm"] == norm and _visible(e, trip)), None)
+    rows = [e for e in db.grocery_entries() if e["norm"] == norm and _visible(e, trip)]
+    existing = next((e for e in rows if e["source"] != "plan"), rows[0] if rows else None)
     if existing:
         db.set_grocery_checked(existing["id"], False)
+        if amount and existing["source"] != "plan":
+            db.set_grocery_amount(existing["id"], _sum_amounts(existing["amount"], amount))
         return existing["id"], False
     return db.add_grocery_entry(name, norm, source, recipe_id, recipe_name, amount=amount), True
+
+
+def _sum_amounts(have: str | None, more: str) -> str:
+    """'6' + '12' -> '18'; '1 L' + '2 L' -> '3 L'; different units keep the newer amount."""
+    if not have:
+        return more
+    a, b = have.split(maxsplit=1), more.split(maxsplit=1)
+    try:
+        if a[1:] == b[1:]:
+            return " ".join([f"{float(a[0]) + float(b[0]):g}", *a[1:]])
+    except ValueError:
+        pass
+    return more
 
 
 def add_entries(
@@ -147,14 +174,15 @@ def add_entries(
 
 
 def check_off(db: Database, product_name: str) -> dict | None:
-    """You put it in the fridge, so you bought it: check off the matching open row, if any."""
+    """You put it in the fridge, so you bought it: check off every open row for that food. Returns the
+    first one, for the 'Checked off Eggs' note."""
     trip = db.get_setting(TRIP_KEY)
     norm = normalize(product_name)
-    for e in db.grocery_entries():
-        if not e["checked"] and _visible(e, trip) and (e["norm"] == norm or matches(e["norm"], norm)):
-            db.set_grocery_checked(e["id"], True)
-            return {"id": e["id"], "name": e["name"]}
-    return None
+    rows = [e for e in db.grocery_entries()
+            if not e["checked"] and _visible(e, trip) and (e["norm"] == norm or matches(e["norm"], norm))]
+    for e in rows:
+        db.set_grocery_checked(e["id"], True)
+    return {"id": rows[0]["id"], "name": rows[0]["name"]} if rows else None
 
 
 def listed_norms(db: Database) -> set[str]:

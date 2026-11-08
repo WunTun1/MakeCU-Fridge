@@ -211,6 +211,7 @@ function CookTonight({
 function LeftoversCard({ entry }: { entry: InventoryEntry }) {
   const styles = useRecipeCardStyles();
   const ui = useUi();
+  const c = useColors();
   return (
     <Pressable
       onPress={() => router.push({ pathname: '/item/[id]', params: { id: entry.product_id } })}
@@ -224,6 +225,9 @@ function LeftoversCard({ entry }: { entry: InventoryEntry }) {
       <Text style={styles.detail} numberOfLines={2}>
         {keepsText(entry)}
       </Text>
+      {entry.contains.length > 0 && (
+        <Text style={[styles.detail, { color: c.danger }]}>Contains {entry.contains.join(', ')}</Text>
+      )}
     </Pressable>
   );
 }

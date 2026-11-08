@@ -21,9 +21,9 @@ from intelligence.consumption import grams_on_hand
 from intelligence.fridge_view import chat_inventory, day_word, fact_block, inventory_entries, leftovers_line
 from nutrition.intake import eat_product, get_intake, log_meal_eaten, log_nutrition, protein_mode
 from nutrition.lookup import lookup_nutrition_usda
-from recipes.engine import RecipeEngine, card
-from recipes.ingredients import (TREE_NUTS, allergen_found, allergen_hits, dislike_pattern, food_terms,
-                                 sentence_words)
+from recipes.engine import Match, RecipeEngine, card, leftovers_name, safe_recipes
+from recipes.ingredients import (TREE_NUTS, allergen_found, allergen_hits, dislike_pattern, food_terms, is_specialty,
+                                 made_from, sentence_words)
 from recipes.store import CUISINES, get_store
 
 log = logging.getLogger("refridge.nutrition.chatbot")
@@ -56,6 +56,9 @@ WITHOUT_SHOPPING = re.compile(r"\b(?:without|no)\s+(?:shopping|buying|going to t
 GROCERY_ADD = re.compile(r"\badd\s+(.+?)\s+to\s+(?:my\s+|the\s+)?(?:grocery|shopping)\s+list\b", re.I)
 LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+", re.I)
 UNDER_MINUTES = re.compile(r"\b(?:under|less than|within)\s+(\d+)\s*min", re.I)
+# "cheap", "on a budget": at most one thing to buy, and never a specialty item.
+BUDGET = re.compile(r"\b(?:cheap|cheaply|budget|inexpensive|broke)\b", re.I)
+BUDGET_MAX_TO_BUY = 1
 
 # Eating is not cooking: these messages never take a recipe's ingredients out of the fridge.
 LEFTOVER_WORDS = re.compile(r"\bleft\s*-?\s*overs?\b", re.I)
@@ -324,7 +327,11 @@ class NutritionistChatbot:
             min_servings=args.get("min_servings") or None, dinner=bool(DINNER_WORDS.search(self._turn_message)),
             exclude_titles=[p for p in map(dislike_pattern, excluded) if p],
         )
-        matches = self.engine.suggest(**search, min_protein_g=min_protein)
+        budget = bool(BUDGET.search(self._turn_message)) and not search["must_have_all"]
+        if budget:
+            matches = self._budget(search, min_protein)
+        else:
+            matches = self.engine.suggest(**search, min_protein_g=min_protein)
         result: dict = {}
         if min_protein and not matches:
             matches = self.engine.suggest(**search, min_protein_g=max(min_protein - PROTEIN_RELAX_G, 0))
@@ -341,42 +348,60 @@ class NutritionistChatbot:
         if excluded and matches:
             what = f"{query.lower()} recipes" if query else "recipes"
             self._say(f"Here are {what} without {_join(excluded)}.")
+        if budget and matches:
+            self._say("These need at most one thing from the store.")
         result["recipes"] = [_recipe_facts(m) for m in matches]
         return result
 
+    def _budget(self, search: dict, min_protein: float | None) -> list:
+        """Cheap: nothing to buy first, then one thing, never a specialty item (saffron, dripping)."""
+        pool = self.engine.suggest(**search, min_protein_g=min_protein, limit=NEAR_POOL)
+        cheap = [m for m in pool if len(m.to_buy) <= BUDGET_MAX_TO_BUY and not any(map(is_specialty, m.to_buy))]
+        return sorted(cheap, key=lambda m: len(m.to_buy))[:MAX_CARDS]
+
     def _nothing_makeable(self, search: dict) -> dict:
-        """Nothing uses only what you have: leftovers first, then the best recipes needing one thing.
-        Code writes the whole reply, so it can't say "there are no recipes"."""
-        pantry = self.engine.pantry()
+        """The search found nothing that uses only what you have: leftovers first (as leftovers, ready
+        to eat), then recipes with nothing to buy from what's in the fridge (when the search was
+        narrowed by words or cuisine), else the best ones needing one thing. Code writes the whole
+        reply, and never claims the library has nothing."""
+        allergies = self._get_goals()["allergies"]
         left_cards, left_names = [], []
         for e in self._leftovers_entries():
             product = self.db.get_product(e["product_id"])
             recipe = self.engine.store.get(product["recipe_id"]) if e["location"] != "freezer" else None
-            if recipe is not None:
-                left_cards.append(card(self.engine.analyze(recipe, pantry)))
-                left_names.append(f"{recipe.name} leftovers ({_servings(round(e['grams'] / product['grams_per_unit']))})")
-        pool = self.engine.suggest(**{**search, "must_have_all": False}, limit=NEAR_POOL)
-        near = [m for m in pool if len(m.to_buy) == 1][:NEAR_CARDS]
-        say = "Nothing in the library uses only what you have."
-        if left_names:
-            say += f" Your {_join(left_names)} are ready"
-            say += ", and these need one thing." if near else "."
-        elif near:
-            say += " These need one thing."
+            if recipe is None or not safe_recipes([recipe], allergies):
+                continue
+            servings = round(e["grams"] / product["grams_per_unit"])
+            left_cards.append({**card(Match(recipe)), "name": leftovers_name(recipe.name),
+                               "leftovers": {"servings": servings, "expires_in_days": e["expires_in_days"]}})
+            left_names.append(f"{recipe.name} leftovers ({_servings(servings)})")
+        narrowed = search["query"] or search["cuisine"]
+        ready = self.engine.suggest(**{**search, "query": None, "cuisine": None}, limit=NEAR_CARDS) if narrowed else []
+        pool = [] if ready else self.engine.suggest(**{**search, "must_have_all": False}, limit=NEAR_POOL)
+        shown = ready or [m for m in pool if len(m.to_buy) == 1][:NEAR_CARDS]
+        say = [f"Your {_join(left_names)} are ready."] if left_names else []
+        if ready:
+            say.append("These use only what you have.")
+        elif shown:
+            say.append("These need one thing from the store.")
         else:
-            say += " Open Grocery to see what to buy."
+            say.append("Open Grocery to see what to buy.")
         self._turn_cards = []
-        self._remember_cards(left_cards + [card(m) for m in near])
+        self._remember_cards(left_cards + [card(m) for m in shown])
         self._turn_code_only = True
-        self._say(say)
-        return {"recipes": [], "say": say, "need_one_thing": [_recipe_facts(m) for m in near]}
+        self._say(" ".join(say))
+        return {"recipes": [_recipe_facts(m) for m in ready], "say": " ".join(say),
+                "need_one_thing": [] if ready else [_recipe_facts(m) for m in shown]}
 
     def _blocked(self, blocked: tuple[str, str], args: dict, query: str | None) -> dict:
         """The allergy sentence, then the same search without the allergen word when anything is left of
         it: 'You listed walnuts as an allergy, so I won't suggest recipes with them. Here are banana
         breads without nuts.'"""
         allergy, food = blocked
-        say = f"You listed {allergy} as an allergy, so I won't suggest recipes with {'them' if allergy.endswith('s') else 'it'}."
+        if made_from(food, allergy):
+            say = f"You listed {allergy} as an allergy, and {food} is made with {allergy}, so I won't suggest it."
+        else:
+            say = f"You listed {allergy} as an allergy, so I won't suggest recipes with {'them' if allergy.endswith('s') else 'it'}."
         rest = re.sub(rf"\b{re.escape(food)}\b", " ", query or "", flags=re.I).split()
         self._turn_cards = []
         if rest and not allergen_found(" ".join(rest), [allergy]):

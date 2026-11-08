@@ -92,7 +92,8 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
 
   const loggedMeal = recipe.logged_meal_id;
   const left = recipe.leftovers;
-  const needed = [...recipe.missing, ...recipe.short.map((s) => s.name)];
+  const allergyLines = new Set(recipe.ingredients.filter((l) => l.allergy).map((l) => l.name));
+  const needed = [...recipe.missing, ...recipe.short.map((s) => s.name)].filter((n) => !allergyLines.has(n));
   const toBuy = needed.filter((m) => !onList.has(m));
 
   async function addToList(names: string[]) {
@@ -162,6 +163,14 @@ export function RecipeDetailView({ recipeId }: { recipeId: number }) {
         </Text>
 
         <Text style={styles.meta}>{metaLine(recipe)}</Text>
+        {recipe.allergens.map((a) => (
+          <View key={a.allergy} style={styles.allergy} accessibilityRole="alert">
+            <Text style={styles.meta}>
+              Contains {a.allergy}
+              {a.lines.length > 0 ? `: ${a.lines.join(', ')}` : ''}. You listed {a.allergy} as an allergy.
+            </Text>
+          </View>
+        ))}
         <Text style={styles.muted}>
           {recipe.servings != null
             ? 'Nutrition per serving, from the recipe source.'
@@ -276,10 +285,11 @@ type Badge = { label: string; color: string; border: string | null; check?: bool
 
 /**
  * Have is the common case, so it's neutral with a check. Short is amber, Buy is the accent
- * (it's tappable). Red is never used here: red means "goes bad today or tomorrow".
+ * (it's tappable). Red is only for a line with a profile allergen, always with the word "Allergy".
  * Staples (salt, oil, water from the pasta) say "Pantry" with no border.
  */
-function badgeFor(status: RecipeLine['status'], listed: boolean, c: Palette): Badge {
+function badgeFor({ status, allergy }: RecipeLine, listed: boolean, c: Palette): Badge {
+  if (allergy) return { label: 'Allergy', color: c.danger, border: c.danger };
   if (listed && (status === 'missing' || status === 'short'))
     return { label: 'On list', color: c.textSecondary, border: c.border };
   switch (status) {
@@ -299,7 +309,7 @@ function badgeFor(status: RecipeLine['status'], listed: boolean, c: Palette): Ba
 function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: boolean; onBuy: () => void }) {
   const styles = useStyles();
   const c = useColors();
-  const b = badgeFor(line.status, listed, c);
+  const b = badgeFor(line, listed, c);
   const badge = (
     <View style={[styles.badge, b.border ? { borderColor: b.border } : styles.plainBadge]}>
       {b.check && <FontAwesome name="check" size={12} color={b.color} />}
@@ -308,7 +318,7 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
   );
   return (
     <View style={styles.ingRow}>
-      {line.status === 'missing' && !listed ? (
+      {line.status === 'missing' && !listed && !line.allergy ? (
         <Pressable
           onPress={onBuy}
           hitSlop={{ top: 11, bottom: 11, left: 8, right: 8 }}
@@ -331,6 +341,7 @@ function IngredientRow({ line, listed, onBuy }: { line: RecipeLine; listed: bool
             line.name
           )}
           {line.on_hand ? <Text style={{ color: c.warn }}> · you have {line.on_hand}</Text> : null}
+          {line.using ? <Text style={{ color: c.textSecondary }}> · using your {line.using.toLowerCase()}</Text> : null}
         </Text>
         {line.note && <Text style={styles.detail}>{line.note}</Text>}
       </View>
@@ -364,6 +375,7 @@ const useStyles = makeStyles((c, size) => ({
   stepRow: { flexDirection: 'row', gap: 12 },
   stepNum: { color: c.accent, fontWeight: '700', width: size(24), fontSize: size(15), lineHeight: size(22) },
   leftovers: { gap: 8 },
+  allergy: { borderWidth: 1, borderColor: c.danger, borderRadius: 12, padding: 16 },
   buttonRow: { flexDirection: 'row', minHeight: 48 },
   bar: {
     position: 'absolute',

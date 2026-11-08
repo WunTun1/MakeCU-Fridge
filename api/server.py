@@ -36,7 +36,7 @@ from nutrition import intake
 from nutrition.chatbot import NutritionistChatbot
 from nutrition.intake import get_intake, log_nutrition, meals, protein_mode
 from nutrition.lookup import lookup_barcode_off
-from recipes.engine import card
+from recipes.engine import allergens_in, card
 from sensors.scale import get_scale_reader
 from vision.debug import view as vision_view
 
@@ -270,9 +270,19 @@ def post_event(event: EventIn):
 
 
 # ------------------------------------------------------------------- summary
+def _with_allergens(inventory: list[dict]) -> list[dict]:
+    """Leftovers cooked from a recipe with a profile allergen say so: contains ["soy"]."""
+    allergies = json.loads(db.get_profile()["allergies"] or "[]")
+    for e in inventory:
+        recipe_id = e["leftovers"] and allergies and db.get_product(e["product_id"])["recipe_id"]
+        recipe = chatbot.engine.store.get(recipe_id) if recipe_id else None
+        e["contains"] = [a["allergy"] for a in allergens_in(recipe, allergies)] if recipe else []
+    return inventory
+
+
 @app.get("/api/summary")
 def get_summary():
-    inventory = inventory_entries(db)
+    inventory = _with_allergens(inventory_entries(db))
     trip_date = grocery_list.trip_date_for(db, grocery_list.get_horizon(db))
     today_intake = get_intake(db, "today")
 
@@ -348,8 +358,10 @@ def put_grocery_horizon(body: HorizonIn):
 
 @app.post("/api/grocery/items")
 def add_grocery_items(body: GroceryAddIn):
+    """`new` per name: false when it went into a row already on the list (so Undo leaves that row)."""
+    before = {e["id"] for e in db.grocery_entries()}
     ids = grocery_list.add_entries(db, body.names, body.source, body.recipe_id, body.recipe_name)
-    return {"ids": ids}
+    return {"ids": ids, "new": [i not in before for i in ids]}
 
 
 @app.patch("/api/grocery/items/{entry_id}")

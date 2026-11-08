@@ -25,7 +25,8 @@ from intelligence.expiry import days_until
 from inventory import events as inv_events
 from inventory.database import Database
 from inventory.units import format_amount
-from recipes.ingredients import allergen_hits, canonical, dislike_pattern, matches, needs_no_badge
+from recipes.ingredients import (allergen_found, allergen_hits, alternatives, canonical, dislike_pattern, matches,
+                                 needs_no_badge)
 from recipes.store import Recipe, RecipeStore
 from recipes.substitutions import Swap, find_swap
 
@@ -180,6 +181,24 @@ def has_allergen(recipe: Recipe, allergies: list[str]) -> bool:
                                                   allergies))
 
 
+def safe_recipes(items: list, allergies: list[str]) -> list:
+    """The one allergy gate between every recipe source and the screen. Takes recipes or matches."""
+    return [x for x in items if not has_allergen(getattr(x, "recipe", x), allergies)]
+
+
+def allergens_in(recipe: Recipe, allergies: list[str]) -> list[dict]:
+    """Per allergy the recipe conflicts with: {allergy, lines}, the ingredient lines as written
+    ('1 tablespoon soy sauce'); no lines when only the title or steps name it."""
+    out = []
+    for allergy in allergies:
+        if not has_allergen(recipe, [allergy]):
+            continue
+        lines = [" ".join(str(x) for x in (i.get("quantity"), i.get("unit"), display_name(i["name"])) if x)
+                 for i in recipe.ingredients if allergen_found(i["name"], [allergy])]
+        out.append({"allergy": allergy.strip().lower(), "lines": lines})
+    return out
+
+
 def _protein_of(m: Match) -> float | None:
     return m.recipe.nutrition.get("protein_g")
 
@@ -240,20 +259,45 @@ class RecipeEngine:
                 return have
         return None
 
+    def _source(self, canon: str, pantry: Pantry) -> tuple[str, Swap | None] | None:
+        """(pantry item, swap or None) this ingredient draws from, if any."""
+        if have := self._have(canon, pantry):
+            return have, None
+        if swap := find_swap(canon, pantry.items):
+            return next(c for c, d in pantry.items.items() if d == swap.use), swap
+        return None
+
+    def _pick(self, ing: dict, alts: list[tuple[str, str]], pantry: Pantry) -> tuple[str, str, Swap | None] | None:
+        """'margarine or 1/4 cup butter': of the (text, canonical) alternatives, the one you have enough
+        of (no swap first), else the first you have any of. (alternative, pantry item, swap)."""
+        options = [(alt, *src) for alt, canon in alts if (src := self._source(canon, pantry))]
+
+        def covers(option) -> bool:
+            g = grams_needed(ing, pantry.products[option[1]])
+            return g is None or pantry.grams(option[1]) >= HAVE_RATIO * g
+
+        options.sort(key=lambda o: o[2] is not None)
+        return next((o for o in options if covers(o)), options[0] if options else None)
+
     def lines(self, recipe: Recipe, pantry: Pantry) -> list[dict]:
         """One entry per ingredient line: name, canon, status (have|short|swap|missing|staple), the
-        pantry item it draws from (source), on_hand for short lines, and use/note for swaps."""
+        pantry item it draws from (source), on_hand for short lines, use/note for swaps, and for
+        'X or Y' lines the alternative used (alt, using)."""
         out: list[dict] = []
         for ing in recipe.ingredients:
             canon = ing.get("canon") or canonical(ing["name"])
-            line: dict = {"name": display_name(ing["name"]), "canon": canon, "ing": ing, "source": None}
+            alts = alternatives(ing["name"])
+            name = " or ".join(alts) if len(alts) > 1 else display_name(ing["name"])
+            line: dict = {"name": name, "canon": canon, "ing": ing, "source": None}
             if needs_no_badge(ing["name"], canon, ing.get("unit"), ing.get("quantity")):
                 line["status"] = "staple"
-            elif have := self._have(canon, pantry):
-                line["source"] = have
-            elif swap := find_swap(canon, pantry.items):
-                line["source"] = next(c for c, d in pantry.items.items() if d == swap.use)
-                line.update(use=swap.use, note=swap.note, swap=swap)
+            elif picked := self._pick(ing, [(a, canonical(a)) for a in alts] if len(alts) > 1 else [(name, canon)],
+                                      pantry):
+                alt, line["source"], swap = picked
+                if swap:
+                    line.update(use=swap.use, note=swap.note, swap=swap)
+                if len(alts) > 1:
+                    line.update(alt=alt, using=pantry.items[line["source"]])
             else:
                 line["status"] = "missing"
             out.append(line)
@@ -292,7 +336,7 @@ class RecipeEngine:
             elif status == "swap":
                 m.swaps.append(line["swap"])
             elif status == "short":
-                m.short.append({"name": line["name"], "on_hand": line["on_hand"],
+                m.short.append({"name": line.get("alt") or line["name"], "on_hand": line["on_hand"],
                                 **({"use": line["use"]} if line.get("use") else {})})
             else:
                 m.missing.append(line["name"])
@@ -343,9 +387,7 @@ class RecipeEngine:
         relevance = dict(hits)
 
         matches_: list[Match] = []
-        for recipe in self.store.get_many([i for i, _ in hits]):
-            if has_allergen(recipe, allergies):
-                continue  # hard filter, never shown
+        for recipe in safe_recipes(self.store.get_many([i for i, _ in hits]), allergies):
             if exclude_titles and any(p.search(recipe.name) for p in exclude_titles):
                 continue  # "besides salad"
             if max_minutes and (recipe.total_minutes or 0) > max_minutes:
@@ -415,11 +457,13 @@ class RecipeEngine:
     # ------------------------------------------------------- one recipe
     def adapted(self, recipe_id: int) -> dict | None:
         """Full recipe with each ingredient marked have / short / swap / missing / staple, and
-        swaps applied to the steps — ready to cook from."""
+        swaps applied to the steps — ready to cook from. A line with a profile allergen carries
+        `allergy`, and `allergens` lists them for the warning under the title."""
         recipe = self.store.get(recipe_id)
         if recipe is None:
             return None
         pantry = self.pantry()
+        allergies, _ = self.profile_filters()
         m = self.analyze(recipe, pantry)
         out = []
         for line in self.lines(recipe, pantry):
@@ -427,6 +471,10 @@ class RecipeEngine:
             amount = " ".join(str(x) for x in (ing.get("quantity"), ing.get("unit")) if x)
             entry = {"name": line["name"], "amount": amount or None, "status": line["status"]}
             entry.update({k: line[k] for k in ("on_hand", "use", "note") if line.get(k)})
+            if line["status"] == "have" and line.get("using"):
+                entry["using"] = line["using"]
+            if found := allergen_found(ing["name"], allergies):
+                entry["allergy"] = found[0]
             out.append(entry)
 
         steps = list(recipe.steps)
@@ -434,7 +482,8 @@ class RecipeEngine:
             pattern = re.compile(rf"\b{re.escape(s.missing)}\w*", re.I)
             steps = [pattern.sub(s.use.lower(), step) for step in steps]
 
-        return {**card(m), "ingredients": out, "steps": steps, "description": recipe.description}
+        return {**card(m), "ingredients": out, "steps": steps, "description": recipe.description,
+                "allergens": allergens_in(recipe, allergies)}
 
     # ------------------------------------------------------- "I made this"
     def planned_use(self, recipe_id: int, made: float = 1.0) -> list[dict] | None:
