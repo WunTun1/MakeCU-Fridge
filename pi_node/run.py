@@ -6,7 +6,7 @@
 
 It
   1. switches to the project's .venv Python (and creates pi_node/.env from the example if missing),
-  2. brings up the direct-cable link if BACKEND_URL is on it (192.168.50.x, see kiosk/HYBRID_SETUP.md),
+  2. brings up the direct-cable link if BACKEND_URL is on it (192.168.50.x; pi_node/link.py, see kiosk/HYBRID_SETUP.md),
   3. runs the sensor/camera agent (pi_node.agent), restarting it if it ever crashes,
   4. waits for the backend, then opens /kiosk in Chromium, reopening it if it closes,
   5. says what it found: backend, camera, scale calibration.
@@ -30,9 +30,6 @@ ROOT = Path(__file__).resolve().parent.parent
 PI_DIR = ROOT / "pi_node"
 VENV = ROOT / ".venv"
 
-DIRECT_CONNECTION = "direct"               # the NetworkManager profile from HYBRID_SETUP.md
-DIRECT_NETWORK = ipaddress.ip_network("192.168.50.0/24")
-DIRECT_PI_ADDRESS = "192.168.50.2/24"
 RESTART_DELAY_S = 3
 
 
@@ -64,39 +61,17 @@ def ensure_env_file() -> None:
         sys.exit(1)
 
 
-def local_ipv4() -> list[ipaddress.IPv4Interface]:
-    try:
-        out = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    return [ipaddress.ip_interface(line.split()[3]) for line in out.splitlines() if len(line.split()) > 3]
-
-
 def ensure_direct_link(backend_host: str) -> None:
-    """If the backend is on the direct cable's network and this Pi has no address there,
-    bring the cable link up (creating the NetworkManager profile the first time)."""
+    """If the backend is on the direct cable's network, make sure this Pi is on it too
+    (pi_node/link.py, which also runs on its own)."""
+    from pi_node import link
+
     try:
         backend_ip = ipaddress.ip_address(backend_host)
     except ValueError:
         return  # a hostname: nothing to set up
-    if backend_ip not in DIRECT_NETWORK or not shutil.which("nmcli"):
-        return
-    if any(i.ip in DIRECT_NETWORK for i in local_ipv4()):
-        return
-    say("Bringing up the direct cable link (192.168.50.2)...")
-    exists = subprocess.run(["nmcli", "-t", "-f", "NAME", "con", "show"], capture_output=True, text=True).stdout.split()
-    steps = [] if DIRECT_CONNECTION in exists else [
-        ["nmcli", "con", "add", "type", "ethernet", "ifname", "eth0", "con-name", DIRECT_CONNECTION,
-         "ipv4.method", "manual", "ipv4.addresses", DIRECT_PI_ADDRESS]]
-    steps.append(["nmcli", "con", "up", DIRECT_CONNECTION])
-    for cmd in steps:
-        if subprocess.run(cmd, capture_output=True).returncode != 0:
-            # Not allowed without sudo on this setup: try once with sudo (asks for the password).
-            if subprocess.run(["sudo", *cmd]).returncode != 0:
-                say("Couldn't bring the link up. Is the cable plugged into the Pi's Ethernet port?")
-                say("  Manually: sudo " + " ".join(cmd))
-                return
-    time.sleep(2)
+    if backend_ip in link.NETWORK:
+        link.ensure_link(quiet=True)
 
 
 def http_json(url: str, timeout: float = 2) -> dict | None:

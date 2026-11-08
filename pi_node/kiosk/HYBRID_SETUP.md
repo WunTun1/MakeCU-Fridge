@@ -106,6 +106,25 @@ picked up automatically. Ctrl+C stops everything.
 - `--windowed`: the fridge screen in a normal window (testing on the Pi desktop)
 - `--no-screen`: just the sensors and camera (e.g. over SSH)
 
+### Just the link (and updating the code over it)
+
+```
+python3 ~/MakeCU-Fridge/pi_node/link.py          # cable link up, check the laptop + backend answer
+python3 ~/MakeCU-Fridge/pi_node/link.py --pull   # ...and git pull from the laptop
+```
+
+No sensors, no screen; plain `python3`, so it works before the `.venv` exists. It also sets
+the `direct` profile to come up by itself at boot. For `--pull`, the laptop serves the repo
+read-only; on the laptop, from the folder that contains `MakeCU-Fridge`:
+
+```
+git daemon --reuseaddr --export-all --base-path=. --listen=192.168.50.1 MakeCU-Fridge
+```
+
+The fridge screen itself comes from the laptop's backend (its `mobile/dist` build), so a new
+kiosk only needs `npx expo export --platform web` on the laptop and a restart of `run.py` on
+the Pi — the backend tells the screen's browser to fetch the page fresh every time.
+
 (Just the agent, without the screen or the checks: `.venv/bin/python -m pi_node.agent`.)
 
 Then open `http://<computer-ip>:8000/kiosk` in a browser on

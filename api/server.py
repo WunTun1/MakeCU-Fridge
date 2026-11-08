@@ -873,6 +873,9 @@ def web_app(path: str):
     if not WEB_DIST.is_dir():
         raise HTTPException(404, "web build not found — run `npx expo export --platform web` in mobile/")
     file = (WEB_DIST / path).resolve()
-    if path and file.is_file() and WEB_DIST in file.parents:
-        return FileResponse(file)
-    return FileResponse(WEB_DIST / "index.html")  # client-side routes like /kiosk
+    if path and file.is_file() and WEB_DIST in file.parents and file.suffix != ".html":
+        return FileResponse(file)  # bundles have content hashes in their names: safe to cache
+    # The page itself must be re-checked on every load: it names the current bundle, and a
+    # browser holding an old copy (the fridge screen runs for days) would keep the old app.
+    page = file if file.suffix == ".html" and file.is_file() and WEB_DIST in file.parents else WEB_DIST / "index.html"
+    return FileResponse(page, headers={"Cache-Control": "no-cache"})  # client-side routes like /kiosk

@@ -105,3 +105,19 @@ def test_bananas_are_counted(client):
     res = client.post("/api/items", json={"name": "Bananas", "quantity": 3, "unit": "count", "location": "fridge"}).json()
     assert res["unit"] == "count" and res["grams"] == 360
     assert client.post("/api/items", json={"name": "Orange juice", "quantity": 1000, "unit": "ml"}).json()["unit"] == "ml"
+
+
+def test_the_web_page_is_rechecked_every_load_but_bundles_can_be_cached(client, monkeypatch, tmp_path):
+    server = pytest.importorskip("api.server")
+    dist = tmp_path / "dist"
+    (dist / "_expo" / "static" / "js").mkdir(parents=True)
+    (dist / "index.html").write_text("<html>app</html>")
+    (dist / "_expo" / "static" / "js" / "entry-abc123.js").write_text("console.log(1)")
+    monkeypatch.setattr(server, "WEB_DIST", dist.resolve())
+
+    page = client.get("/kiosk")  # a client-side route: the app's page
+    assert page.status_code == 200 and "app" in page.text
+    assert page.headers["cache-control"] == "no-cache"  # else the fridge screen can keep an old build
+    bundle = client.get("/_expo/static/js/entry-abc123.js")
+    assert bundle.status_code == 200 and "cache-control" not in bundle.headers
+    assert client.get("/index.html").headers["cache-control"] == "no-cache"
