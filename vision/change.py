@@ -108,11 +108,19 @@ def _stands_out(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> float:
     return float(np.mean(LIGHTNESS_WEIGHT * d[:, 0] + d[:, 1] + d[:, 2]))
 
 
-def appeared(before: np.ndarray, after: np.ndarray, bbox: tuple[int, int, int, int]) -> bool:
-    """For a changed region: True if something is there now that wasn't (put in), False if
-    something was there that's gone (taken out). Whichever photo's region stands out more from
-    the shelf around it is the one with the thing in it."""
-    return _stands_out(after, bbox) >= _stands_out(before, bbox)
+STANDS_OUT_MARGIN = 0.35  # one photo's region must stand out this much more (share of the larger)
+STANDS_OUT_MIN = 6.0      # ...and by at least this much, or neither photo clearly has the thing
+
+
+def direction(before: np.ndarray, after: np.ndarray, bbox: tuple[int, int, int, int]) -> str | None:
+    """For a changed region: "in" if something is there now that wasn't, "out" if something
+    that was there is gone, None if neither photo clearly has more of a thing in it: the same
+    item in both, nudged, or only the light changed. Whichever photo's region stands out more
+    from the shelf around it is the one with the thing in it."""
+    a, b = _stands_out(after, bbox), _stands_out(before, bbox)
+    if abs(a - b) < max(STANDS_OUT_MIN, STANDS_OUT_MARGIN * max(a, b)):
+        return None
+    return "in" if a > b else "out"
 
 
 def steady_frame(frames: list[np.ndarray]) -> np.ndarray:

@@ -44,24 +44,36 @@ def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
 MIN_FOOD_FRACTION = 0.01
 
 
+def _shelf_items(db, shelf: int, exclude: set[int]):
+    """Active fridge items that could be on this shelf: on it, or with no shelf (added by hand)."""
+    return [i for i in db.active_items(location="fridge")
+            if i["shelf"] in (shelf, None) and i["id"] not in exclude]
+
+
+def _item_at(db, shelf: int, region, frame, exclude: set[int]) -> int | None:
+    """The item whose saved spot is inside `region` (the nearest to its middle), if any."""
+    x, y, w, h = region.bbox
+    fh, fw = frame.shape[:2]
+    cx, cy = (x + w / 2) / fw, (y + h / 2) / fh
+    inside = [i for i in _shelf_items(db, shelf, exclude) if i["position_x"] is not None
+              and x <= i["position_x"] * fw <= x + w and y <= i["position_y"] * fh <= y + h]
+    if not inside:
+        return None
+    return min(inside, key=lambda i: (i["position_x"] - cx) ** 2 + (i["position_y"] - cy) ** 2)["id"]
+
+
 def _what_was_there(db, shelf: int, region, before_frame, exclude: set[int]) -> int | None:
     """Which item was where `region` is, in the before photo: one whose saved spot is inside it,
     else the one Gemini picks from the shelf's items, else the only one there could be."""
-    from vision import tracking
     from vision.camera import crop
     from vision.classifier import which_item
 
-    candidates = [i for i in db.active_items(location="fridge")
-                  if i["shelf"] in (shelf, None) and i["id"] not in exclude]
+    candidates = _shelf_items(db, shelf, exclude)
     if not candidates:
         return None
-    x, y, w, h = region.bbox
-    fh, fw = before_frame.shape[:2]
-    cx, cy = (x + w / 2) / fw, (y + h / 2) / fh
-    inside = [i for i in candidates if i["position_x"] is not None
-              and x <= i["position_x"] * fw <= x + w and y <= i["position_y"] * fh <= y + h]
-    if inside:
-        return min(inside, key=lambda i: (i["position_x"] - cx) ** 2 + (i["position_y"] - cy) ** 2)["id"]
+    spot = _item_at(db, shelf, region, before_frame, exclude)
+    if spot is not None:
+        return spot
     if identify_items_enabled():
         names = [db.get_product(i["product_id"])["name"] for i in candidates]
         picked = which_item(crop(before_frame, region.bbox), before_frame, names)
@@ -99,7 +111,7 @@ def _handle_trip(
     from inventory import events as inv_events
     from vision import tracking
     from vision.camera import crop
-    from vision.change import appeared, detect_changes
+    from vision.change import detect_changes, direction
     from vision import snapshots
     from vision.classifier import identify_item
 
@@ -116,11 +128,23 @@ def _handle_trip(
     # Taken out, the before photo shows what it was.
     min_area = MIN_FOOD_FRACTION * after_frame.shape[0] * after_frame.shape[1]
     sized = [r for r in result.new_regions if r.bbox[2] * r.bbox[3] >= min_area]
-    result.new_regions = [r for r in sized if appeared(before_frame, after_frame, r.bbox)]
     accounted = set(result.vanished_item_ids) | {item_id for item_id, _ in result.moved}
+    ins, outs = [], []
     for r in sized:
-        if r in result.new_regions:
-            continue
+        way = direction(before_frame, after_frame, r.bbox)
+        if way == "out":
+            outs.append(r)
+        elif way == "in":
+            # Something already on the shelf there (nudged, or the light shifted on it) isn't new:
+            # it's that item, at its new spot. Without this it would be counted a second time.
+            there = _item_at(db, shelf, r, after_frame, accounted)
+            if there is None:
+                ins.append(r)
+            else:
+                accounted.add(there)
+                result.moved.append((there, r))
+    result.new_regions = ins
+    for r in outs:
         photo = snapshots.save(crop(before_frame, r.bbox), grams=None)
         item_id = _what_was_there(db, shelf, r, before_frame, accounted)
         if item_id is None:
@@ -227,6 +251,19 @@ LIGHT_SETTLE_S = float(os.getenv("LIGHT_SETTLE_S", "6"))
 DARKER_THAN_REFERENCE = 0.7
 
 
+RECHECK_S = 1.0  # with no hand in view, how often the steady scene is compared with the before photo
+
+
+def _scene_changed(reference_frame, steady, num_shelves: int) -> bool:
+    """Something item-sized was put in or taken out between `reference_frame` and `steady`: the
+    backstop for trips the hand tracker didn't see."""
+    from vision.change import detect_changes, direction
+
+    min_area = MIN_FOOD_FRACTION * steady.shape[0] * steady.shape[1]
+    return any(r.bbox[2] * r.bbox[3] >= min_area and direction(reference_frame, steady, r.bbox) is not None
+               for r in detect_changes(reference_frame, steady))
+
+
 def _open_view(history, reference_frame, now: float):
     """The steady view of the open fridge for the door-close check, from `history` (time, frame)
     pairs of hand-free frames: the last few from before the door began to close. None if there
@@ -263,6 +300,7 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
         history: deque = deque(maxlen=60)  # (time, frame) for the same frames, ~6 s, for the door-close check
         door_was_open = False
         door_opened_at = 0.0
+        last_check, changed_checks = 0.0, 0
         log.info("Fridge loop started (scale: %s, camera: %s, hands: %s)",
                  scale.source, type(cam).__name__, trip_detector.method)
 
@@ -294,7 +332,19 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
                     status = ("Hand in view - waiting for it to leave" if signal["hand_present"]
                               else "Adjusting to the light" if reference_frame is None and adjusting
                               else "Ready - put something in or take something out")
-                    if signal["hand_left"]:
+                    # Backstop: no hand seen, but the steady scene now differs from the before photo
+                    # (twice in a row, so it isn't a passing flicker): measure it as a trip anyway.
+                    missed = False
+                    if (not signal["hand_present"] and reference_frame is not None
+                            and len(quiet) == QUIET_FRAMES and time.monotonic() - last_check >= RECHECK_S):
+                        last_check = time.monotonic()
+                        changed = _scene_changed(reference_frame, steady_frame(list(quiet)), scale.num_shelves)
+                        changed_checks = changed_checks + 1 if changed else 0
+                        missed = changed_checks >= 2
+                        if missed:
+                            log.info("Scene changed with no hand seen; checking it as a trip")
+                    if signal["hand_left"] or missed:
+                        changed_checks = 0
                         # The one photo for this trip: the steady view once the hand is gone.
                         after = steady_frame(list(quiet)) if quiet else frame
                         view.frame(after, door_open=True, hand_boxes=[],

@@ -5,7 +5,7 @@ import main
 from inventory import events
 from inventory.database import Database
 from vision import snapshots
-from vision.change import appeared, detect_changes
+from vision.change import detect_changes, direction
 
 
 def _shelf():
@@ -22,8 +22,8 @@ def _with_orange(frame):
 def test_the_photo_with_the_thing_in_it_decides_in_or_out():
     empty, full = _shelf(), _with_orange(_shelf())
     (region,) = detect_changes(empty, full)
-    assert appeared(empty, full, region.bbox) is True    # put in
-    assert appeared(full, empty, region.bbox) is False   # taken out
+    assert direction(empty, full, region.bbox) == "in"
+    assert direction(full, empty, region.bbox) == "out"
 
 
 def test_taking_something_out_removes_it_whatever_the_scale_says(tmp_path, monkeypatch):
@@ -74,3 +74,45 @@ def test_a_restart_starts_with_an_empty_shelf(tmp_path):
         assert cur.fetchone()[0] == 0
         cur.execute("SELECT COUNT(*) FROM events WHERE event_type IN ('remove', 'waste', 'consume')")
         assert cur.fetchone()[0] == 0  # not counted as eaten or thrown out
+
+
+def _jalapeno(frame, dx=0):
+    out = frame.copy()
+    cv2.ellipse(out, (200 + dx, 300), (45, 14), 15, 0, 360, (40, 150, 50), -1)
+    return out
+
+
+def test_whats_already_on_the_shelf_isnt_counted_again(tmp_path, monkeypatch):
+    monkeypatch.setenv("IDENTIFY_ITEMS", "off")
+    monkeypatch.setattr(snapshots, "SNAPSHOT_DIR", tmp_path / "snaps")
+    db = Database(tmp_path / "t.db")
+    events.apply_add(db, db.get_or_create_product("Jalapeno"), 30, shelf=0, position=(200 / 640, 300 / 480))
+    before = _jalapeno(_shelf())
+    after = _jalapeno(_shelf(), dx=8)               # nudged while the avocado went in
+    cv2.ellipse(after, (420, 300), (50, 65), 0, 0, 360, (40, 70, 45), -1)
+    main._handle_trip(db, 0, 1, before, after, 30.0, 200.0)
+    photos = snapshots.recent()
+    assert len(photos) == 1 and photos[0]["status"] == "skipped"   # one new item (the avocado), named in the app
+    assert len(db.active_items()) == 1                             # still one jalapeno
+
+
+def test_a_scene_that_settled_into_something_new_is_noticed_without_a_hand():
+    empty = _shelf()
+    assert main._scene_changed(empty, _with_orange(empty), 1)
+    assert not main._scene_changed(empty, empty, 1)
+
+
+def test_movement_counts_as_someone_there_when_mediapipe_misses_the_hand():
+    from vision.hands import TripDetector
+
+    class Nobody:
+        def detect(self, frame):
+            from vision.people import People
+            return People(mask=np.zeros(frame.shape[:2], np.uint8), fraction=0.0)
+
+    detector = TripDetector(Nobody())
+    still = _shelf()
+    hand = still.copy()
+    cv2.rectangle(hand, (0, 150), (260, 330), (60, 90, 140), -1)  # an arm reaching in from the side
+    assert detector._someone_in_view(still) is False
+    assert detector._someone_in_view(hand) is True

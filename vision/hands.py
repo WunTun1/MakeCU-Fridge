@@ -4,8 +4,9 @@ Primary signal: MediaPipe people detection (vision/people.py) — a hand or an a
 in view. It ignores camera noise, auto-exposure drift, and the items themselves,
 which frame-to-frame motion can't tell apart from a hand.
 
-Fallback (MediaPipe unavailable, or the simulator's drawn "hand"): motion
-between consecutive frames.
+Movement between consecutive frames counts too (MediaPipe can miss a hand reaching in from
+the edge), and is the only signal when MediaPipe is unavailable (or for the simulator's drawn
+"hand").
 
 "Hand arrived" needs ENTER_FRAMES consecutive frames, so a one-frame flicker
 can't start a trip; "hand left" needs HAND_GONE_DEBOUNCE_S with nobody in view.
@@ -73,10 +74,15 @@ class TripDetector:
             return self.motion_area(frame) >= self.min_motion_area
         found = self.people.detect(frame)
         self.last_people = found
+        # MediaPipe misses a hand that only reaches in from the edge to set something small down,
+        # so a hand-sized movement counts too. A false alarm costs nothing: the trip it starts
+        # just finds nothing changed.
+        moving = self.motion_area(frame) >= self.min_motion_area
+        motion = self.motion_boxes if moving else []
         # Below the presence threshold, outlines are segmenter speckle (shiny packaging, shadows).
         self.motion_boxes = (found.hand_boxes + [cv2.boundingRect(c) for c in found.person_outlines]
-                             if found.present else [])
-        return found.present
+                             if found.present else []) + motion
+        return found.present or moving
 
     def process_frame(self, frame: np.ndarray) -> dict:
         """Returns {"hand_entered", "hand_left", "hand_present"} for this frame;
