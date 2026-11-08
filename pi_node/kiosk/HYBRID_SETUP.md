@@ -106,6 +106,17 @@ picked up automatically. Ctrl+C stops everything.
 - `--windowed`: the fridge screen in a normal window (testing on the Pi desktop)
 - `--no-screen`: just the sensors and camera (e.g. over SSH)
 
+### Starting at boot
+
+```
+python3 ~/MakeCU-Fridge/pi_node/run.py --autostart on    # off to undo
+```
+
+From the next boot on, the desktop opens a terminal window running run.py, which opens
+the fridge screen. To stop everything: Alt+Tab from the fridge screen to the ReFridge
+window and press Ctrl+C (the window stays open to show why it stopped; Enter closes it).
+Don't combine this with `install.sh`'s services — both would use the same pins and port.
+
 ### Checking the sensors and calibrating the scale
 
 ```

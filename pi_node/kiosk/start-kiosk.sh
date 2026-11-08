@@ -15,6 +15,7 @@ BROWSER="$(command -v chromium-browser || command -v chromium)"
 exec "$BROWSER" \
   --kiosk "$BACKEND_URL/kiosk" \
   --ozone-platform=wayland \
+  --password-store=basic \
   --touch-events=enabled \
   --noerrdialogs --disable-infobars --no-first-run \
   --disable-session-crashed-bubble \

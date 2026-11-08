@@ -3,6 +3,8 @@
     python3 ~/MakeCU-Fridge/pi_node/run.py              # everything, fridge screen full-screen
     python3 ~/MakeCU-Fridge/pi_node/run.py --windowed   # fridge screen in a normal window (testing)
     python3 ~/MakeCU-Fridge/pi_node/run.py --no-screen  # sensors + camera only (e.g. over SSH)
+    python3 ~/MakeCU-Fridge/pi_node/run.py --autostart on    # start in a terminal at every boot
+    python3 ~/MakeCU-Fridge/pi_node/run.py --autostart off   # ...and stop doing that
 
 It
   1. switches to the project's .venv Python (and creates pi_node/.env from the example if missing),
@@ -10,7 +12,8 @@ It
   3. runs the sensor/camera agent (pi_node.agent), restarting it if it ever crashes,
   4. waits for the backend, then opens /kiosk in Chromium, reopening it if it closes,
   5. says what it found: backend, camera, scale calibration.
-Ctrl+C stops everything.
+Ctrl+C stops everything. With --autostart on, it opens in a terminal window when the
+desktop starts: Alt+Tab from the fridge screen to that window, then Ctrl+C.
 """
 from __future__ import annotations
 
@@ -74,6 +77,37 @@ def ensure_direct_link(backend_host: str) -> None:
         link.ensure_link(quiet=True)
 
 
+AUTOSTART_FILE = Path.home() / ".config" / "autostart" / "refridge.desktop"
+
+
+def set_autostart(enable: bool) -> None:
+    """Start run.py in a terminal window whenever the Pi's desktop starts (an XDG autostart
+    entry, which Raspberry Pi OS runs on every desktop it ships), so Ctrl+C can stop it.
+    The window stays open after it stops, to show why."""
+    if not enable:
+        AUTOSTART_FILE.unlink(missing_ok=True)
+        say("Won't start at boot any more.")
+        return
+    terminal = shutil.which("lxterminal") or shutil.which("x-terminal-emulator")
+    if terminal is None:
+        say("No terminal program found (lxterminal) — install one: sudo apt install lxterminal")
+        sys.exit(1)
+    script = Path(__file__).resolve()
+    command = f'python3 "{script}"; echo; read -p "ReFridge stopped. Press Enter to close this window."'
+    AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
+    entry = [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=ReFridge",
+        "Comment=Sensors, camera and the fridge screen (Ctrl+C in this window stops it)",
+        f"Exec={terminal} --title=ReFridge -e bash -c '{command}'",
+        "X-GNOME-Autostart-enabled=true",
+    ]
+    AUTOSTART_FILE.write_text("\n".join(entry) + "\n", newline="\n")
+    say(f"Will start at every boot, in a terminal window ({AUTOSTART_FILE}).")
+    say("To stop it then: Alt+Tab to the ReFridge window, Ctrl+C. To undo: run.py --autostart off")
+
+
 def http_json(url: str, timeout: float = 2) -> dict | None:
     import json
     try:
@@ -113,6 +147,7 @@ def screen_env() -> dict | None:
 def start_screen(browser: str, url: str, windowed: bool, env: dict) -> subprocess.Popen:
     flags = [
         f"--user-data-dir={Path.home() / '.config' / 'refridge-kiosk'}",  # its own profile: doesn't touch your browser
+        "--password-store=basic",  # no "choose a password for the new keyring" prompt on Linux
         "--touch-events=enabled", "--noerrdialogs", "--disable-infobars", "--no-first-run",
         "--disable-session-crashed-bubble", "--disable-pinch", "--overscroll-history-navigation=0",
         "--check-for-update-interval=31536000",
@@ -128,7 +163,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--windowed", action="store_true", help="fridge screen in a window instead of full-screen")
     parser.add_argument("--no-screen", action="store_true", help="don't open the fridge screen")
+    parser.add_argument("--autostart", choices=("on", "off"), help="start (or stop starting) at every boot")
     args = parser.parse_args()
+    if args.autostart:
+        set_autostart(args.autostart == "on")
+        return
 
     use_venv()
     os.chdir(ROOT)
@@ -142,8 +181,7 @@ def main() -> None:
     ensure_direct_link(host)
     if os.getenv("PI_HARDWARE", "real").lower() == "real" and not config.calibration_file.exists():
         say("Scale not calibrated yet — weights will be off. Stop this (Ctrl+C) and run:")
-        say("  .venv/bin/python -m pi_node.calibrate tare 0      (shelf empty)")
-        say("  .venv/bin/python -m pi_node.calibrate cal 0 500   (500 g on the shelf)")
+        say("  .venv/bin/python -m pi_node.sensors     (Enter, then t to tare and c to calibrate)")
 
     agent = start_agent()
     screen: subprocess.Popen | None = None
