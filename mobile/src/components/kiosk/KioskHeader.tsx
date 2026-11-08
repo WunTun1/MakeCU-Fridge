@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from "react-native";
 
 import type { Conditions } from "@/lib/api";
 import { type Palette, useColors } from "@/lib/theme";
+import { householdEpochMs, householdNow } from "@/lib/householdClock";
 import { useNow } from "@/lib/useNow";
 
 const FRIDGE_TOO_WARM_C = 7;
@@ -23,11 +24,11 @@ export function KioskHeader({
 }) {
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
-  const nowMs = useNow();
-  const now = new Date(nowMs);
+  useNow(); // re-render every few seconds
+  const now = householdNow(); // the laptop's time: the Pi's own clock can't be trusted
   const fresh =
     conditions != null &&
-    nowMs - Date.parse(conditions.occurred_at) < STALE_READING_MS;
+    householdEpochMs() - Date.parse(conditions.occurred_at) < STALE_READING_MS;
   const temp = fresh ? conditions.temperature_c : null;
   const humidity = fresh ? conditions.humidity_pct : null;
   const pressure = fresh ? conditions.pressure_hpa : null;

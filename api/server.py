@@ -27,6 +27,7 @@ from inventory import events as inv_events
 from inventory.database import get_db
 from inventory.units import default_grams_per_unit, to_grams
 from intelligence import clock, grocery_list, taste
+from intelligence import conditions as fridge_conditions
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
 from intelligence.expiry import days_until, freezer_days, resolve_expiration
@@ -83,12 +84,6 @@ def _expiry_for(location: str, *, printed_date=None, estimated_days=None, name=N
     if location != "fridge":
         return printed_date, False
     return resolve_expiration(printed_date=printed_date, estimated_days=estimated_days, name=name, category=category)
-
-
-def _condition_dict(row) -> dict | None:
-    if row is None:
-        return None
-    return {k: row[k] for k in ("occurred_at", "temperature_c", "pressure_hpa", "humidity_pct", "light_raw")}
 
 
 # ------------------------------------------------------------------- schemas
@@ -297,8 +292,11 @@ def get_summary():
         "today_intake": today_intake,
         "inventory": inventory,
         "review_queue_count": len(db.needs_review()),
-        "conditions": _condition_dict(db.latest_condition()),
+        "conditions": fridge_conditions.latest(db),
         "door_open": scale.door_is_open(),
+        # The household's clock, for the fridge screen: the Pi has no internet to set its own.
+        "server_time": clock.utc_now().isoformat(),
+        "utc_offset_minutes": int(clock.local_now().utcoffset().total_seconds() // 60),
     }
 
 
@@ -844,7 +842,7 @@ def pi_conditions(body: PiConditionsIn):
 
 @app.get("/api/conditions")
 def get_conditions():
-    return {"latest": _condition_dict(db.latest_condition()), "door_open": scale.door_is_open()}
+    return {"latest": fridge_conditions.latest(db), "door_open": scale.door_is_open()}
 
 
 @app.get("/api/health")

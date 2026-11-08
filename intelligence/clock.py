@@ -1,7 +1,7 @@
 """The household's one clock. Every day count ("tomorrow", "in 2 days", alert windows, trip
 dates, today's meals) is reckoned in the household's time zone, never the UTC date.
 
-REFRIDGE_TZ names the zone (e.g. America/New_York); unset, it's this machine's local zone.
+REFRIDGE_TZ names the zone; unset, it's Eastern time (America/New_York), where the fridge is.
 Stored timestamps stay UTC.
 """
 from __future__ import annotations
@@ -15,11 +15,11 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+DEFAULT_TZ = "America/New_York"
+
+
 def local_tz() -> tzinfo:
-    name = os.getenv("REFRIDGE_TZ", "").strip()
-    if name:
-        return ZoneInfo(name)
-    return utc_now().astimezone().tzinfo or timezone.utc
+    return ZoneInfo(os.getenv("REFRIDGE_TZ", "").strip() or DEFAULT_TZ)
 
 
 def local_now() -> datetime:

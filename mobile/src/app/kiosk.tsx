@@ -29,6 +29,7 @@ import {
   type RecipeCard,
 } from "@/lib/api";
 import { expiryText, expiryTone } from "@/lib/expiry";
+import { syncHouseholdClock } from "@/lib/householdClock";
 import {
   palettes,
   TextScaleContext,
@@ -89,6 +90,9 @@ function KioskScreen() {
   const [screenW, setScreenW] = useState(0);
 
   const s = summary.data;
+  if (s?.server_time != null && s.utc_offset_minutes != null) {
+    syncHouseholdClock(s.server_time, s.utc_offset_minutes);
+  }
   const compact = screenW > 0 && screenW < COMPACT_W;
   const grid = compact ? GRID.compact : GRID.regular;
   // Items the camera couldn't name stay off this screen (and out of its alerts) until

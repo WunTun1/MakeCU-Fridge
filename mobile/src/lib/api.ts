@@ -127,6 +127,9 @@ export type Summary = {
   review_queue_count: number;
   conditions: Conditions | null;
   door_open: boolean;
+  /** The household's clock (UTC, ISO) and UTC offset, for screens whose own clock can't be trusted. */
+  server_time?: string;
+  utc_offset_minutes?: number;
 };
 
 export type SearchResult = Measured & {

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from inventory.database import Database
-from intelligence import clock
+from intelligence import clock, conditions
 from intelligence.consumption import days_left
 from intelligence.expiry import days_until, describe_expiry
 
@@ -106,7 +106,7 @@ def _most_urgent_per_product(alerts: list[Alert]) -> list[Alert]:
 def _fridge_temp_alert(db: Database) -> Alert | None:
     """Reads the Pi's Grove barometer (temperature) — a real fridge-health
     check, distinct from inventory alerts."""
-    reading = db.latest_condition()
+    reading = conditions.latest(db)  # demo numbers too, with DEMO_CONDITIONS=on
     if reading is None or reading["temperature_c"] is None:
         return None
     age = clock.utc_now() - datetime.fromisoformat(reading["occurred_at"])
