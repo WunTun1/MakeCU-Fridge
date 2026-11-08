@@ -8,8 +8,9 @@ Plan rows are keyed by normalized name + trip date: checking or removing
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
+from intelligence import clock
 from inventory.database import Database
 from intelligence.grocery import DEFAULT_TRIP_CADENCE_DAYS, grocery_plan, next_trip_date
 from recipes.ingredients import canonical, matches
@@ -55,8 +56,12 @@ def set_horizon(db: Database, trip_in_days: int | None) -> None:
 
 def trip_date_for(db: Database, trip_in_days: int | None) -> date | None:
     if trip_in_days is not None:
-        return datetime.now(timezone.utc).date() + timedelta(days=trip_in_days)
+        return clock.date_in(trip_in_days)
     return next_trip_date(db)
+
+
+def days_away(day: date | None) -> int | None:
+    return (day - clock.local_today()).days if day else None
 
 
 def covers_until(trip: date | None) -> str | None:
@@ -110,7 +115,8 @@ def build_list(db: Database) -> dict:
             "unit": unit, "grams_per_unit": per,
             "plan": p.__dict__ if p else None,
         })
-    return {"trip_in_days": horizon, "trip_date": trip_iso, "covers_until": covers_until(trip), "items": items}
+    return {"trip_in_days": horizon, "trip_date": trip_iso, "trip_days_away": days_away(trip),
+            "covers_until": covers_until(trip), "items": items}
 
 
 def add_entries(

@@ -273,7 +273,7 @@ function ItemModal({ item, onClose }: { item: InventoryEntry; onClose: () => voi
   }, [item.product_id]);
 
   const d = item.expires_in_days;
-  const tone = expiryTone(d);
+  const tone = expiryTone(d, item.leftovers);
   const wasted = item.leftovers ? null : likelyWasted(item);
   return (
     <KioskModal visible title={item.name} onClose={onClose}>

@@ -19,9 +19,8 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 
-from intelligence import taste
+from intelligence import clock, taste
 from intelligence.expiry import days_until
 from inventory import events as inv_events
 from inventory.database import Database
@@ -166,7 +165,7 @@ def fits_dinner(recipe: Recipe) -> bool:
     kcal = recipe.nutrition.get("calories")
     return ("main-dish" in tags and not tags & NOT_DINNER_TAGS
             and (kcal is None or kcal >= DINNER_MIN_KCAL)
-            and (recipe.minutes is None or recipe.minutes <= DINNER_MINUTES_RELAXED))
+            and (recipe.total_minutes is None or recipe.total_minutes <= DINNER_MINUTES_RELAXED))
 
 
 def dislike_hits(recipe: Recipe, patterns: list[re.Pattern]) -> list[re.Pattern]:
@@ -248,7 +247,7 @@ class RecipeEngine:
         for ing in recipe.ingredients:
             canon = ing.get("canon") or canonical(ing["name"])
             line: dict = {"name": display_name(ing["name"]), "canon": canon, "ing": ing, "source": None}
-            if needs_no_badge(ing["name"], canon):
+            if needs_no_badge(ing["name"], canon, ing.get("unit"), ing.get("quantity")):
                 line["status"] = "staple"
             elif have := self._have(canon, pantry):
                 line["source"] = have
@@ -346,6 +345,8 @@ class RecipeEngine:
         for recipe in self.store.get_many([i for i, _ in hits]):
             if has_allergen(recipe, allergies):
                 continue  # hard filter, never shown
+            if max_minutes and (recipe.total_minutes or 0) > max_minutes:
+                continue  # "under 30 minutes" counts the marinating too
             if min_servings and (recipe.servings is None or recipe.servings < min_servings):
                 continue
             if min_protein_g and (recipe.nutrition.get("protein_g") or 0) < min_protein_g:
@@ -387,7 +388,7 @@ class RecipeEngine:
         matches_.sort(key=lambda m: m.score, reverse=True)
         ranked = _dedupe(matches_)
         if dinner and not max_minutes:
-            quick = [m for m in ranked if m.recipe.minutes is None or m.recipe.minutes <= DINNER_MINUTES]
+            quick = [m for m in ranked if m.recipe.total_minutes is None or m.recipe.total_minutes <= DINNER_MINUTES]
             if len(quick) >= DINNER_MIN_RESULTS:
                 ranked = quick
         if automatic:
@@ -523,7 +524,7 @@ class RecipeEngine:
             leftovers_name(recipe.name), category="leftovers", unit="count", recipe_id=recipe.id,
             nutrition_per_100g=per_100g, nutrition_source="recipe", grams_per_unit=LEFTOVER_SERVING_G,
         )
-        expires = (datetime.now(timezone.utc).date() + timedelta(days=LEFTOVER_DAYS)).isoformat()
+        expires = clock.date_in(LEFTOVER_DAYS).isoformat()
         item_id = inv_events.apply_add(self.db, product_id, left * LEFTOVER_SERVING_G, expiration_date=expires,
                                        expiration_estimated=True, meta={"meal_id": meal_id})
         return {"product_id": product_id, "item_id": item_id, "servings": left, "expiration_date": expires}
@@ -588,6 +589,8 @@ def card(m: Match) -> dict:
         "name": r.name,
         "cuisine": r.cuisine,
         "minutes": r.minutes,
+        "inactive_min": r.inactive_min,
+        "inactive_verb": r.inactive_verb,
         "servings": r.servings,
         "image_url": r.image_url,
         "nutrition": r.nutrition,

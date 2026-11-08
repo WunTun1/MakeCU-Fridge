@@ -1,10 +1,10 @@
 """Round 4: eating leftovers never cooks again, chat changes undo, the assistant sees Home's fridge,
 alerts match the colors, Cook tonight ranks by what you can make now, clean recipe text, nut allergies."""
 import sqlite3
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from intelligence import clock
 from intelligence.alerts import low_stock_alerts
 from intelligence.fridge_view import fact_block, going_bad_soon, inventory_entries
 from inventory import events as inv_events
@@ -18,7 +18,7 @@ from tests.test_goals_and_truth import _add, _dish, _grams, _store
 
 
 def _in(days: int) -> str:
-    return (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
+    return clock.date_in(days).isoformat()
 
 
 def _consumes(db, name):
@@ -222,12 +222,13 @@ def test_alerts_are_everything_colored_amber_or_red(kitchen, db):
     _add(db, "Milk", 1000, expiration_date=_in(3))
     _add(db, "Yogurt", 500, expiration_date=_in(4))
     colored = {e["product_id"] for e in inventory_entries(db) if e["location"] != "freezer" and (
-        (e["expires_in_days"] is not None and e["expires_in_days"] <= 3)
+        (e["expires_in_days"] is not None and e["expires_in_days"] <= (1 if e["leftovers"] else 3))
         or (not e["leftovers"] and e["days_left"] is not None and e["days_left"] < 2))}
     alerted = {a.product_id for a in low_stock_alerts(db)}
     assert colored <= alerted
     names = {a.product_name for a in low_stock_alerts(db)}
-    assert {"Greek Stuffed Chicken leftovers", "Milk", "Baby Spinach"} <= names and "Yogurt" not in names
+    assert {"Milk", "Baby Spinach"} <= names and "Yogurt" not in names
+    assert "Greek Stuffed Chicken leftovers" not in names  # cooked today: keeps 3 days, no alarm
 
 
 # ---------------------------------------------------- Cook tonight ranking

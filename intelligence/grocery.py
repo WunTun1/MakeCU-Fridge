@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 from inventory.database import Database
-from intelligence import taste
+from intelligence import clock, taste
 from intelligence.consumption import days_left, grams_on_hand, usage_rate_g_per_day
 from recipes.engine import (DINNER_MINUTES_RELAXED, dislike_hits, fits_dinner, has_allergen, normalized_title,
                             protein_floor)
@@ -44,18 +44,18 @@ def next_trip_date(db: Database) -> date | None:
         cur.execute("SELECT * FROM products WHERE is_staple = 1")
         staples = cur.fetchall()
 
+    today = clock.local_today()
     soonest: date | None = None
     for staple in staples:
         dl = days_left(db, staple["id"])
         if dl is None:
             continue
-        run_out = datetime.now(timezone.utc).date() + timedelta(days=dl)
+        run_out = today + timedelta(days=dl)
         if soonest is None or run_out < soonest:
             soonest = run_out
 
     if soonest is None:
         return None
-    today = datetime.now(timezone.utc).date()
     if (soonest - today).days > NO_TRIP_NEEDED_WITHIN_DAYS:
         return None
     # Something running out today means "shop today", not a date in the past.
@@ -65,11 +65,7 @@ def next_trip_date(db: Database) -> date | None:
 def grocery_plan(
     db: Database, trip_in_days: int | None = None, cadence_days: int = DEFAULT_TRIP_CADENCE_DAYS
 ) -> list[GroceryItem]:
-    trip_date = (
-        datetime.now(timezone.utc).date() + timedelta(days=trip_in_days)
-        if trip_in_days is not None
-        else next_trip_date(db)
-    )
+    trip_date = clock.date_in(trip_in_days) if trip_in_days is not None else next_trip_date(db)
     if trip_date is None:
         return []
 
@@ -83,7 +79,7 @@ def grocery_plan(
         if rate <= 0:
             continue
         on_hand = grams_on_hand(db, product["id"])
-        days_until_trip = max((trip_date - datetime.now(timezone.utc).date()).days, 0)
+        days_until_trip = max((trip_date - clock.local_today()).days, 0)
         on_hand_at_trip = max(on_hand - rate * days_until_trip, 0.0)
 
         needed_for_period = rate * cadence_days * (1 + SAFETY_BUFFER_PCT)

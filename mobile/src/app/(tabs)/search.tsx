@@ -14,7 +14,7 @@ const DEBOUNCE_MS = 250;
 function answer(r: SearchResult): string {
   if (r.on_hand_g <= 0) return "You're out.";
   const have = `You have ${formatAmount(r.on_hand_g, r.unit, r.grams_per_unit, r.product_name)}.`;
-  const wasted = likelyWasted({ ...r, grams: r.on_hand_g, name: r.product_name });
+  const wasted = likelyWasted({ ...r, name: r.product_name });
   if (wasted) return `${have} ${LIKELY_WASTED}: ${wasted.toLowerCase()}.`;
   return r.days_left != null ? `${have} Runs out ${relativeDays(r.days_left, true)}.` : have;
 }

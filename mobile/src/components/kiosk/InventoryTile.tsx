@@ -29,7 +29,7 @@ function glanceSize(text: string, contentW: number, compact: boolean): number {
 function amountText(item: InventoryEntry, compact: boolean): string {
   const total = capitalize(formatAmount(item.grams, item.unit, item.grams_per_unit, item.name));
   const part = compact ? null : soonestPart(item);
-  const parts = [part ? `${total} · ${part} by ${byDay(item.soonest_batch!.expiration_date)}` : total];
+  const parts = [part ? `${total} · ${part} by ${byDay(item.soonest_batch!.expires_in_days, item.soonest_batch!.expiration_date)}` : total];
   if (runsOutSoon(item)) parts.push('low');
   return parts.join(' · ');
 }
@@ -58,7 +58,7 @@ export function InventoryTile({
   const colors = useColors();
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const days = item.expires_in_days;
-  const dateTone = expiryTone(days);
+  const dateTone = expiryTone(days, item.leftovers);
   const tone = urgency(item);
   const padding = compact ? 10 : 14;
   const border = tone ? 2 : 1;

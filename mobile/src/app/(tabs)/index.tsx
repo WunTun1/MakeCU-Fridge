@@ -120,7 +120,7 @@ export default function Home() {
             <Pressable style={styles.linkCard}>
               <View style={{ flex: 1, gap: 4 }}>
                 <Text style={[ui.text, { fontWeight: '600' }]}>Grocery list</Text>
-                <Text style={ui.detail}>{tripText(s.next_trip_date, s.covers_until)}</Text>
+                <Text style={ui.detail}>{tripText(s.next_trip_date, s.next_trip_in_days, s.covers_until)}</Text>
               </View>
               <FontAwesome name="chevron-right" color={c.textSecondary} />
             </Pressable>
@@ -269,7 +269,7 @@ function rowLines(item: InventoryEntry): { goesBad: string | null; tone: ExpiryT
     const date = item.soonest_batch?.expiration_date;
     return { goesBad: date ? `Good until around ${monthName(date)}` : null, tone: null, second: null };
   }
-  if (item.leftovers) return { goesBad: keepsText(item), tone: expiryTone(item.expires_in_days), second: null };
+  if (item.leftovers) return { goesBad: keepsText(item), tone: expiryTone(item.expires_in_days, true), second: null };
   return { goesBad: goesBadText(item), tone: expiryTone(item.expires_in_days), second: runsOutText(item) };
 }
 

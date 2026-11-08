@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -23,11 +23,11 @@ from pydantic import BaseModel, Field
 from inventory import events as inv_events
 from inventory.database import get_db
 from inventory.units import default_grams_per_unit, to_grams
-from intelligence import grocery_list, taste
+from intelligence import clock, grocery_list, taste
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
-from intelligence.expiry import freezer_days, resolve_expiration
-from intelligence.fridge_view import inventory_entries
+from intelligence.expiry import days_until, freezer_days, resolve_expiration
+from intelligence.fridge_view import fridge_entry, inventory_entries
 from intelligence.grocery import unlock_suggestions
 from intelligence.search import search as fuzzy_search
 from nutrition import intake
@@ -262,6 +262,7 @@ def get_summary():
     return {
         "alerts": [a.__dict__ for a in low_stock_alerts(db)],
         "next_trip_date": trip_date.isoformat() if trip_date else None,
+        "next_trip_in_days": grocery_list.days_away(trip_date),
         "covers_until": grocery_list.covers_until(trip_date),
         "today_intake": today_intake,
         "inventory": inventory,
@@ -289,7 +290,8 @@ def get_product_usage(product_id: int, days: int = 28):
     # One row per package, the one that goes bad first on top (and used first).
     items = sorted((i for i in db.active_items() if i["product_id"] == product_id),
                    key=lambda i: (i["expiration_date"] is None, i["expiration_date"] or "", i["id"]))
-    dated = [i for i in items if i["expiration_date"]]
+    entry = fridge_entry(db, product_id)
+    soonest = entry and entry["soonest_batch"]
     return {
         "product_id": product_id,
         "name": product["name"],
@@ -302,11 +304,14 @@ def get_product_usage(product_id: int, days: int = 28):
         "on_hand_g": grams_on_hand(db, product_id),
         "days_left": days_left(db, product_id),
         "rate_g_per_day": usage_rate_g_per_day(db, product_id),
-        "expiration_date": dated[0]["expiration_date"] if dated else None,
-        "expiry_estimated": bool(dated[0]["expiration_estimated"]) if dated else False,
+        "expiration_date": soonest["expiration_date"] if soonest else None,
+        "expiry_estimated": entry["expiry_estimated"] if soonest else False,
+        "expires_in_days": soonest["expires_in_days"] if soonest else None,
+        "likely_wasted_g": entry["likely_wasted_g"] if entry else None,
         "items": [
             {"id": i["id"], "grams": i["grams"], "location": i["location"],
-             "expiration_date": i["expiration_date"], "expiry_estimated": bool(i["expiration_estimated"])}
+             "expiration_date": i["expiration_date"], "expiry_estimated": bool(i["expiration_estimated"]),
+             "expires_in_days": days_until(i["expiration_date"]) if i["expiration_date"] else None}
             for i in items
         ],
     }
@@ -514,7 +519,7 @@ def freeze_product(product_id: int):
     if product is None or not items:
         raise HTTPException(404, "nothing of this in the fridge")
     days = freezer_days(product["name"], product["category"])
-    expires = (datetime.now(timezone.utc).date() + timedelta(days=days)).isoformat()
+    expires = clock.date_in(days).isoformat()
     event_ids = [inv_events.move_storage(db, i["id"], "freezer", expires) for i in items]
     return {"event_ids": [e for e in event_ids if e is not None], "grams": sum(i["grams"] for i in items),
             "expiration_date": expires}

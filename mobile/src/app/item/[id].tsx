@@ -1,6 +1,6 @@
 import { Stack, useLocalSearchParams } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
 
 import { Button } from '@/components/Button';
 import { useSnackbar } from '@/components/Snackbar';
@@ -9,9 +9,9 @@ import { Stepper } from '@/components/Stepper';
 import { UsageChart } from '@/components/UsageChart';
 import { formatAmount, fromGrams, toGrams } from '@/lib/amount';
 import { api, type ProductUsage, type StockItem } from '@/lib/api';
-import { expiryText, expiryTone, LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
+import { expiryText, expiryTone, expiryWord, LIKELY_WASTED, likelyWasted } from '@/lib/expiry';
 import { makeStyles, useColors, useUi } from '@/lib/theme';
-import { calendarDate, capitalize, daysUntil, isoDateIn, monthName, relativeDays, whenWord } from '@/lib/time';
+import { calendarDate, capitalize, isoDateIn, monthName, shiftDate, whenWord } from '@/lib/time';
 import { refreshAll, useApi } from '@/lib/useApi';
 
 /** A panel that's open: one of the actions, or Fix date for one package. */
@@ -152,9 +152,10 @@ const recipeName = (productName: string) => productName.replace(/ leftovers$/, '
 const allFrozen = (data: ProductUsage) => data.items.length > 0 && data.items.every((i) => i.location === 'freezer');
 
 /** The third stat: leftovers keep until a day; otherwise what you'll likely waste, or when it runs out. */
-function thirdStat(data: ProductUsage, days: number | null): { label: string; value: string } | null {
+function thirdStat(data: ProductUsage): { label: string; value: string } | null {
+  const days = data.expires_in_days;
   if (data.recipe_id != null) return days == null ? null : { label: 'Keeps until', value: days < 0 ? 'Past it' : capitalize(whenWord(days)) };
-  const wasted = likelyWasted({ ...data, grams: data.on_hand_g, expires_in_days: days });
+  const wasted = likelyWasted(data);
   if (wasted) return { label: LIKELY_WASTED, value: wasted };
   return data.days_left == null ? null : { label: 'Runs out', value: capitalize(whenWord(data.days_left)) };
 }
@@ -163,9 +164,11 @@ function Stats({ data }: { data: ProductUsage }) {
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
-  const days = data.expiration_date ? daysUntil(data.expiration_date) : null;
-  const tone = expiryTone(days);
-  const third = thirdStat(data, days);
+  const days = data.expires_in_days;
+  const leftovers = data.recipe_id != null;
+  const tone = expiryTone(days, leftovers);
+  const third = thirdStat(data);
+  const around = data.expiry_estimated && !leftovers ? 'Around ' : '';
   return (
     <View style={[ui.card, styles.stats]}>
       {allFrozen(data) && data.expiration_date ? (
@@ -173,9 +176,9 @@ function Stats({ data }: { data: ProductUsage }) {
       ) : (
         <Stat
           label="Goes bad"
-          value={data.expiration_date ? calendarDate(data.expiration_date) : 'No date'}
-          sub={days == null ? undefined : days < 0 ? 'Expired' : relativeDays(days, data.expiry_estimated && data.recipe_id == null)}
-          subColor={tone ? c[tone] : undefined}
+          value={days == null ? 'No date' : expiryWord(days)}
+          valueStyle={[styles.glanceValue, tone && { color: c[tone] }]}
+          sub={data.expiration_date ? `${around}${calendarDate(data.expiration_date)}` : undefined}
         />
       )}
       <Stat label="Have" value={formatAmount(data.on_hand_g, data.unit, data.grams_per_unit, data.name)} />
@@ -184,14 +187,14 @@ function Stats({ data }: { data: ProductUsage }) {
   );
 }
 
-function Stat({ label, value, sub, subColor }: { label: string; value: string; sub?: string; subColor?: string }) {
+function Stat({ label, value, sub, valueStyle }: { label: string; value: string; sub?: string; valueStyle?: StyleProp<TextStyle> }) {
   const ui = useUi();
   const styles = useStyles();
   return (
     <View style={{ flex: 1, gap: 2 }}>
       <Text style={ui.muted}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-      {sub && <Text style={[ui.detail, { fontWeight: '600' }, subColor ? { color: subColor } : null]}>{sub}</Text>}
+      <Text style={[styles.statValue, valueStyle]}>{value}</Text>
+      {sub && <Text style={ui.detail}>{sub}</Text>}
     </View>
   );
 }
@@ -226,8 +229,8 @@ function PackageRow({ data, item, fixing, onFix }: { data: ProductUsage; item: S
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
-  const days = item.expiration_date ? daysUntil(item.expiration_date) : null;
-  const tone = expiryTone(days);
+  const days = item.expires_in_days;
+  const tone = expiryTone(days, data.recipe_id != null);
   return (
     <View style={styles.packageRow}>
       <View style={{ flex: 1, gap: 2 }}>
@@ -332,8 +335,10 @@ function FixDate({ data, item, onDone }: PanelProps & { item: StockItem }) {
   const ui = useUi();
   const styles = useStyles();
   const c = useColors();
-  const [days, setDays] = useState(() => (item.expiration_date ? daysUntil(item.expiration_date) : 3));
-  const date = isoDateIn(days);
+  const known = item.expiration_date != null && item.expires_in_days != null;
+  const [days, setDays] = useState(() => (known ? item.expires_in_days! : 3));
+  // Counted from the package's own date, so the household's day (not this phone's) is kept.
+  const date = known ? shiftDate(item.expiration_date!, days - item.expires_in_days!) : isoDateIn(days);
 
   async function save() {
     await api.updateItem(item.id, { expiration_date: date });
@@ -397,6 +402,7 @@ function SaveButton({ title, onPress }: { title: string; onPress: () => Promise<
 const useStyles = makeStyles((c, size) => ({
   stats: { flexDirection: 'row', gap: 12 },
   statValue: { color: c.text, fontSize: size(17), lineHeight: size(22), fontWeight: '700' },
+  glanceValue: { fontSize: size(20), lineHeight: size(24) },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   buttonRow: { flexDirection: 'row' },
   gridButton: {

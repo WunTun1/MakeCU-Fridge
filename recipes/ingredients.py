@@ -17,7 +17,17 @@ PANTRY_STAPLES = {
     # Aromatics nearly every kitchen keeps on the counter, and the fridge doesn't track.
     "garlic", "onion", "yellow onion", "white onion", "brown sugar", "honey", "ketchup", "mustard",
 }
-SEASONING_WORDS = {"salt", "pepper", "black", "white", "kosher", "sea", "seasoning", "season"}
+SEASONING_WORDS = {"salt", "pepper", "black", "white", "kosher", "sea", "seasoning", "season",
+                   "coarse", "cracked", "fresh", "ground"}
+# Dried spices and herbs: pantry when measured by the spoon, pinch or dash (or not measured at all).
+# "2 cups fresh basil" is still something to buy.
+SPICES = {
+    "turmeric", "thyme", "rosemary", "sage", "basil", "oregano", "marjoram", "tarragon", "dill weed", "cayenne",
+    "coriander", "cardamom", "cloves", "allspice", "curry powder", "garam masala", "chili flakes",
+    "smoked paprika", "ground ginger", "mustard powder", "celery seed", "fennel seed",
+}
+SPICE_UNITS = {"tsp", "teaspoon", "teaspoons", "tbsp", "tablespoon", "tablespoons", "pinch", "pinches",
+               "dash", "dashes"}
 
 # Words that describe preparation or size, not what the ingredient is.
 DESCRIPTORS = {
@@ -104,13 +114,40 @@ COOKING_LIQUID = re.compile(r"\b(reserved|cooking liquid|cooking water|from the 
 PLAIN_WATER_WORDS = {"boiling", "lukewarm", "filtered", "tap", "cool", "fluid", "pure", "bottled", "ice"}
 
 
-def needs_no_badge(raw_name: str, canon: str) -> bool:
-    """Staples, plus water, ice and cooking liquid ('water from the pasta'): nothing to have or buy.
-    Rose water and coconut water are real ingredients and still count."""
+def raw_words(name: str) -> str:
+    """The ingredient as written, minus amounts and asides, descriptors kept: 'dried thyme leaves'."""
+    text = re.sub(r"\(.*?(\)|$)", " ", name.lower()).split(",")[0]
+    return " ".join(_singular(w) for w in re.findall(r"[a-z][a-z\-']*", text) if w not in UNITS)
+
+
+def _has_phrase(phrase: str, text: str) -> bool:
+    return bool(re.search(rf"\b{re.escape(phrase)}\b", text))
+
+
+_SPICE_FORMS = {" ".join(_singular(w) for w in s.split()) for s in SPICES}
+_STAPLE_PHRASES = [s for s in PANTRY_STAPLES if " " in s]
+
+
+def is_spoon_spice(raw_name: str, canon: str, unit: str | None = None, quantity: str | None = None) -> bool:
+    """'1 tsp turmeric', 'dried thyme' (no amount): pantry. '2 cups fresh basil': not."""
+    raw = raw_words(raw_name)
+    if not (canon in _SPICE_FORMS or any(_has_phrase(s, raw) for s in _SPICE_FORMS)):
+        return False
+    u = (unit or "").strip().lower().rstrip(".")
+    return u in SPICE_UNITS or not (u or str(quantity or "").strip())
+
+
+def needs_no_badge(raw_name: str, canon: str, unit: str | None = None, quantity: str | None = None) -> bool:
+    """Staples (matched on the name as written too, so 'dried basil' counts before 'dried' is
+    stripped), spoon-measured spices, plus water, ice and cooking liquid ('water from the pasta'):
+    nothing to have or buy. Rose water and coconut water are real ingredients and still count."""
     words = canon.split()
     plain_water = bool(words) and words[-1] == "water" and set(words[:-1]) <= PLAIN_WATER_WORDS
+    raw = raw_words(raw_name)
     return (not canon or is_staple(canon) or plain_water or canon == "ice cube"
-            or bool(COOKING_LIQUID.search(raw_name)))
+            or bool(COOKING_LIQUID.search(raw_name))
+            or any(_has_phrase(s, raw) for s in _STAPLE_PHRASES)
+            or is_spoon_spice(raw_name, canon, unit, quantity))
 
 
 def dislike_pattern(dislike: str) -> re.Pattern | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from intelligence import clock
 from intelligence.consumption import days_left
 from intelligence.expiry import days_until
 from inventory.database import Database
@@ -44,14 +45,31 @@ def inventory_entries(db: Database) -> list[dict]:
             elif entry["expires_in_days"] is None or d < entry["expires_in_days"]:
                 entry["expires_in_days"] = d
                 entry["expiry_estimated"] = bool(item["expiration_estimated"])
-                entry["soonest_batch"] = {"grams": item["grams"], "expiration_date": item["expiration_date"]}
+                entry["soonest_batch"] = {"grams": item["grams"], "expiration_date": item["expiration_date"],
+                                          "expires_in_days": d}
 
     inventory = []
     for entry in by_product.values():
         entry.pop("_shelf_grams")
         fill = (entry["grams"] / entry["package_size_g"]) if entry["package_size_g"] else None
-        inventory.append({**entry, "days_left": days_left(db, entry["product_id"]), "fill_fraction": fill})
+        entry = {**entry, "days_left": days_left(db, entry["product_id"]), "fill_fraction": fill}
+        inventory.append({**entry, "likely_wasted_g": wasted_grams(entry)})
     return inventory
+
+
+def fridge_entry(db: Database, product_id: int) -> dict | None:
+    """The product's Home row: the part outside the freezer if there is one."""
+    entries = [e for e in inventory_entries(db) if e["product_id"] == product_id]
+    return next((e for e in entries if e["location"] != "freezer"), entries[0] if entries else None)
+
+
+def wasted_grams(entry: dict) -> float | None:
+    """Grams you won't have used by the day it goes bad, at your usual rate. None when you'll finish it
+    first, or there's no date or history. Leftovers are counted in servings, not forecast."""
+    runs_out, goes_bad = entry["days_left"], entry["expires_in_days"]
+    if entry["leftovers"] or runs_out is None or goes_bad is None or runs_out <= goes_bad:
+        return None
+    return entry["grams"] * (1 - max(goes_bad, 0) / runs_out)
 
 
 def day_word(days: int, today: date | None = None) -> str:
@@ -61,7 +79,7 @@ def day_word(days: int, today: date | None = None) -> str:
     if days == 1:
         return "tomorrow"
     if days <= 6:
-        return ((today or date.today()) + timedelta(days=days)).strftime("%A")
+        return ((today or clock.local_today()) + timedelta(days=days)).strftime("%A")
     weeks = round(days / 7)
     return "in about a week" if weeks <= 1 else f"in about {weeks} weeks"
 
@@ -84,10 +102,9 @@ def amount_text(entry: dict) -> str:
 
 def likely_wasted(entry: dict) -> str | None:
     """'about 122 g' you won't have used by the day it goes bad, at your usual rate (same as the app)."""
-    runs_out, goes_bad = entry["days_left"], entry["expires_in_days"]
-    if entry["leftovers"] or runs_out is None or goes_bad is None or runs_out <= goes_bad:
+    left = entry["likely_wasted_g"]
+    if left is None:
         return None
-    left = entry["grams"] * (1 - max(goes_bad, 0) / runs_out)
     amount = format_amount(left, entry["unit"], entry["grams_per_unit"], entry["name"])
     return amount if amount.startswith("about ") else f"about {amount}"
 

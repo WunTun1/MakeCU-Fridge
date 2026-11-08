@@ -64,12 +64,14 @@ export type InventoryEntry = Measured & {
   package_size_g: number | null;
   days_left: number | null;
   fill_fraction: number | null;
-  /** Soonest expiry among this product's items; null if none known. */
+  /** Soonest expiry among this product's items, in the household's days; null if none known. */
   expires_in_days: number | null;
+  /** Grams you won't have used by the day it goes bad; null when you'll finish it first. */
+  likely_wasted_g: number | null;
   /** True when that date is an estimated shelf life, not printed on the package. */
   expiry_estimated: boolean;
   /** The package(s) that go bad first; less than `grams` when newer packages are there too. */
-  soonest_batch: { grams: number; expiration_date: string } | null;
+  soonest_batch: { grams: number; expiration_date: string; expires_in_days: number } | null;
   /** A product with packages in the freezer and elsewhere has one entry for each. */
   location: Location;
   /** 0-based shelf index; null for pantry items or ones not placed on a shelf. */
@@ -91,6 +93,7 @@ export type Conditions = {
 export type Summary = {
   alerts: Alert[];
   next_trip_date: string | null;
+  next_trip_in_days: number | null;
   /** What the grocery list buys lasts until this date. */
   covers_until: string | null;
   today_intake: { period: string; totals: Macros; meal_count: number };
@@ -108,6 +111,7 @@ export type SearchResult = Measured & {
   answer: string;
   /** Soonest goes-bad date among packages outside the freezer. */
   expires_in_days: number | null;
+  likely_wasted_g: number | null;
 };
 
 export type StockItem = {
@@ -116,6 +120,7 @@ export type StockItem = {
   location: Location;
   expiration_date: string | null;
   expiry_estimated: boolean;
+  expires_in_days: number | null;
 };
 
 export type ProductUsage = Measured & {
@@ -128,9 +133,11 @@ export type ProductUsage = Measured & {
   on_hand_g: number;
   days_left: number | null;
   rate_g_per_day: number;
-  /** Soonest YYYY-MM-DD among this product's items. */
+  /** The soonest date on its Home row (outside the freezer when some is). */
   expiration_date: string | null;
   expiry_estimated: boolean;
+  expires_in_days: number | null;
+  likely_wasted_g: number | null;
   items: StockItem[];
 };
 
@@ -162,6 +169,7 @@ export type Horizon = 1 | 3 | 7 | null;
 export type GroceryList = {
   trip_in_days: Horizon;
   trip_date: string | null;
+  trip_days_away: number | null;
   covers_until: string | null;
   items: GroceryEntry[];
 };

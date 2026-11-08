@@ -74,8 +74,26 @@ def clean_title(raw: str) -> str:
     return title or raw.strip()
 
 
+# Blog talk, not instructions: first person, and asides about timing guesses and variations.
+FIRST_PERSON = re.compile(r"(?<![\w'’])i(?:['’](?:m|ve|d))?(?![\w'’])|\b(?:my|me)\b", re.I)
+CHATTER_START = re.compile(r"^\W*(these times|alternatively|a tasty variation)\b", re.I)
+CHATTER_ANYWHERE = re.compile(r"\bcould be added\b", re.I)
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _instruction(sentence: str) -> bool:
+    return not (FIRST_PERSON.search(sentence) or CHATTER_START.search(sentence) or CHATTER_ANYWHERE.search(sentence))
+
+
 def clean_steps(steps: list[str]) -> list[str]:
-    """Drop headings that were scraped as steps: 'Cooking time: 40 min', 'For the sauce:'."""
-    return [s for s in steps
-            if not TIME_STEP.match(s)
-            and not (len(s.split()) < STEP_FRAGMENT_WORDS and s.strip().endswith(":"))]
+    """Keep the source's steps, minus headings scraped as steps ('Cooking time: 40 min', 'For the
+    sauce:') and blog sentences ('I've messed it up...', 'These times are only a guide'). A step
+    with nothing left is dropped."""
+    out = []
+    for step in steps:
+        if TIME_STEP.match(step) or (len(step.split()) < STEP_FRAGMENT_WORDS and step.strip().endswith(":")):
+            continue
+        kept = " ".join(s for s in SENTENCE_END.split(step.strip()) if s and _instruction(s))
+        if kept:
+            out.append(kept)
+    return out

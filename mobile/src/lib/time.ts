@@ -10,15 +10,15 @@ function startOfDay(now: Date): Date {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
 }
 
-/** Whole days from today until a YYYY-MM-DD date (negative when it's past). */
-export function daysUntil(isoDate: string, now = new Date()): number {
-  return Math.round((localDate(isoDate).getTime() - startOfDay(now).getTime()) / DAY_MS);
+/** YYYY-MM-DD `days` after a YYYY-MM-DD date. */
+export function shiftDate(isoDate: string, days: number): string {
+  const d = new Date(localDate(isoDate).getTime() + days * DAY_MS + DAY_MS / 2);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/** YYYY-MM-DD for today plus `days`, in local time. */
+/** YYYY-MM-DD for today plus `days`, on this device's calendar. */
 export function isoDateIn(days: number, now = new Date()): string {
-  const d = new Date(startOfDay(now).getTime() + days * DAY_MS + DAY_MS / 2);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return shiftDate(`${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`, days);
 }
 
 /** "Tue, Nov 10". */
@@ -26,9 +26,8 @@ export function calendarDate(isoDate: string): string {
   return localDate(isoDate).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-/** For "1 L by ...": "today", "tomorrow", "Mon" within the next 6 days, otherwise "Dec 1". */
-export function byDay(isoDate: string, now = new Date()): string {
-  const days = daysUntil(isoDate, now);
+/** For "1 L by ...": "today", "tomorrow", "Mon" within the next 6 days, otherwise "Dec 1". `days` comes from the server. */
+export function byDay(days: number, isoDate: string): string {
   if (days <= 0) return 'today';
   if (days === 1) return 'tomorrow';
   const options: Intl.DateTimeFormatOptions = days <= 6 ? { weekday: 'short' } : { month: 'short', day: 'numeric' };
@@ -46,9 +45,8 @@ export function clockTime(isoTimestamp: string): string {
 }
 
 /** "Shop today · covers until Sat, Nov 14", "Shop by Tue, Nov 10 · ...": one source for Home and Grocery. */
-export function tripText(tripDate: string | null, coversUntil: string | null): string {
-  if (!tripDate || !coversUntil) return 'No trip needed in the next two weeks';
-  const days = daysUntil(tripDate);
+export function tripText(tripDate: string | null, days: number | null, coversUntil: string | null): string {
+  if (!tripDate || days == null || !coversUntil) return 'No trip needed in the next two weeks';
   const when = days <= 0 ? 'Shop today' : days === 1 ? 'Shop tomorrow' : `Shop by ${calendarDate(tripDate)}`;
   return `${when} · covers until ${calendarDate(coversUntil)}`;
 }

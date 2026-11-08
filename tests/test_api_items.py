@@ -83,7 +83,8 @@ def test_summary_shows_the_soonest_package_and_the_saved_trip(client):
                                     "expiration_date": "2030-01-20"})
     milk = _inventory(client)["Milk"]
     assert milk["grams"] == 3000
-    assert milk["soonest_batch"] == {"grams": 1000, "expiration_date": "2030-01-02"}
+    assert milk["soonest_batch"] == {"grams": 1000, "expiration_date": "2030-01-02",
+                                     "expires_in_days": milk["expires_in_days"]}
     grocery = client.put("/api/grocery/horizon", json={"trip_in_days": 7}).json()
     summary = client.get("/api/summary").json()
     assert (summary["next_trip_date"], summary["covers_until"]) == (grocery["trip_date"], grocery["covers_until"])

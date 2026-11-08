@@ -6,8 +6,9 @@ eat) or a manual entry ("I had a yogurt").
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
+from intelligence import clock
 from inventory import events as inv_events
 from inventory.database import Database
 
@@ -25,11 +26,10 @@ def protein_mode(profile) -> bool:
 
 
 def _period_start(period: str) -> str:
-    now = datetime.now(timezone.utc)
     if period == "today":
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = clock.start_of_local_day()
     elif period == "week":
-        start = (now - timedelta(days=7))
+        start = clock.utc_now() - timedelta(days=7)
     else:
         raise ValueError(f"unknown period: {period}")
     return start.isoformat()

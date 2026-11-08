@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from recipes.ingredients import canonical
+from recipes.timing import inactive_time
 from recipes.titles import clean_steps, clean_title
 
 DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "recipes.db"
@@ -69,10 +70,20 @@ class Recipe:
     ingredients: list[dict]              # {name, canon, quantity, unit}
     steps: list[str]
     canon_ingredients: list[str] = field(default_factory=list)
+    # Waiting the steps call for (marinating, chilling, rising), on top of `minutes`.
+    inactive_min: int = 0
+    inactive_verb: str | None = None
 
     def __post_init__(self):
         if not self.canon_ingredients:
             self.canon_ingredients = [i["canon"] for i in self.ingredients if i.get("canon")]
+        if not self.inactive_min:
+            self.inactive_min, self.inactive_verb = inactive_time(self.steps)
+
+    @property
+    def total_minutes(self) -> int | None:
+        """Active plus waiting time: what 'under 30 minutes' is measured against."""
+        return None if self.minutes is None else self.minutes + self.inactive_min
 
 
 def _fts_terms(text: str) -> list[str]:

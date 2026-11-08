@@ -1,9 +1,10 @@
 """Protein mode, same-food matching, truthful chat logging, allergy blocks, leftovers,
 the freezer and count remnants."""
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import pytest
 
+from intelligence import clock
 from intelligence.alerts import low_stock_alerts
 from inventory import events as inv_events
 from inventory.database import Database
@@ -17,8 +18,7 @@ from tests.test_recipes import _recipe
 
 
 def _today() -> date:
-    """The server's dates are UTC dates; in the evening west of Greenwich that's already tomorrow."""
-    return datetime.now(timezone.utc).date()
+    return clock.local_today()
 
 
 def _store(tmp_path, recipes):

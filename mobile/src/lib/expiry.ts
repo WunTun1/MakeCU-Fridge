@@ -10,9 +10,11 @@ const RUNS_OUT_WARN_DAYS = 2;
 
 export type ExpiryTone = 'danger' | 'warn' | null;
 
-export function expiryTone(days: number | null): ExpiryTone {
+/** Fresh leftovers are no alarm: they turn red the day before they go, and are never amber. */
+export function expiryTone(days: number | null, leftovers = false): ExpiryTone {
   if (days == null) return null;
   if (days <= DANGER_DAYS) return 'danger';
+  if (leftovers) return null;
   if (days <= WARN_DAYS) return 'warn';
   return null;
 }
@@ -22,7 +24,7 @@ export function expiryTone(days: number | null): ExpiryTone {
  * today/tomorrow, amber when it goes bad in 2-3 days or runs out today/tomorrow.
  */
 export function urgency(item: Pick<InventoryEntry, 'expires_in_days' | 'days_left'> & { leftovers?: boolean }): ExpiryTone {
-  return expiryTone(item.expires_in_days) ?? (!item.leftovers && runsOutSoon(item) ? 'warn' : null);
+  return expiryTone(item.expires_in_days, item.leftovers) ?? (!item.leftovers && runsOutSoon(item) ? 'warn' : null);
 }
 
 export const runsOutSoon = (item: Pick<InventoryEntry, 'days_left'>) =>
@@ -67,21 +69,19 @@ export function goesBadText(item: InventoryEntry): string | null {
   return `${capitalize(part)} ${verb}`;
 }
 
-type Stock = Pick<InventoryEntry, 'grams' | 'unit' | 'grams_per_unit' | 'name' | 'days_left' | 'expires_in_days'>;
+type Stock = Pick<InventoryEntry, 'unit' | 'grams_per_unit' | 'name' | 'days_left' | 'likely_wasted_g'>;
 
 /** The stat label for what you won't finish before it goes bad, the same on every screen. */
 export const LIKELY_WASTED = 'Likely wasted';
 
 /**
  * How much you won't have used by the day it goes bad, at your usual rate: "1.2 kg" (always an
- * estimate, so shown with "about"). Null when you'll finish it first, or there's no date or history.
+ * estimate, so shown with "about"). The server works it out; null when you'll finish it first.
  */
 function wastedAmount(item: Stock): string | null {
-  const { days_left: runsOut, expires_in_days: goesBad } = item;
-  if (runsOut == null || goesBad == null || runsOut <= goesBad) return null;
-  const left = item.grams * (1 - Math.max(goesBad, 0) / runsOut);
+  if (item.likely_wasted_g == null) return null;
   // A non-breaking space keeps "48 ml" on one line.
-  return formatAmount(left, item.unit, item.grams_per_unit, item.name).replace(/^about /, '').replace(' ', '\u00a0');
+  return formatAmount(item.likely_wasted_g, item.unit, item.grams_per_unit, item.name).replace(/^about /, '').replace(' ', '\u00a0');
 }
 
 /** The stat value under LIKELY_WASTED: "About 1.2 kg". */

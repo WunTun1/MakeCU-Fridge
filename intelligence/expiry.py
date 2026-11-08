@@ -9,7 +9,9 @@ the app — this is food safety, so a guess never masquerades as a printed date.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
+
+from intelligence import clock
 
 MAX_REASONABLE_DAYS = 365
 
@@ -105,12 +107,12 @@ def resolve_expiration(
         days = estimate_shelf_life_days(name, category)
     if days is None:
         return None, False
-    today = today or datetime.now(timezone.utc).date()
+    today = today or clock.local_today()
     return (today + timedelta(days=days)).isoformat(), True
 
 
 def days_until(expiration_date: str, today: date | None = None) -> int:
-    today = today or datetime.now(timezone.utc).date()
+    today = today or clock.local_today()
     return (date.fromisoformat(expiration_date) - today).days
 
 

@@ -118,7 +118,7 @@ export default function Grocery() {
         <Text style={styles.fieldLabel}>Next shopping trip</Text>
         <Segmented label="Next shopping trip" options={HORIZONS} value={list.trip_in_days} onChange={setHorizon} />
         <View style={styles.progressTrack}>{busy && <View style={styles.progress} />}</View>
-        <Text style={ui.text}>{tripText(list.trip_date, list.covers_until)}</Text>
+        <Text style={ui.text}>{tripText(list.trip_date, list.trip_days_away, list.covers_until)}</Text>
       </View>
 
       {error && <ErrorCard message={error} />}

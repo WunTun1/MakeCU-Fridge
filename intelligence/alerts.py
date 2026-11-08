@@ -2,15 +2,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from inventory.database import Database
+from intelligence import clock
 from intelligence.consumption import days_left
 from intelligence.expiry import days_until, describe_expiry
 
 DAYS_LEFT_THRESHOLD = 3
 LOW_PACKAGE_FRACTION = 0.20
 EXPIRING_SOON_DAYS = 3  # the same window the app colors amber or red
+LEFTOVERS_ALERT_DAYS = 1  # fresh leftovers are no alarm until they keep only until tomorrow
 FRIDGE_TEMP_ALERT_C = 7.0          # above this, food safety is at risk
 CONDITION_STALE_MINUTES = 30       # a reading older than this isn't trusted
 
@@ -29,12 +31,16 @@ class Alert:
 
 
 def _expiring_soon_items(db: Database):
-    cutoff = (datetime.now(timezone.utc) + timedelta(days=EXPIRING_SOON_DAYS)).date()
+    """(item, product) pairs inside the alert window; leftovers only from the day before they go."""
     for item in db.active_items():
-        if item["expiration_date"] and item["location"] != "freezer":
-            exp = datetime.fromisoformat(item["expiration_date"]).date()
-            if exp <= cutoff:
-                yield item
+        if not item["expiration_date"] or item["location"] == "freezer":
+            continue
+        product = db.get_product(item["product_id"])
+        if product is None:
+            continue
+        window = LEFTOVERS_ALERT_DAYS if product["recipe_id"] is not None else EXPIRING_SOON_DAYS
+        if days_until(item["expiration_date"]) <= window:
+            yield item, product
 
 
 def low_stock_alerts(db: Database) -> list[Alert]:
@@ -72,10 +78,7 @@ def low_stock_alerts(db: Database) -> list[Alert]:
             alerts.append(Alert(staple["id"], staple["name"], "staple_out", "staple is out"))
             seen_products.add(staple["id"])
 
-    for item in _expiring_soon_items(db):
-        product = db.get_product(item["product_id"])
-        if product is None:
-            continue
+    for item, product in _expiring_soon_items(db):
         alerts.append(Alert(product["id"], product["name"], "expiring_soon",
                              describe_expiry(item["expiration_date"], bool(item["expiration_estimated"])),
                              days_until(item["expiration_date"])))
@@ -106,7 +109,7 @@ def _fridge_temp_alert(db: Database) -> Alert | None:
     reading = db.latest_condition()
     if reading is None or reading["temperature_c"] is None:
         return None
-    age = datetime.now(timezone.utc) - datetime.fromisoformat(reading["occurred_at"])
+    age = clock.utc_now() - datetime.fromisoformat(reading["occurred_at"])
     if age > timedelta(minutes=CONDITION_STALE_MINUTES):
         return None
     if reading["temperature_c"] > FRIDGE_TEMP_ALERT_C:
