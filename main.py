@@ -12,7 +12,6 @@ import logging
 import os
 import threading
 import time
-from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -22,21 +21,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("refridge.main")
 
 CONSUME_MATCH_TOLERANCE_G = 20.0  # an item "heavy enough" to have lost X grams may read slightly under X
-SNAPSHOT_DIR = Path(__file__).parent / "data" / "snapshots"
 
 
 def identify_items_enabled() -> bool:
     """IDENTIFY_ITEMS=off skips the Gemini call for new items (testing the camera without AI)."""
     return os.getenv("IDENTIFY_ITEMS", "on").lower() not in ("off", "false", "0")
-
-
-def save_snapshot(image) -> Path:
-    import cv2
-
-    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    path = SNAPSHOT_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}.jpg"
-    cv2.imwrite(str(path), image)
-    return path
 
 
 def shelf_band(shelf: int, num_shelves: int) -> tuple[float, float]:
@@ -80,6 +69,7 @@ def _handle_trip(
     from vision import tracking
     from vision.camera import crop
     from vision.change import detect_changes
+    from vision import snapshots
     from vision.classifier import identify_item
 
     from vision.debug import view
@@ -121,15 +111,17 @@ def _handle_trip(
             box = d.region.bbox if d.region and d.region.bbox else None
             region_crop = crop(after_frame, box) if box else after_frame
             view.gemini_sending(box)
+            # Every snapshot is kept (data/snapshots), with what came of it, for the live camera page.
+            photo = snapshots.save(region_crop, grams=d.grams)
+            log.info("Snapshot of the new item: %s", photo)
             if identify_items_enabled():
                 info = identify_item(region_crop, after_frame, d.grams)
             else:
-                # Testing without AI: keep the snapshot so you can see what Gemini would get,
-                # and let the person name the item on the fridge screen instead.
-                path = save_snapshot(region_crop)
-                log.info("Item identification off — snapshot saved to %s", path)
+                # Testing without AI: the snapshot shows what Gemini would get, and the
+                # person names the item in the phone app instead.
                 info = {"item_name": "Unknown Item", "category": None, "visible_expiration_date": None,
                         "days_until_expired": None, "confidence": 0.0, "needs_confirmation": True, "skipped": True}
+            snapshots.record(photo, info)
             view.gemini_result(info)
             if info.get("needs_confirmation"):
                 inv_events.apply_needs_review(db, shelf=shelf, meta={"candidate": info, "grams": d.grams, "position": d.position})
@@ -253,20 +245,43 @@ def run_fridge_loop(stop_event: threading.Event) -> None:
             time.sleep(LOOP_INTERVAL_S)
 
 
+def _open_camera_page(port: int) -> None:
+    """Open the live camera page (/vision) once the server answers."""
+    import urllib.request
+    import webbrowser
+
+    url = f"http://127.0.0.1:{port}"
+    for _ in range(60):
+        try:
+            urllib.request.urlopen(f"{url}/api/health", timeout=1)
+            break
+        except OSError:
+            time.sleep(0.5)
+    log.info("Live camera: %s/vision", url)
+    webbrowser.open(f"{url}/vision")
+
+
 def main() -> None:
+    import sys
+
     import uvicorn
 
     from api.server import app
 
+    port = int(os.getenv("API_PORT", "8000"))
     stop_event = threading.Event()
     if os.getenv("ENABLE_FRIDGE_LOOP", "false").lower() == "true":
         thread = threading.Thread(target=run_fridge_loop, args=(stop_event,), daemon=True)
         thread.start()
+        # On a desktop, show what the camera sees and the photos it takes (VISION_WINDOW=off to skip).
+        desktop = os.name == "nt" or sys.platform == "darwin"
+        if desktop and os.getenv("VISION_WINDOW", "on").lower() not in ("off", "false", "0"):
+            threading.Thread(target=_open_camera_page, args=(port,), daemon=True).start()
     else:
         log.info("Fridge sensor loop disabled (ENABLE_FRIDGE_LOOP=false) — serving the API only")
 
     # access_log off: the Pi posts weights ~10x/second, which would bury everything else.
-    uvicorn.run(app, host=os.getenv("API_HOST", "0.0.0.0"), port=int(os.getenv("API_PORT", "8000")), access_log=False)
+    uvicorn.run(app, host=os.getenv("API_HOST", "0.0.0.0"), port=port, access_log=False)
     stop_event.set()
 
 

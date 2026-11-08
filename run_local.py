@@ -211,6 +211,7 @@ def main() -> None:
         "ENABLE_FRIDGE_LOOP": "true",
         "API_PORT": str(BACKEND_PORT),
         "IDENTIFY_ITEMS": "on" if args.identify else "off",
+        "VISION_WINDOW": "off",  # the simulated fridge window below already shows the camera
         # Real camera: MediaPipe finds real hands/arms. The synthetic feed draws a cartoon hand that
         # MediaPipe (correctly) doesn't recognize, so it uses motion detection instead.
         "HAND_DETECTOR": "mediapipe" if real_camera else "motion",

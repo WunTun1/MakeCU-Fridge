@@ -19,9 +19,10 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from pydantic import BaseModel, Field
 
+from api.vision_page import VISION_PAGE
 from inventory import events as inv_events
 from inventory.database import get_db
 from inventory.units import default_grams_per_unit, to_grams
@@ -38,6 +39,7 @@ from nutrition.intake import get_intake, log_nutrition, meals, protein_mode
 from nutrition.lookup import lookup_barcode_off
 from recipes.engine import allergens_in, card
 from sensors.scale import get_scale_reader
+from vision import snapshots
 from vision.debug import view as vision_view
 
 log = logging.getLogger("refridge.api")
@@ -857,6 +859,26 @@ def vision_frame():
     if jpeg is None:
         raise HTTPException(404, "no vision frames yet — is the fridge loop running?")
     return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/vision", include_in_schema=False)
+def vision_page():
+    """The live camera (as the fridge loop sees it) and the photos it takes of new items."""
+    return HTMLResponse(VISION_PAGE, headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/vision/snapshots")
+def vision_snapshots(limit: int = 12):
+    """Photos of new items, newest first, with what came of each (Gemini's answer, or pending)."""
+    return snapshots.recent(min(max(limit, 1), 50))
+
+
+@app.get("/api/vision/snapshots/{name}")
+def vision_snapshot(name: str):
+    path = snapshots.path_for(name)
+    if path is None:
+        raise HTTPException(404, "no such snapshot")
+    return FileResponse(path, media_type="image/jpeg")
 
 
 # ------------------------------------------------- web build (fridge screen)
