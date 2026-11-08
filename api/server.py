@@ -27,6 +27,7 @@ from inventory import events as inv_events
 from inventory.database import get_db
 from inventory.units import default_grams_per_unit, to_grams
 from intelligence import clock, grocery_list, taste
+from intelligence import analytics, tiger
 from intelligence import conditions as fridge_conditions
 from intelligence.alerts import low_stock_alerts
 from intelligence.consumption import daily_usage, days_left, grams_on_hand, usage_rate_g_per_day
@@ -56,6 +57,7 @@ RAW_CATEGORIES = {"meat", "seafood", "poultry"}
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     _rebuild_tonight_soon()  # Home's first visit finds Cook tonight ready
+    tiger.start_background_sync(db)  # mirror the fridge's history to Tiger Data, if it's set up
     yield
 
 
@@ -723,6 +725,33 @@ def recipes_ready():
         ready.sort(key=lambda c: (c["image_url"] is None, -ready_share(c)))
         _ready.update(key=key, at=time.monotonic(), value=ready[:READY_LIMIT])
     return _ready["value"]
+
+
+_best: dict = {"key": None, "at": 0.0, "value": None}
+
+
+@app.get("/api/recipes/best")
+def recipes_best():
+    """Home's "Best to cook now": the recipe that uses the most food you'd otherwise throw away,
+    soonest first, with why in words. Analysis on Tiger Data when connected (else locally).
+    Cached until the fridge changes."""
+    key = _fridge_version()
+    if _best["key"] != key or time.monotonic() - _best["at"] > TONIGHT_CACHE_SECONDS:
+        value = analytics.best_recipe(db, chatbot.engine, high_protein=protein_mode(db.get_profile()))
+        _best.update(key=key, at=time.monotonic(), value=value)
+    return _best["value"]
+
+
+@app.get("/api/analytics/restock")
+def analytics_restock():
+    """Grocery's "Your eating": how fast you go through each food, the trend, and when to buy how
+    much. On Tiger Data when connected (else locally)."""
+    return analytics.restock(db)
+
+
+@app.get("/api/analytics/status")
+def analytics_status():
+    return {**tiger.status, "enabled": tiger.enabled(), "household": tiger.household()}
 
 
 @app.get("/api/recipes/tonight")
