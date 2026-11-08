@@ -10,6 +10,7 @@ profile follows changing tastes instead of locking in last month's phase.
 """
 from __future__ import annotations
 
+import json
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ HALF_LIFE_DAYS = 30.0
 LOOKBACK_DAYS = 180
 SIGNAL_WEIGHT = {"cooked": 3.0, "liked": 2.0, "disliked": -3.0, "asked": 0.6}
 HABIT_WEIGHT_PER_EVENT = 0.15
+LIKE_WEIGHT = 2.0   # a like in Settings counts about as much as a thumbs-up
 MAIN_INGREDIENTS = 6  # the first few non-staple ingredients characterize a recipe
 
 
@@ -74,6 +76,14 @@ def profile(db: Database) -> dict[str, float]:
             names[e["product_id"]] = canonical(p["name"]) if p else ""
         if names[e["product_id"]]:
             raw[f"ingredient:{names[e['product_id']]}"] += HABIT_WEIGHT_PER_EVENT * _decay(e["occurred_at"], now)
+
+    # Likes from Settings: a steady pull toward those foods and cuisines.
+    row = db.get_profile()
+    for like in json.loads((row["likes"] if row is not None else None) or "[]"):
+        key = like.strip().lower()
+        if key:
+            raw[f"cuisine:{key}"] += LIKE_WEIGHT
+            raw[f"ingredient:{canonical(key) or key}"] += LIKE_WEIGHT
 
     return {f: math.tanh(v / 3.0) for f, v in raw.items() if abs(v) > 1e-6}
 

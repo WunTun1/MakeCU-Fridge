@@ -36,7 +36,7 @@ def test_the_camera_page_and_its_endpoints(shots, monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
     server = pytest.importorskip("api.server")
     client = TestClient(server.app)
-    assert "ReFridge camera" in client.get("/vision").text
+    assert "ShelfLife camera" in client.get("/vision").text
     photo = shots.save(np.zeros((8, 8, 3), np.uint8), grams=100)
     assert client.get("/api/vision/snapshots").json()[0]["name"] == photo.name
     assert client.get(f"/api/vision/snapshots/{photo.name}").headers["content-type"] == "image/jpeg"

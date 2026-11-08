@@ -66,7 +66,7 @@ export function ListField({
   return (
     <View style={{ gap: 8 }}>
       {values.length === 0 ? (
-        <Text style={ui.detail}>None set</Text>
+        <Text style={ui.muted}>None yet</Text>
       ) : (
         <View style={styles.wrap}>
           {values.map((v) => (

@@ -1,4 +1,4 @@
-# ReFridge
+# ShelfLife
 
 A smart fridge that knows what's inside, how much is left, how fast you use it,
 when it goes bad, what to buy next — and what to cook. The fridge's touchscreen

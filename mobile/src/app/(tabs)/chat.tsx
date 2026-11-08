@@ -16,7 +16,7 @@ import { RecipeCardView } from "@/components/recipes/RecipeCardView";
 import { WithAlerts } from "@/components/SettingsButton";
 import { useSnackbar } from "@/components/Snackbar";
 import { api } from "@/lib/api";
-import { makeStyles, useColors, useUi } from "@/lib/theme";
+import { BAR_HEIGHT, makeStyles, useColors, useUi } from "@/lib/theme";
 import { useApi } from "@/lib/useApi";
 import { useChat, type ChatMessage } from "@/lib/useChat";
 
@@ -53,7 +53,7 @@ export default function Chat() {
     <KeyboardAvoidingView
       style={ui.screen}
       behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={90}
+      keyboardVerticalOffset={BAR_HEIGHT + 34}
     >
       <Stack.Screen
         options={{
@@ -209,7 +209,7 @@ function UndoTurn({
 
 const useStyles = makeStyles((c, size) => ({
   newChat: { minHeight: 44, justifyContent: "center", paddingHorizontal: 16 },
-  link: { color: c.accent, fontSize: size(15), fontWeight: "600" },
+  link: { color: c.onBar, fontSize: size(15), fontWeight: "600" },
   bubble: { padding: 12, borderRadius: 12, maxWidth: "85%" },
   user: { alignSelf: "flex-end", backgroundColor: c.accent },
   userText: { color: c.onAccent, fontSize: size(15), lineHeight: size(20) },

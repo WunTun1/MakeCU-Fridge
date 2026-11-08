@@ -18,12 +18,15 @@ export function SettingsButton() {
       accessibilityLabel="Settings"
       hitSlop={8}
       style={({ pressed }) => ({
-        padding: 10,
-        marginLeft: 6,
+        width: 44,
+        height: 44,
+        marginLeft: 4,
+        alignItems: "center",
+        justifyContent: "center",
         opacity: pressed ? 0.5 : 1,
       })}
     >
-      <FontAwesome name="cog" size={22} color={c.textSecondary} />
+      <FontAwesome name="cog" size={22} color={c.onBar} />
     </Pressable>
   );
 }

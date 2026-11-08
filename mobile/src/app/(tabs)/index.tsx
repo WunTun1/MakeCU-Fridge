@@ -16,7 +16,6 @@ import {
 } from "@/components/RecipeCarousel";
 import { ErrorCard, Loading } from "@/components/States";
 import { StockDial, StockVerdict } from "@/components/StockDial";
-import { TodayCard } from "@/components/TodayCard";
 import {
   api,
   type BestRecipe,
@@ -117,7 +116,6 @@ function StockCard() {
  */
 export default function Home() {
   const summary = useApi(api.summary, POLL_MS, "summary");
-  const profile = useApi(api.profile);
   const best = useApi(api.bestRecipe, ANALYTICS_POLL_MS, "best");
   const ready = useApi(api.readyRecipes, ANALYTICS_POLL_MS, "ready");
   const tonight = useApi(api.tonight, POLL_MS, "tonight");
@@ -179,15 +177,6 @@ export default function Home() {
 
       {s && (
         <>
-          <View style={{ gap: 10 }}>
-            <Text style={ui.h2}>Today</Text>
-            <TodayCard
-              totals={s.today_intake.totals}
-              mealCount={s.today_intake.meal_count}
-              profile={profile.data}
-            />
-          </View>
-
           <View style={{ gap: 10 }}>
             {s.conditions?.temperature_c != null && (
               <View

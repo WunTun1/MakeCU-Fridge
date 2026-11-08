@@ -51,16 +51,16 @@ EOF
 
 # 1. Services: sensor agent always; backend too in all-in-one (both talk over localhost).
 if [ "$MODE" = "all-in-one" ]; then
-  service refridge-backend "ReFridge backend (API, vision, recipes)" "$PYTHON main.py" \
+  service refridge-backend "ShelfLife backend (API, vision, recipes)" "$PYTHON main.py" \
 "Environment=SCALE_SOURCE=network
 Environment=PI_AGENT_URL=http://localhost:8001
 Environment=ENABLE_FRIDGE_LOOP=true"
-  service refridge-pi "ReFridge Pi sensor agent" "$PYTHON -m pi_node.agent" \
+  service refridge-pi "ShelfLife Pi sensor agent" "$PYTHON -m pi_node.agent" \
     "Environment=BACKEND_URL=http://localhost:8000"
   KIOSK_LINE="KIOSK_BACKEND=http://localhost:8000 $KIOSK &"
   SERVICES="refridge-backend refridge-pi"
 else
-  service refridge-pi "ReFridge Pi sensor agent" "$PYTHON -m pi_node.agent" ""
+  service refridge-pi "ShelfLife Pi sensor agent" "$PYTHON -m pi_node.agent" ""
   KIOSK_LINE="$KIOSK &"
   SERVICES="refridge-pi"
 fi

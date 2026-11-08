@@ -1,86 +1,17 @@
 import { useState } from "react";
 import { ScrollView, Text, TextInput, View } from "react-native";
 
-import { ChoiceChips, ListField } from "@/components/Chips";
+import { ListField } from "@/components/Chips";
 import { Segmented } from "@/components/Segmented";
 import { useSnackbar } from "@/components/Snackbar";
 import { ErrorCard, Loading } from "@/components/States";
 import { api, type Profile } from "@/lib/api";
 import { type Appearance, type TextSize, useDisplay } from "@/lib/display";
-import { useUi } from "@/lib/theme";
+import { makeStyles, useColors, useUi } from "@/lib/theme";
 import { useApi } from "@/lib/useApi";
 
-type Goals = Pick<
-  Profile,
-  "daily_calories" | "daily_protein_g" | "daily_carbs_g" | "daily_fat_g"
->;
-type GoalKey = keyof Goals;
-type Preset = "maintain" | "protein" | "lighter";
-
-const PRESETS: { value: Preset; label: string; goals: Goals }[] = [
-  {
-    value: "maintain",
-    label: "Maintain",
-    goals: {
-      daily_calories: 2000,
-      daily_protein_g: 100,
-      daily_carbs_g: 225,
-      daily_fat_g: 65,
-    },
-  },
-  {
-    value: "protein",
-    label: "More protein",
-    goals: {
-      daily_calories: 2200,
-      daily_protein_g: 160,
-      daily_carbs_g: 200,
-      daily_fat_g: 70,
-    },
-  },
-  {
-    value: "lighter",
-    label: "Eat lighter",
-    goals: {
-      daily_calories: 1700,
-      daily_protein_g: 110,
-      daily_carbs_g: 170,
-      daily_fat_g: 55,
-    },
-  },
-];
-
-const GOAL_FIELDS: { key: GoalKey; label: string; saved: string }[] = [
-  {
-    key: "daily_calories",
-    label: "Daily calories",
-    saved: "Calorie goal saved",
-  },
-  {
-    key: "daily_protein_g",
-    label: "Daily protein (g)",
-    saved: "Protein goal saved",
-  },
-  { key: "daily_carbs_g", label: "Daily carbs (g)", saved: "Carb goal saved" },
-  { key: "daily_fat_g", label: "Daily fat (g)", saved: "Fat goal saved" },
-];
-
-const DIETS = [
-  { value: "none", label: "None" },
-  { value: "vegetarian", label: "Vegetarian" },
-  { value: "vegan", label: "Vegan" },
-  { value: "pescatarian", label: "Pescatarian" },
-  { value: "gluten-free", label: "Gluten-free" },
-];
-
-/** The preset whose four numbers match the goals exactly; otherwise none (custom goals). */
-const presetFor = (p: Goals): Preset | null =>
-  PRESETS.find((preset) =>
-    GOAL_FIELDS.every(({ key }) => preset.goals[key] === p[key]),
-  )?.value ?? null;
-
 const APPEARANCES: { value: Appearance; label: string }[] = [
-  { value: "system", label: "Phone setting" },
+  { value: "system", label: "Automatic" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ];
@@ -90,7 +21,7 @@ const TEXT_SIZES: { value: TextSize; label: string }[] = [
   { value: "large", label: "Large" },
 ];
 
-export default function ProfileScreen() {
+export default function Settings() {
   const { data, error, loading } = useApi(api.profile);
   const ui = useUi();
   if (loading && !data) return <Loading />;
@@ -100,14 +31,15 @@ export default function ProfileScreen() {
         {error && <ErrorCard message={error} />}
       </View>
     );
-  return <ProfileForm initial={data} />;
+  return <SettingsForm initial={data} />;
 }
 
-/** Every change saves right away, so what's on screen is always what ReFridge uses. */
-function ProfileForm({ initial }: { initial: Profile }) {
+/** Your name, what you can't or won't eat, what you love, and how the app looks. Saves as you go. */
+function SettingsForm({ initial }: { initial: Profile }) {
   const [profile, setProfile] = useState<Profile>(initial);
   const showSnack = useSnackbar();
   const ui = useUi();
+  const styles = useStyles();
 
   async function save(patch: Partial<Profile>, message: string) {
     const before = profile;
@@ -121,153 +53,127 @@ function ProfileForm({ initial }: { initial: Profile }) {
     }
   }
 
-  const preset = presetFor(profile);
-
   return (
     <ScrollView
       style={ui.screen}
-      contentContainerStyle={ui.content}
+      contentContainerStyle={styles.page}
       keyboardShouldPersistTaps="handled"
     >
-      <Text style={ui.h2}>Daily goals</Text>
-      <Segmented
-        label="Goal preset"
-        options={PRESETS}
-        value={preset}
-        onChange={(v) => {
-          const p = PRESETS.find((x) => x.value === v)!;
-          save(p.goals, `Goals set to ${p.label.toLowerCase()}`);
-        }}
-      />
-      {preset == null && <Text style={ui.detail}>Custom goals</Text>}
-      <View style={[ui.card, { gap: 12 }]}>
-        {GOAL_FIELDS.map((f) => (
-          <GoalField
-            key={`${f.key}-${profile[f.key]}`}
-            label={f.label}
-            value={profile[f.key]}
-            onSave={(v) => save({ [f.key]: v }, f.saved)}
-          />
-        ))}
-      </View>
-      <Text style={ui.muted}>General wellness info, not medical advice.</Text>
-
-      <Text style={ui.h2}>Diet</Text>
-      <ChoiceChips
-        label="Diet"
-        options={DIETS}
-        value={profile.diet_type}
-        onChange={(v) => save({ diet_type: v }, "Diet saved")}
+      <NameHeader
+        name={profile.name ?? ""}
+        onSave={(name) => save({ name }, "Name saved")}
       />
 
-      <Text style={ui.h2}>Allergies</Text>
-      <Text style={ui.detail}>ReFridge never suggests recipes with these.</Text>
-      <ListField
-        label="allergies"
-        placeholder="e.g. peanuts"
-        values={profile.allergies}
-        onChange={(allergies) => save({ allergies }, "Allergies saved")}
-      />
+      <Section title="Allergies" note="Recipes with these are never suggested.">
+        <ListField
+          label="allergies"
+          placeholder="Add an allergy, e.g. peanuts"
+          values={profile.allergies}
+          onChange={(allergies) => save({ allergies }, "Allergies saved")}
+        />
+      </Section>
 
-      <Text style={ui.h2}>Dislikes</Text>
-      <Text style={ui.detail}>
-        Left out of Cook tonight and One item away. Chat skips them unless you
-        ask.
-      </Text>
-      <ListField
-        label="dislikes"
-        placeholder="e.g. mushrooms"
-        values={profile.dislikes}
-        onChange={(dislikes) => save({ dislikes }, "Dislikes saved")}
-      />
+      <Section
+        title="Dislikes"
+        note="Left out of suggestions unless you ask for them."
+      >
+        <ListField
+          label="dislikes"
+          placeholder="Add a dislike, e.g. mushrooms"
+          values={profile.dislikes}
+          onChange={(dislikes) => save({ dislikes }, "Dislikes saved")}
+        />
+      </Section>
 
-      <LearnedTastes />
+      <Section
+        title="Likes"
+        note="Foods and cuisines you love come up more often."
+      >
+        <ListField
+          label="likes"
+          placeholder="Add a like, e.g. Italian or salmon"
+          values={profile.likes ?? []}
+          onChange={(likes) => save({ likes }, "Likes saved")}
+        />
+      </Section>
 
       <DisplaySettings />
     </ScrollView>
   );
 }
 
-/** A number that saves when you leave the field. */
-function GoalField({
-  label,
-  value,
+/** An initials circle and your name, which saves when you leave the field. */
+function NameHeader({
+  name,
   onSave,
 }: {
-  label: string;
-  value: number | null;
-  onSave: (v: number) => void;
+  name: string;
+  onSave: (name: string) => void;
 }) {
-  const ui = useUi();
-  const [text, setText] = useState(value?.toString() ?? "");
+  const styles = useStyles();
+  const c = useColors();
+  const [text, setText] = useState(name);
+  const initials =
+    text
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase())
+      .join("") || "?";
   const commit = () => {
-    const n = Number(text.replace(",", "."));
-    if (text.trim() !== "" && n > 0 && n !== value) onSave(n);
+    if (text.trim() !== name.trim()) onSave(text.trim());
   };
   return (
-    <View style={{ gap: 4 }}>
-      <Text style={ui.detail}>{label}</Text>
+    <View style={styles.header}>
+      <View style={styles.avatar}>
+        <Text style={styles.initials}>{initials}</Text>
+      </View>
       <TextInput
-        style={ui.input}
+        style={styles.nameInput}
         value={text}
         onChangeText={setText}
         onBlur={commit}
         onSubmitEditing={commit}
-        keyboardType="numeric"
+        placeholder="Your name"
+        placeholderTextColor={c.muted}
         returnKeyType="done"
-        accessibilityLabel={label}
+        textAlign="center"
+        accessibilityLabel="Your name"
       />
     </View>
   );
 }
 
-/** What the taste profile has picked up from cooking, ratings, requests, and habits. */
-function LearnedTastes() {
-  const { data } = useApi(api.taste);
+function Section({
+  title,
+  note,
+  children,
+}: {
+  title: string;
+  note?: string;
+  children: React.ReactNode;
+}) {
+  const styles = useStyles();
   const ui = useUi();
-  if (!data) return null;
-  const nothingYet =
-    data.cuisines.length === 0 && data.ingredients.length === 0;
   return (
-    <View style={[ui.card, { gap: 6, marginTop: 8 }]}>
-      <Text style={ui.h2}>What ReFridge has learned</Text>
-      {nothingYet ? (
-        <Text style={ui.detail}>
-          Cook, rate, and ask for recipes and this fills in. Suggestions adapt
-          as it does.
-        </Text>
-      ) : (
-        <>
-          {data.cuisines.length > 0 && (
-            <Text style={ui.text}>
-              You enjoy:{" "}
-              <Text style={{ textTransform: "capitalize" }}>
-                {data.cuisines.map((c) => c.replace("-", " ")).join(", ")}
-              </Text>
-            </Text>
-          )}
-          {data.ingredients.length > 0 && (
-            <Text style={ui.text}>
-              Favorite ingredients: {data.ingredients.join(", ")}
-            </Text>
-          )}
-          <Text style={ui.muted}>
-            Recent habits count more; older ones fade over about a month.
-          </Text>
-        </>
-      )}
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.card}>{children}</View>
+      {note && <Text style={[ui.muted, styles.note]}>{note}</Text>}
     </View>
   );
 }
 
-/** How the app looks on this phone: saved on the device, not in the profile. */
+/** How the app looks on this phone: kept on the phone, not in your profile. */
 function DisplaySettings() {
   const ui = useUi();
+  const styles = useStyles();
   const { display, setDisplay } = useDisplay();
   return (
-    <>
-      <Text style={ui.h2}>Display</Text>
-      <View style={[ui.card, { gap: 16 }]}>
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Display</Text>
+      <View style={[styles.card, { gap: 16 }]}>
         <View style={{ gap: 8 }}>
           <Text style={ui.text}>Appearance</Text>
           <Segmented
@@ -287,6 +193,48 @@ function DisplaySettings() {
           />
         </View>
       </View>
-    </>
+    </View>
   );
 }
+
+const useStyles = makeStyles((c, size) => ({
+  page: { padding: 16, paddingBottom: 40, gap: 24 },
+  header: { alignItems: "center", gap: 12, paddingTop: 8 },
+  avatar: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: c.accent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  initials: { color: c.onAccent, fontSize: 28, fontWeight: "700" },
+  nameInput: {
+    minWidth: 220,
+    minHeight: 44,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    backgroundColor: c.input,
+    color: c.text,
+    fontSize: size(20),
+    fontWeight: "600",
+  },
+  section: { gap: 8 },
+  sectionTitle: {
+    color: c.textSecondary,
+    fontSize: size(13),
+    lineHeight: size(18),
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 0.6,
+    paddingHorizontal: 4,
+  },
+  card: {
+    backgroundColor: c.card,
+    borderColor: c.border,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 16,
+  },
+  note: { paddingHorizontal: 4 },
+}));

@@ -52,7 +52,7 @@ def calibrated(hw, shelf: int) -> str:
 
 def render(hw, s: dict) -> str:
     cfg = hw.cfg
-    lines = ["ReFridge sensors      Enter: tare / calibrate      Ctrl+C: quit", ""]
+    lines = ["ShelfLife sensors     Enter: tare / calibrate      Ctrl+C: quit", ""]
     lines.append("Scale")
     if not s["shelves"]:
         lines.append("  no load cells set up — HX711_PINS in pi_node/.env is empty")

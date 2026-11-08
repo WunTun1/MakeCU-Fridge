@@ -8,12 +8,12 @@ import {
   Text,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Button } from "@/components/Button";
 import { ChoiceChips } from "@/components/Chips";
 import { InventoryRow } from "@/components/InventoryRow";
 import { SearchField } from "@/components/SearchField";
+import { BAND_TEXT, bandColor, bandOf } from "@/components/StockDial";
 import { ErrorCard, Loading } from "@/components/States";
 import { api, type InventoryEntry } from "@/lib/api";
 import { makeStyles, useColors, useUi } from "@/lib/theme";
@@ -26,10 +26,10 @@ const FAB = 56;
 type Sort = "soon" | "late" | "most" | "least";
 
 const SORTS: { value: Sort; label: string }[] = [
-  { value: "soon", label: "Expires soonest" },
-  { value: "late", label: "Expires latest" },
-  { value: "most", label: "Largest amount" },
-  { value: "least", label: "Smallest amount" },
+  { value: "soon", label: "Expiring first" },
+  { value: "late", label: "Expiring last" },
+  { value: "most", label: "Most" },
+  { value: "least", label: "Least" },
 ];
 
 const dateOr = (n: number | null, none: number) => n ?? none; // no date: at the end either way
@@ -53,9 +53,9 @@ export default function YourFridge() {
   const ui = useUi();
   const c = useColors();
   const styles = useStyles();
-  const insets = useSafeAreaInsets();
   const summary = useApi(api.summary, POLL_MS, "summary");
   const unnamed = useApi(api.unidentified, POLL_MS, "unidentified");
+  const stock = useApi(api.stockScore, 30000, "stock");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<Sort>("soon");
   const [sortOpen, setSortOpen] = useState(false);
@@ -71,10 +71,7 @@ export default function YourFridge() {
     <View style={ui.screen}>
       <ScrollView
         style={ui.screen}
-        contentContainerStyle={[
-          ui.content,
-          { paddingBottom: FAB + 40 + insets.bottom },
-        ]}
+        contentContainerStyle={[ui.content, { paddingBottom: FAB + 32 }]}
         keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
@@ -127,6 +124,13 @@ export default function YourFridge() {
             />
           </Pressable>
         </View>
+        {stock.data && (
+          <StockLine
+            score={stock.data.score}
+            atRisk={stock.data.at_risk}
+            fromTiger={stock.data.source === "tiger"}
+          />
+        )}
 
         {sortOpen && (
           <View style={[ui.card, { gap: 12 }]}>
@@ -161,7 +165,7 @@ export default function YourFridge() {
                 {items.length === 1 ? "1 item" : `${items.length} items`} ·{" "}
                 {SORTS.find((s) => s.value === sort)?.label.toLowerCase()}
               </Text>
-              <Text style={ui.muted}>Tap one to fix it</Text>
+              <Text style={ui.muted}>Tap to edit</Text>
             </View>
             <View style={[ui.card, { paddingVertical: 4 }]}>
               {items.map((item, i) => (
@@ -184,13 +188,46 @@ export default function YourFridge() {
         accessibilityLabel="Add food"
         style={({ pressed }) => [
           styles.fab,
-          { bottom: 16 + insets.bottom },
+          { bottom: 16 }, // same as from the side; the tab bar already clears the home indicator
           pressed && { opacity: 0.85 },
         ]}
       >
         <FontAwesome name="plus" size={24} color={c.onAccent} />
       </Pressable>
     </View>
+  );
+}
+
+/** One line from the stock analysis: balanced or not, and how much is likely to spoil. Opens the dial. */
+function StockLine({
+  score,
+  atRisk,
+  fromTiger,
+}: {
+  score: number;
+  atRisk: { name: string; at_risk_g: number }[];
+  fromTiger: boolean;
+}) {
+  const ui = useUi();
+  const c = useColors();
+  const styles = useStyles();
+  const band = bandOf(score);
+  const waste = atRisk.reduce((sum, f) => sum + f.at_risk_g, 0);
+  return (
+    <Link href="/stock" asChild>
+      <Pressable style={styles.insight} accessibilityRole="button">
+        <View style={[styles.dot, { backgroundColor: bandColor(band, c) }]} />
+        <Text style={[ui.text, { flex: 1 }]} numberOfLines={1}>
+          <Text style={{ fontWeight: "700" }}>{BAND_TEXT[band].title}</Text>
+          {waste > 0
+            ? ` · ${waste >= 1000 ? `${(waste / 1000).toFixed(1)} kg` : `${Math.round(waste)} g`} likely to spoil`
+            : ""}
+        </Text>
+        {fromTiger && <FontAwesome name="database" size={11} color={c.muted} />}
+        {fromTiger && <Text style={ui.muted}>Tiger Data</Text>}
+        <FontAwesome name="chevron-right" size={11} color={c.muted} />
+      </Pressable>
+    </Link>
   );
 }
 
@@ -227,6 +264,18 @@ const useStyles = makeStyles((c, size) => ({
     backgroundColor: c.card,
   },
   link: { color: c.accent, fontSize: size(15), fontWeight: "700" },
+  insight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    minHeight: 44,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: c.card,
+    borderWidth: 1,
+    borderColor: c.border,
+  },
+  dot: { width: 10, height: 10, borderRadius: 5 },
   searchRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   sortButton: {
     width: 44,

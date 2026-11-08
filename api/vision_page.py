@@ -5,7 +5,7 @@ VISION_PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ReFridge camera</title>
+<title>ShelfLife camera</title>
 <style>
   /* The fridge screen's light palette (mobile/src/lib/theme.ts). */
   :root {
@@ -44,7 +44,7 @@ VISION_PAGE = """<!doctype html>
   .legend span { display: inline-flex; align-items: center; gap: 7px; }
   .legend i { width: 12px; height: 12px; border-radius: 3px; }
 
-  .photos { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+  .photos { display: grid; grid-template-rows: auto minmax(0, 1fr); align-self: start; max-height: 62vh; }
   .photos-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px;
                  border-bottom: 1px solid var(--border); }
   .photos-head h2 { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--soft); }
@@ -81,19 +81,21 @@ VISION_PAGE = """<!doctype html>
 </head>
 <body>
 <header>
-  <div class="title"><b>Camera</b><span>ReFridge</span></div>
+  <div class="title"><b>Camera</b><span>ShelfLife</span></div>
   <div class="pills">
-    <span class="pill" id="live"><i></i><span>Connecting…</span></span>
-    <span class="pill" id="door"><i></i><span>Door —</span></span>
-    <span class="pill" id="weight"><i></i><span>Shelf —</span></span>
-    <span class="pill" id="temp"><i></i><span>Fridge —</span></span>
+    <span class="pill" id="live"><i></i><span>Connecting</span></span>
+    <span class="pill" id="door"><i></i><span>Door</span></span>
+    <span class="pill" id="temp"><i></i><span>Temp</span></span>
+    <span class="pill" id="humidity"><i></i><span>Humidity</span></span>
+    <span class="pill" id="pressure"><i></i><span>Pressure</span></span>
+    <span class="pill" id="weight"><i></i><span>Shelf</span></span>
   </div>
 </header>
 <main>
   <section class="card feed">
     <div class="screen">
       <img id="feed" alt="Live camera">
-      <div class="waiting" id="waiting">Waiting for the camera…<br>Is the Pi running, with the fridge loop on?</div>
+      <div class="waiting" id="waiting">No camera</div>
     </div>
     <div class="legend">
       <span><i style="background:#ff8c00"></i>Person and hands</span>
@@ -137,8 +139,8 @@ VISION_PAGE = """<!doctype html>
       const s = await (await fetch('/api/scale')).json();
       pill('door', s.door_open ? 'Door open' : 'Door closed', s.door_open ? 'warn' : '');
       const shelves = Object.entries(s.weights);
-      pill('weight', shelves.length ? shelves.map(([n, g]) => 'Shelf ' + n + ': ' + Math.round(g) + ' g').join('  ·  ') : 'Scale: no reading', shelves.length ? '' : 'bad');
-    } catch (e) { pill('door', 'Backend offline', 'bad'); }
+      pill('weight', shelves.length ? shelves.map(([n, g]) => 'Shelf ' + n + ' ' + Math.round(g) + ' g').join('  ·  ') : 'No scale', shelves.length ? '' : 'bad');
+    } catch (e) { pill('door', 'Offline', 'bad'); }
     setTimeout(status, 1000);
   }
   async function conditions() {
@@ -146,7 +148,11 @@ VISION_PAGE = """<!doctype html>
       const c = (await (await fetch('/api/conditions')).json()).latest;
       const fresh = c && Date.now() - Date.parse(c.occurred_at) < 5 * 60 * 1000;
       const t = fresh ? c.temperature_c : null;
-      pill('temp', t == null ? 'Fridge —' : 'Fridge ' + t.toFixed(1) + ' °C', t != null && t > 7 ? 'bad' : '');
+      const h = fresh ? c.humidity_pct : null;
+      const p = fresh ? c.pressure_hpa : null;
+      pill('temp', t == null ? 'Temp' : t.toFixed(1) + ' °C', '');
+      pill('humidity', h == null ? 'Humidity' : Math.round(h) + '% humidity', '');
+      pill('pressure', p == null ? 'Pressure' : Math.round(p) + ' hPa', '');
     } catch (e) { /* shown by the status pill */ }
     setTimeout(conditions, 5000);
   }
@@ -156,7 +162,7 @@ VISION_PAGE = """<!doctype html>
   let newest = null;
   const clock = (s) => new Date(s * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
   function describe(s) {
-    if (s.status === 'pending') return { name: 'Asking Gemini…', badge: ['wait', 'Waiting'] };
+    if (s.status === 'pending') return { name: 'Naming', badge: ['wait', 'Waiting'] };
     if (s.status === 'skipped') return { name: 'Not named', badge: ['wait', 'Gemini off'] };
     if (s.status === 'named') {
       const pct = s.confidence != null ? Math.round(s.confidence * 100) + '%' : '';
@@ -181,7 +187,7 @@ VISION_PAGE = """<!doctype html>
           '<img src="/api/vision/snapshots/' + s.name + '" alt="">' +
           '<div><div class="name">' + esc(cap(d.name)) + '</div><div class="meta">' + esc(meta) + '</div></div>' +
           '<span class="badge ' + d.badge[0] + '">' + esc(d.badge[1]) + '</span></div>';
-      }).join('') : '<div class="empty"><b>No photos yet</b>Put something on the shelf and take your hand away.</div>';
+      }).join('') : '<div class="empty"><b>No photos</b></div>';
     } catch (e) { /* backend restarting: try again next tick */ }
     setTimeout(loadShots, 1500);
   }

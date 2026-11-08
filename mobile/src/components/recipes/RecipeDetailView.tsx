@@ -493,13 +493,13 @@ function IngredientRow({
   const color = toneColor(tone, c);
   const note =
     tone === "allergy"
-      ? { text: "Allergy — you listed this", color: c.danger }
+      ? { text: "Allergy", color: c.danger }
       : line.use
         ? { text: `Use your ${line.use.toLowerCase()} instead`, color: c.good }
         : tone === "more"
           ? {
               text: line.on_hand
-                ? `You have ${line.on_hand} — need a bit more`
+                ? `Have ${line.on_hand}, need more`
                 : "Need a bit more",
               color: c.warn,
             }

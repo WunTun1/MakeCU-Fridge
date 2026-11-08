@@ -57,7 +57,7 @@ export function useChat() {
       add({ role: 'assistant', text: reply, recipes, turnId: turn_id, undo });
       if (turn_id != null) refreshAll();
     } catch (e) {
-      add({ role: 'assistant', text: `Couldn't reach ReFridge: ${(e as Error).message}` });
+      add({ role: 'assistant', text: `Couldn't reach ShelfLife: ${(e as Error).message}` });
     } finally {
       busy.current = false;
       setSending(false);

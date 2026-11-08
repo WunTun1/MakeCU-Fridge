@@ -14,15 +14,15 @@ export const bandOf = (score: number): StockBand =>
 export const BAND_TEXT: Record<StockBand, { title: string; detail: string }> = {
   under: {
     title: "Understocked",
-    detail: "Less than you usually keep — time to shop",
+    detail: "Less than usual. Time to shop.",
   },
   balanced: {
     title: "Balanced",
-    detail: "About what you usually keep and can finish",
+    detail: "About what you usually keep",
   },
   over: {
     title: "Overstocked",
-    detail: "More than you'll likely finish in time",
+    detail: "More than you'll likely finish",
   },
 };
 

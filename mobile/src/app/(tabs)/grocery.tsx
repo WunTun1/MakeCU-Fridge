@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 
+import { AmountWheel } from "@/components/AmountWheel";
 import { useSnackbar } from "@/components/Snackbar";
 import { ErrorCard } from "@/components/States";
 import { formatAmount } from "@/lib/amount";
@@ -109,6 +110,7 @@ function sections(items: GroceryEntry[]): Section[] {
 export default function Grocery() {
   const [list, setList] = useState<GroceryList | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<GroceryEntry | null>(null);
   const summary = useApi(api.summary, 5000, "summary");
   const restock = useApi(api.restockReport, 30000, "restock");
   const showSnack = useSnackbar();
@@ -149,6 +151,41 @@ export default function Grocery() {
     run(() =>
       api.addToGrocery({ names, source: "manual", amounts }).then(api.grocery),
     );
+  /** Tapping "On list" again takes it back off. */
+  const unlist = (name: string) => {
+    const rows = list.items.filter(
+      (i) => !i.checked && i.source !== "plan" && sameName(i.name, name),
+    );
+    setList({ ...list, items: list.items.filter((i) => !rows.includes(i)) });
+    Promise.all(rows.map((r) => api.hideGrocery(r.id, true))).catch(reload);
+  };
+  const setAmount = (entry: GroceryEntry, amount: string) => {
+    setList({
+      ...list,
+      items: list.items.map((i) => (i.id === entry.id ? { ...i, amount } : i)),
+    });
+    api.setGroceryAmount(entry.id, amount).catch(reload);
+  };
+  const clearList = () => {
+    const rows = list.items.filter((i) => i.source !== "plan");
+    setList({ ...list, items: list.items.filter((i) => !rows.includes(i)) });
+    Promise.all(rows.map((r) => api.hideGrocery(r.id, true))).then(
+      () =>
+        showSnack({
+          message: "List cleared",
+          action: {
+            label: "Undo",
+            onPress: () =>
+              run(() =>
+                Promise.all(rows.map((r) => api.hideGrocery(r.id, false))).then(
+                  api.grocery,
+                ),
+              ),
+          },
+        }),
+      reload,
+    );
+  };
   const buyFor = (productId: number) => {
     const r = restock.data?.items.find((x) => x.product_id === productId);
     return r ? buyText(r) : null;
@@ -209,7 +246,11 @@ export default function Grocery() {
                 item={item}
                 buy={buyFor(item.product_id)}
                 listed={onList(item.name)}
-                onAdd={() => add([item.name], [buyFor(item.product_id)])}
+                onAdd={() =>
+                  onList(item.name)
+                    ? unlist(item.name)
+                    : add([item.name], [buyFor(item.product_id)])
+                }
               />
             ))}
           </ScrollView>
@@ -220,27 +261,21 @@ export default function Grocery() {
 
       <View style={styles.listHeader}>
         <Text style={ui.h2}>Your list</Text>
-        {inCart.length > 0 && (
+        {!empty && (
           <Pressable
-            onPress={() =>
-              run(() => api.clearCheckedGrocery().then(api.grocery))
-            }
+            onPress={clearList}
             hitSlop={8}
             style={styles.textButton}
+            accessibilityRole="button"
           >
-            <Text style={styles.link}>Clear checked</Text>
+            <Text style={styles.link}>Clear list</Text>
           </Pressable>
         )}
       </View>
 
       <AddRow onAdd={(name) => add([name])} />
 
-      {empty && (
-        <Text style={ui.detail}>
-          Nothing to buy yet. On a recipe, tap Add to grocery list to add what
-          it needs — or type an item above.
-        </Text>
-      )}
+      {empty && <Text style={ui.muted}>Empty</Text>}
 
       {groups.map((g) => (
         <View key={g.key} style={{ gap: 6 }}>
@@ -275,6 +310,7 @@ export default function Grocery() {
                 last={i === g.items.length - 1}
                 onToggle={() => toggle(entry)}
                 onRemove={() => remove(entry)}
+                onAmount={() => setEditing(entry)}
               />
             ))}
           </View>
@@ -300,12 +336,27 @@ export default function Grocery() {
         </View>
       )}
 
+      {editing && (
+        <AmountWheel
+          name={sentenceCase(editing.name)}
+          unit={editing.unit}
+          current={amountFor(editing)}
+          onClose={() => setEditing(null)}
+          onDone={(amount) => {
+            setAmount(editing, amount);
+            setEditing(null);
+          }}
+        />
+      )}
+
       {restock.data && restock.data.items.length > 0 && (
         <YourEating
           items={restock.data.items}
           fromTiger={restock.data.source === "tiger"}
           onList={onList}
-          onAdd={(r) => add([r.name], [buyText(r)])}
+          onAdd={(r) =>
+            onList(r.name) ? unlist(r.name) : add([r.name], [buyText(r)])
+          }
         />
       )}
     </ScrollView>
@@ -407,11 +458,10 @@ function YourEating({
               </View>
               <Pressable
                 onPress={() => onAdd(r)}
-                disabled={listed}
                 accessibilityRole="button"
                 accessibilityLabel={
                   listed
-                    ? `${r.name} is on your list`
+                    ? `${r.name} is on your list. Tap to take it off`
                     : `Add ${buyText(r)} ${r.name} to your list`
                 }
                 style={({ pressed }) => [
@@ -484,11 +534,10 @@ function LowCard({
       <View style={{ flex: 1 }} />
       <Pressable
         onPress={onAdd}
-        disabled={listed}
         accessibilityRole="button"
         accessibilityLabel={
           listed
-            ? `${item.name} is on your list`
+            ? `${item.name} is on your list. Tap to take it off`
             : `Add ${item.name} to your list`
         }
         style={({ pressed }) => [
@@ -548,11 +597,14 @@ function GroceryRow({
   last,
   onToggle,
   onRemove,
+  onAmount,
 }: {
   entry: GroceryEntry;
   last: boolean;
   onToggle: () => void;
   onRemove: () => void;
+  /** Tap the amount to spin a new one; not offered once it's in the cart. */
+  onAmount?: () => void;
 }) {
   const done = entry.checked;
   const ui = useUi();
@@ -578,15 +630,35 @@ function GroceryRow({
       >
         {sentenceCase(entry.name)}
       </Text>
-      {amountFor(entry) && (
-        <Text
-          style={[
-            styles.amount,
-            done && { textDecorationLine: "line-through" },
-          ]}
+      {onAmount ? (
+        <Pressable
+          onPress={onAmount}
+          hitSlop={6}
+          style={styles.amountButton}
+          accessibilityRole="button"
+          accessibilityLabel={`Amount of ${sentenceCase(entry.name)}: ${amountFor(entry) ?? "not set"}`}
         >
-          {amountFor(entry)}
-        </Text>
+          <Text
+            style={[
+              styles.amountLabel,
+              !amountFor(entry) && { color: c.muted },
+            ]}
+            numberOfLines={1}
+          >
+            {amountFor(entry) ?? "Amount"}
+          </Text>
+        </Pressable>
+      ) : (
+        amountFor(entry) && (
+          <Text
+            style={[
+              styles.amount,
+              done && { textDecorationLine: "line-through" },
+            ]}
+          >
+            {amountFor(entry)}
+          </Text>
+        )
       )}
       <Pressable
         onPress={onRemove}
@@ -627,6 +699,17 @@ const useStyles = makeStyles((c, size) => ({
   },
   lowListed: { backgroundColor: c.card, borderWidth: 1, borderColor: c.accent },
   lowButtonText: { color: c.onAccent, fontSize: size(14), fontWeight: "700" },
+  amountButton: {
+    flexShrink: 0,
+    minWidth: 44,
+    minHeight: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: c.input,
+  },
+  amountLabel: { color: c.text, fontSize: size(15), fontWeight: "700" },
   amount: {
     color: c.text,
     fontSize: size(15),

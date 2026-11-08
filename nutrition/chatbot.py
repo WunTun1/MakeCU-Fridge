@@ -713,7 +713,7 @@ class NutritionistChatbot:
                     reply = self._converse(client)
                 except Exception:
                     log.exception("Gemini chat failed")
-                    reply = "Sorry, I couldn't reach the assistant just now — here are some ideas anyway."
+                    reply = "Sorry, I couldn't reach the assistant just now. Here are some ideas anyway."
                     if not (self._turn_cards or self._turn_meals or self._turn_events):
                         self._offline_reply(user_message)
             body = plain_text(reply)
@@ -820,7 +820,7 @@ class NutritionistChatbot:
             ]
             contents.append(types.Content(role="user", parts=response_parts))
 
-        return "Sorry, I'm having trouble pulling that together right now — could you try rephrasing?"
+        return "Sorry, I'm having trouble with that right now. Could you try rephrasing?"
 
     def _system_instruction(self) -> str:
         """The prompt, then this turn's fridge facts and the cards the person is looking at."""
@@ -855,7 +855,7 @@ class NutritionistChatbot:
         if self._turn_blocked or self._turn_code_only or self._turn_say:
             return ""
         if not self._turn_cards:
-            return "I couldn't find a match for that — try a cuisine like Italian or an ingredient you have."
+            return "I couldn't find a match. Try a cuisine like Italian or an ingredient you have."
         lead = f"Here are some {cuisine.replace('-', ' ').title()} ideas" if cuisine else "Here are some ideas"
         return lead + " based on what's in your fridge. (Add a Gemini key for full conversation.)"
 

@@ -16,11 +16,11 @@ def client(monkeypatch, tmp_path):
     return TestClient(server.app)
 
 
-def test_demo_conditions_look_like_a_cold_fridge(monkeypatch, tmp_path):
+def test_demo_conditions_look_like_the_room_it_sits_in(monkeypatch, tmp_path):
     monkeypatch.setenv("DEMO_CONDITIONS", "on")
     reading = conditions.latest(Database(tmp_path / "c.db"))
-    assert 3 <= reading["temperature_c"] <= 4.2
-    assert 40 <= reading["humidity_pct"] <= 50 and 1010 <= reading["pressure_hpa"] <= 1016
+    assert 21 <= reading["temperature_c"] <= 22.5
+    assert 37 <= reading["humidity_pct"] <= 43 and 1010 <= reading["pressure_hpa"] <= 1016
     assert datetime.fromisoformat(reading["occurred_at"])  # fresh, so screens don't hide it as stale
 
 
@@ -32,7 +32,7 @@ def test_without_demo_the_real_reading_is_shown(monkeypatch, tmp_path):
 def test_demo_numbers_never_raise_the_too_warm_alert(monkeypatch, client):
     monkeypatch.setenv("DEMO_CONDITIONS", "on")
     summary = client.get("/api/summary").json()
-    assert summary["conditions"]["temperature_c"] < 7
+    assert summary["conditions"]["temperature_c"] > 7  # a room
     assert not any(a["reason"] == "fridge_temp_high" for a in summary["alerts"])
 
 

@@ -113,7 +113,7 @@ python3 ~/MakeCU-Fridge/pi_node/run.py --autostart on    # off to undo
 ```
 
 From the next boot on, the desktop opens a terminal window running run.py, which opens
-the fridge screen. To stop everything: Alt+Tab from the fridge screen to the ReFridge
+the fridge screen. To stop everything: Alt+Tab from the fridge screen to the ShelfLife
 window and press Ctrl+C (the window stays open to show why it stopped; Enter closes it).
 Don't combine this with `install.sh`'s services — both would use the same pins and port.
 

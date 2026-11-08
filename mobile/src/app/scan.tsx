@@ -34,7 +34,7 @@ export default function Scan() {
       await api.barcode(data);
       router.dismissAll();
     } catch {
-      setStatus(`Barcode ${data} not found — try typing it in instead.`);
+      setStatus(`Barcode ${data} not found. Type it in instead.`);
       setTimeout(() => (handling.current = false), 2000);
     }
   }

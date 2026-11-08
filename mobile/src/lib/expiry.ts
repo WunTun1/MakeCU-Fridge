@@ -72,7 +72,7 @@ export function goesBadText(item: InventoryEntry): string | null {
 type Stock = Pick<InventoryEntry, 'unit' | 'grams_per_unit' | 'name' | 'days_left' | 'likely_wasted_g'>;
 
 /** The stat label for what you won't finish before it goes bad, the same on every screen. */
-export const LIKELY_WASTED = 'Likely wasted';
+export const LIKELY_WASTED = 'Likely to spoil';
 
 /**
  * How much you won't have used by the day it goes bad, at your usual rate: "1.2 kg" (always an

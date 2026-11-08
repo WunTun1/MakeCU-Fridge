@@ -43,26 +43,29 @@ function ThemedApp() {
   return (
     <ThemeProvider value={navTheme}>
       <SnackbarProvider>
-        <StatusBar style={mode === "dark" ? "light" : "dark"} />
+        <StatusBar style="light" />
         <Stack
           screenOptions={{
-            headerStyle: { backgroundColor: c.bg },
-            headerTintColor: c.text,
+            headerBackTitle: "Back",
+            headerStyle: { backgroundColor: c.bar },
+            headerTintColor: c.onBar,
+            headerTitleStyle: { fontSize: 18, fontWeight: "700" },
+            headerShadowVisible: false,
             contentStyle: { backgroundColor: c.bg },
           }}
         >
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen name="item/[id]" options={{ title: "Item" }} />
+          <Stack.Screen
+            name="(tabs)"
+            options={{ headerShown: false, title: "Back" }}
+          />
+          <Stack.Screen name="item/[id]" options={{ title: "" }} />
           <Stack.Screen name="recipe/[id]" options={{ title: "Recipe" }} />
           <Stack.Screen name="review" options={{ title: "Review queue" }} />
           <Stack.Screen name="today" options={{ title: "Today" }} />
           <Stack.Screen name="settings" options={{ title: "Settings" }} />
           <Stack.Screen name="alerts" options={{ title: "Alerts" }} />
           <Stack.Screen name="stock" options={{ title: "Stock score" }} />
-          <Stack.Screen
-            name="identify"
-            options={{ title: "Name what the camera saw" }}
-          />
+          <Stack.Screen name="identify" options={{ title: "Name items" }} />
           <Stack.Screen
             name="add"
             options={{ title: "Add food", presentation: "modal" }}

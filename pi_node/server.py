@@ -35,7 +35,7 @@ class TempIn(BaseModel):
 
 
 def create_app(hw: Hardware, backend_url: str = "") -> FastAPI:
-    app = FastAPI(title="ReFridge Pi node")
+    app = FastAPI(title="ShelfLife Pi node")
     # json.dumps gives a safely quoted JS string for the page's backend address.
     page = SIM_PAGE.replace('"__BACKEND__"', json.dumps(backend_url.rstrip("/")))
 

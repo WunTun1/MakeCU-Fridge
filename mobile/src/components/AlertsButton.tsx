@@ -32,7 +32,7 @@ export function AlertsButton() {
       hitSlop={8}
       style={({ pressed }) => [styles.button, pressed && { opacity: 0.5 }]}
     >
-      <FontAwesome name="bell" size={21} color={c.textSecondary} />
+      <FontAwesome name="bell" size={21} color={c.onBar} />
       {fresh > 0 && (
         <View style={styles.badge}>
           <Text style={styles.badgeText}>{fresh > 9 ? "9+" : fresh}</Text>
@@ -43,11 +43,17 @@ export function AlertsButton() {
 }
 
 const useStyles = makeStyles((c) => ({
-  button: { padding: 10, marginRight: 6 },
+  button: {
+    width: 44,
+    height: 44,
+    marginRight: 4,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   badge: {
     position: "absolute",
-    top: 4,
-    right: 2,
+    top: 5,
+    right: 3,
     minWidth: 18,
     height: 18,
     paddingHorizontal: 4,
@@ -56,7 +62,7 @@ const useStyles = makeStyles((c) => ({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: c.bg,
+    borderColor: c.bar,
   },
   badgeText: {
     color: "#ffffff",

@@ -61,7 +61,7 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="ReFridge API", lifespan=_lifespan)
+app = FastAPI(title="ShelfLife API", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
@@ -144,6 +144,11 @@ class ItemIdsIn(BaseModel):
     item_ids: list[int]
 
 
+class WasteIn(ItemIdsIn):
+    # How much of each was thrown out, in the same order; leave out (or null) for all of it.
+    grams: list[float | None] | None = None
+
+
 class EventIdsIn(BaseModel):
     event_ids: list[int]
 
@@ -160,6 +165,7 @@ class GroceryAddIn(BaseModel):
 class GroceryPatchIn(BaseModel):
     checked: bool | None = None
     hidden: bool | None = None
+    amount: str | None = Field(None, max_length=40)  # "300 g"; send null to go back to the suggested amount
 
 
 class HorizonIn(BaseModel):
@@ -179,6 +185,8 @@ class ProfileIn(BaseModel):
     diet_type: str | None = None
     allergies: list[str] | None = None
     dislikes: list[str] | None = None
+    likes: list[str] | None = None
+    name: str | None = Field(None, max_length=40)
 
 
 class ChatIn(BaseModel):
@@ -376,13 +384,16 @@ def add_grocery_items(body: GroceryAddIn):
 
 @app.patch("/api/grocery/items/{entry_id}")
 def patch_grocery_item(entry_id: int, body: GroceryPatchIn):
-    """Check off, or remove (hidden) / bring back. A removed plan row stays off for that trip."""
+    """Check off, remove (hidden) / bring back, or change how much. A removed plan row stays off
+    for that trip."""
     if db.get_grocery_entry(entry_id) is None:
         raise HTTPException(404, "not on the list")
     if body.checked is not None:
         db.set_grocery_checked(entry_id, body.checked)
     if body.hidden is not None:
         db.set_grocery_hidden(entry_id, body.hidden)
+    if "amount" in body.model_fields_set:
+        db.set_grocery_amount(entry_id, (body.amount or "").strip() or None)
     return {"ok": True}
 
 
@@ -585,9 +596,12 @@ def consume_item(body: ConsumeIn):
 
 
 @app.post("/api/items/waste")
-def waste_items(body: ItemIdsIn):
-    """Thrown out: logged as waste, so it never counts toward how fast you use it."""
-    ids = [inv_events.apply_waste(db, item_id) for item_id in body.item_ids]
+def waste_items(body: WasteIn):
+    """Thrown out (all of it, or `grams` of each): logged as waste, so it never counts toward
+    how fast you use it."""
+    grams = body.grams or []
+    ids = [inv_events.apply_waste(db, item_id, grams[i] if i < len(grams) else None)
+           for i, item_id in enumerate(body.item_ids)]
     return {"event_ids": [i for i in ids if i is not None]}
 
 
@@ -658,6 +672,7 @@ def get_profile():
         "daily_carbs_g": p["daily_carbs_g"], "daily_fat_g": p["daily_fat_g"],
         "diet_type": p["diet_type"], "allergies": json.loads(p["allergies"] or "[]"),
         "dislikes": json.loads(p["dislikes"] or "[]"), "protein_mode": protein_mode(p),
+        "likes": json.loads(p["likes"] or "[]"), "name": p["name"],
     }
 
 
@@ -854,7 +869,7 @@ def recipe_rate(recipe_id: int, body: RateIn):
 
 @app.get("/api/taste")
 def get_taste():
-    """What ReFridge has learned about your cooking, for the profile screen."""
+    """What ShelfLife has learned about your cooking, for the profile screen."""
     prof = taste.profile(db)
     return {
         "cuisines": taste.top_preferences(prof, "cuisine", 4),

@@ -192,5 +192,7 @@ def check_off(db: Database, product_name: str) -> dict | None:
 
 
 def listed_norms(db: Database) -> set[str]:
+    """Foods you put on the list yourself (by hand or from a recipe). The planner's own
+    suggestions don't count: you haven't said yes to them."""
     trip = db.get_setting(TRIP_KEY)
-    return {e["norm"] for e in db.grocery_entries() if _visible(e, trip)}
+    return {e["norm"] for e in db.grocery_entries() if _visible(e, trip) and e["source"] != "plan"}

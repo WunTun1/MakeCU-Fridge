@@ -107,7 +107,9 @@ def _most_urgent_per_product(alerts: list[Alert]) -> list[Alert]:
 def _fridge_temp_alert(db: Database) -> Alert | None:
     """Reads the Pi's Grove barometer (temperature) — a real fridge-health
     check, distinct from inventory alerts."""
-    reading = conditions.latest(db)  # demo numbers too, with DEMO_CONDITIONS=on
+    if conditions.demo_on():
+        return None  # demo numbers are a room, not a fridge failing
+    reading = conditions.latest(db)
     if reading is None or reading["temperature_c"] is None:
         return None
     age = clock.utc_now() - datetime.fromisoformat(reading["occurred_at"])
@@ -115,8 +117,8 @@ def _fridge_temp_alert(db: Database) -> Alert | None:
         return None
     if reading["temperature_c"] > FRIDGE_TEMP_ALERT_C:
         return Alert(None, "Fridge", "fridge_temp_high",
-                     f"{reading['temperature_c']:.1f}°C — check the door and power")
+                     f"{reading['temperature_c']:.1f}°C. Check the door and power.")
     if reading["temperature_c"] <= FRIDGE_TEMP_LOW_C:
         return Alert(None, "Fridge", "fridge_temp_low",
-                     f"{reading['temperature_c']:.1f}°C — too cold, food may freeze; turn the dial up")
+                     f"{reading['temperature_c']:.1f}°C. Food may freeze, turn the dial up.")
     return None

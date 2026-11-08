@@ -235,6 +235,10 @@ export type Profile = {
   dislikes: string[];
   /** Protein is at least 25% of the calorie goal: recipe lists rank by protein. */
   protein_mode: boolean;
+  /** Foods and cuisines you like: they come up more often. */
+  likes?: string[];
+  /** What the app calls you. */
+  name?: string | null;
 };
 
 export type Nutrition = {
@@ -459,6 +463,8 @@ export const api = {
   /** Removes a row (or brings it back); an automatic row stays off for this trip. */
   hideGrocery: (id: number, hidden: boolean) =>
     patch<{ ok: true }>(`/api/grocery/items/${id}`, { hidden }),
+  setGroceryAmount: (id: number, amount: string | null) =>
+    patch<{ ok: true }>(`/api/grocery/items/${id}`, { amount }),
   clearCheckedGrocery: () =>
     post<{ ok: true }>("/api/grocery/clear-checked", {}),
   unlock: () => request<UnlockSuggestion[]>("/api/grocery/unlock"),
@@ -495,8 +501,12 @@ export const api = {
       item_id: itemId,
       grams,
     }),
-  waste: (itemIds: number[]) =>
-    post<{ event_ids: number[] }>("/api/items/waste", { item_ids: itemIds }),
+  /** Thrown out: all of each, or `grams` of each (same order). */
+  waste: (itemIds: number[], grams?: number[]) =>
+    post<{ event_ids: number[] }>("/api/items/waste", {
+      item_ids: itemIds,
+      grams,
+    }),
   undoEvents: (eventIds: number[]) =>
     post<{ ok: true }>("/api/events/undo", { event_ids: eventIds }),
   barcode: (barcode: string, location = "pantry") =>

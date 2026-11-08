@@ -1,5 +1,5 @@
 import { router } from "expo-router";
-import { useEffect, useRef, useState, type ComponentRef } from "react";
+import { useEffect, useRef, type ComponentRef } from "react";
 import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -11,25 +11,28 @@ import {
 
 import { RecipePhoto } from "@/components/RecipePhoto";
 import type { RecipeCard } from "@/lib/api";
-import { makeStyles, useColors, useUi } from "@/lib/theme";
+import { makeStyles, useUi } from "@/lib/theme";
 
 export const CARD_W = 240;
-const GAP = 16; // the page margin: a card that's turned away leaves no sliver at the edge
-const ROTATE_MS = 4000;
-/** After you swipe, it waits this long before rotating again. */
-const PAUSE_MS = 10000;
+const GAP = 16;
+/** How fast it drifts on its own, in px per second. */
+const SPEED = 24;
+/** After you drag or swipe it, it waits this long before drifting again. */
+const RESUME_MS = 2000;
+/** The list is drawn this many times in a row, so it can loop without an edge. */
+const COPIES = 3;
 
 export type CarouselItem = {
   recipe: RecipeCard;
-  /** Under the name: "You have 4 of 6", "Saves 560 g chicken breast". */
+  /** Under the name: "You have 4 of 6". */
   caption?: string | null;
   /** A tag over the photo: "Best to cook now". */
   badge?: string | null;
 };
 
 /**
- * Recipe photos you swipe through — and that turn by themselves every few seconds, with dots
- * showing where you are (like an app store's featured row). Tapping one opens it.
+ * Recipe photos drifting slowly past, in an endless loop. Drag or swipe it and it stops to let
+ * you, then carries on from wherever you left it. Only recipes with a photo, when enough have one.
  */
 export function RecipeCarousel({
   items,
@@ -41,39 +44,69 @@ export function RecipeCarousel({
   const styles = useStyles();
   const ui = useUi();
   const ref = useRef<ComponentRef<typeof ScrollView>>(null);
-  const [index, setIndex] = useState(0);
+  const withPhoto = items.filter((i) => i.recipe.image_url);
+  const shown = withPhoto.length >= 3 ? withPhoto : items;
+  const count = shown.length;
+  const cycle = count * (CARD_W + GAP);
+  const x = useRef(0);
+  const expected = useRef(0);
   const pausedUntil = useRef(0);
-  const count = items.length;
+  const ready = useRef(false);
 
+  // The drift: a frame loop that nudges the row along, and wraps it a whole cycle back so it
+  // never reaches an end.
   useEffect(() => {
     if (count < 2) return;
-    const id = setInterval(() => {
-      if (Date.now() < pausedUntil.current) return;
-      setIndex((i) => {
-        const next = (i + 1) % count;
-        ref.current?.scrollTo({ x: next * (CARD_W + GAP), animated: true });
-        return next;
-      });
-    }, ROTATE_MS);
-    return () => clearInterval(id);
-  }, [count]);
+    let frame = 0;
+    let last = 0;
+    const tick = (t: number) => {
+      const dt = last ? Math.min(t - last, 64) : 0;
+      last = t;
+      if (ready.current && Date.now() >= pausedUntil.current) {
+        let next = x.current + (SPEED * dt) / 1000;
+        if (next >= 2 * cycle) next -= cycle;
+        expected.current = next;
+        x.current = next;
+        ref.current?.scrollTo({ x: next, animated: false });
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [count, cycle]);
 
-  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) =>
-    setIndex(
-      Math.min(
-        Math.max(Math.round(e.nativeEvent.contentOffset.x / (CARD_W + GAP)), 0),
-        Math.max(count - 1, 0),
-      ),
-    );
+  const pause = () => {
+    pausedUntil.current = Date.now() + RESUME_MS;
+  };
+
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const now = e.nativeEvent.contentOffset.x;
+    // The drift's own scrolls come back rounded to a whole pixel; keep its fractional position,
+    // or a fraction of a pixel per frame would round away and it would never move.
+    if (Math.abs(now - expected.current) <= 3) return;
+    pause(); // you moved it, not the drift
+    x.current = now;
+    expected.current = now;
+    // Keep you in the middle copy so there's always more on both sides.
+    if (now < cycle * 0.5 || now >= 2.5 * cycle) {
+      const wrapped = now < cycle * 0.5 ? now + cycle : now - cycle;
+      x.current = wrapped;
+      expected.current = wrapped;
+      ref.current?.scrollTo({ x: wrapped, animated: false });
+    }
+  };
+
+  const onLayout = () => {
+    if (ready.current || count < 2) return;
+    x.current = cycle;
+    expected.current = cycle;
+    ref.current?.scrollTo({ x: cycle, animated: false });
+    ready.current = true;
+  };
 
   if (loading && count === 0) {
     return (
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.bleed}
-        contentContainerStyle={styles.row}
-      >
+      <View style={[styles.bleed, styles.row, { flexDirection: "row" }]}>
         {[0, 1].map((i) => (
           <View
             key={i}
@@ -81,37 +114,32 @@ export function RecipeCarousel({
             accessibilityLabel="Loading recipes"
           />
         ))}
-      </ScrollView>
+      </View>
     );
   }
-  if (count === 0)
-    return (
-      <Text style={ui.detail}>
-        No ideas yet. Add a few things to the fridge.
-      </Text>
-    );
+  if (count === 0) return <Text style={ui.muted}>Empty</Text>;
 
+  const looped =
+    count < 2 ? shown : Array.from({ length: COPIES }, () => shown).flat();
   return (
-    <View style={{ gap: 10 }}>
-      <ScrollView
-        ref={ref}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        snapToInterval={CARD_W + GAP}
-        decelerationRate="fast"
-        onScroll={onScroll}
-        onScrollBeginDrag={() => (pausedUntil.current = Date.now() + PAUSE_MS)}
-        onTouchStart={() => (pausedUntil.current = Date.now() + PAUSE_MS)}
-        scrollEventThrottle={64}
-        style={styles.bleed}
-        contentContainerStyle={styles.row}
-      >
-        {items.map((item) => (
-          <Card key={item.recipe.id} item={item} />
-        ))}
-      </ScrollView>
-      {count > 1 && <Dots count={count} index={index} />}
-    </View>
+    <ScrollView
+      ref={ref}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      onScroll={onScroll}
+      onScrollBeginDrag={pause}
+      onScrollEndDrag={pause}
+      onMomentumScrollEnd={pause}
+      onTouchStart={pause}
+      onLayout={onLayout}
+      scrollEventThrottle={16}
+      style={styles.bleed}
+      contentContainerStyle={styles.row}
+    >
+      {looped.map((item, i) => (
+        <Card key={`${item.recipe.id}-${i}`} item={item} />
+      ))}
+    </ScrollView>
   );
 }
 
@@ -141,34 +169,12 @@ function Card({ item }: { item: CarouselItem }) {
           {recipe.name}
         </Text>
         {caption && (
-          <Text style={styles.caption} numberOfLines={2}>
+          <Text style={styles.caption} numberOfLines={1}>
             {caption}
           </Text>
         )}
       </View>
     </Pressable>
-  );
-}
-
-function Dots({ count, index }: { count: number; index: number }) {
-  const c = useColors();
-  return (
-    <View
-      style={{ flexDirection: "row", gap: 6, justifyContent: "center" }}
-      accessibilityLabel={`${index + 1} of ${count}`}
-    >
-      {Array.from({ length: count }, (_, i) => (
-        <View
-          key={i}
-          style={{
-            width: i === index ? 16 : 6,
-            height: 6,
-            borderRadius: 3,
-            backgroundColor: i === index ? c.accent : c.border,
-          }}
-        />
-      ))}
-    </View>
   );
 }
 
@@ -185,7 +191,7 @@ const useStyles = makeStyles((c, size) => ({
     overflow: "hidden",
   },
   placeholder: {
-    height: 150 + size(20) * 2 + size(18) * 2 + 32,
+    height: 150 + size(20) * 2 + size(18) + 28,
     backgroundColor: c.placeholder,
     borderWidth: 0,
   },
@@ -200,8 +206,8 @@ const useStyles = makeStyles((c, size) => ({
     backgroundColor: c.accent,
   },
   badgeText: { color: c.onAccent, fontSize: size(12), fontWeight: "700" },
-  // Fixed height for two lines of name and two of caption, so every card in the row matches.
-  text: { padding: 12, gap: 4, height: size(20) * 2 + size(18) * 2 + 4 + 24 },
+  // Fixed height for two lines of name and one of caption, so every card in the row matches.
+  text: { padding: 12, gap: 4, height: size(20) * 2 + size(18) + 4 + 24 },
   caption: {
     color: c.accent,
     fontSize: size(13),

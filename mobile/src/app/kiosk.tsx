@@ -128,7 +128,7 @@ function KioskScreen() {
       {summary.error && !s ? (
         <View style={styles.offline}>
           <FontAwesome name="plug" size={40} color={colors.muted} />
-          <Text style={styles.offlineText}>Connecting to ReFridge…</Text>
+          <Text style={styles.offlineText}>Connecting…</Text>
         </View>
       ) : (
         <View style={[styles.body, { padding: grid, gap: grid }]}>
@@ -537,7 +537,7 @@ function groupRows(ranked: InventoryEntry[]): Row[] {
     {
       key: "shelf",
       title: "Shelf",
-      empty: "Empty — put something on the shelf.",
+      empty: "Empty",
       items: ranked.filter(onShelf),
     },
     {

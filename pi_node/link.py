@@ -39,7 +39,7 @@ GIT_URL = f"git://{LAPTOP}/MakeCU-Fridge"
 
 
 def say(msg: str) -> None:
-    print(f"[refridge] {msg}", flush=True)
+    print(f"[shelflife] {msg}", flush=True)
 
 
 def local_ipv4() -> list[ipaddress.IPv4Interface]:

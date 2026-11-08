@@ -87,7 +87,9 @@ CREATE TABLE IF NOT EXISTS profile (
     daily_fat_g REAL,
     diet_type TEXT,
     allergies TEXT,     -- json list
-    dislikes TEXT       -- json list
+    dislikes TEXT,      -- json list
+    likes TEXT,         -- json list: foods and cuisines you like (nudges recipe suggestions)
+    name TEXT           -- what the app calls you
 );
 
 CREATE TABLE IF NOT EXISTS chat_memory (
@@ -202,6 +204,11 @@ class Database:
                     "UPDATE products SET unit = ?, grams_per_unit = ? WHERE id = ?",
                     (unit, default_grams_per_unit(row["name"], unit), row["id"]),
                 )
+        profile_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(profile)")}
+        if "likes" not in profile_columns:
+            self._conn.execute("ALTER TABLE profile ADD COLUMN likes TEXT")
+        if "name" not in profile_columns:
+            self._conn.execute("ALTER TABLE profile ADD COLUMN name TEXT")
         turn_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(chat_turns)")}
         if "grocery_ids" not in turn_columns:
             self._conn.execute("ALTER TABLE chat_turns ADD COLUMN grocery_ids TEXT NOT NULL DEFAULT '[]'")
@@ -576,6 +583,8 @@ class Database:
             fields["allergies"] = json.dumps(fields["allergies"])
         if "dislikes" in fields and not isinstance(fields["dislikes"], str):
             fields["dislikes"] = json.dumps(fields["dislikes"])
+        if "likes" in fields and not isinstance(fields["likes"], str):
+            fields["likes"] = json.dumps(fields["likes"])
         cols = ", ".join(f"{k} = ?" for k in fields)
         with self.cursor() as cur:
             cur.execute(f"UPDATE profile SET {cols} WHERE id = 1", list(fields.values()))

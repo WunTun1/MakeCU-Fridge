@@ -37,7 +37,7 @@ RESTART_DELAY_S = 3
 
 
 def say(msg: str) -> None:
-    print(f"[refridge] {msg}", flush=True)
+    print(f"[shelflife] {msg}", flush=True)
 
 
 # ------------------------------------------------------------------ setup
@@ -93,19 +93,19 @@ def set_autostart(enable: bool) -> None:
         say("No terminal program found (lxterminal) — install one: sudo apt install lxterminal")
         sys.exit(1)
     script = Path(__file__).resolve()
-    command = f'python3 "{script}"; echo; read -p "ReFridge stopped. Press Enter to close this window."'
+    command = f'python3 "{script}"; echo; read -p "ShelfLife stopped. Press Enter to close this window."'
     AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
     entry = [
         "[Desktop Entry]",
         "Type=Application",
-        "Name=ReFridge",
+        "Name=ShelfLife",
         "Comment=Sensors, camera and the fridge screen (Ctrl+C in this window stops it)",
-        f"Exec={terminal} --title=ReFridge -e bash -c '{command}'",
+        f"Exec={terminal} --title=ShelfLife -e bash -c '{command}'",
         "X-GNOME-Autostart-enabled=true",
     ]
     AUTOSTART_FILE.write_text("\n".join(entry) + "\n", newline="\n")
     say(f"Will start at every boot, in a terminal window ({AUTOSTART_FILE}).")
-    say("To stop it then: Alt+Tab to the ReFridge window, Ctrl+C. To undo: run.py --autostart off")
+    say("To stop it then: Alt+Tab to the ShelfLife window, Ctrl+C. To undo: run.py --autostart off")
 
 
 def http_json(url: str, timeout: float = 2) -> dict | None:

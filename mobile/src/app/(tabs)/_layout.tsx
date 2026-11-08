@@ -6,7 +6,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AlertsButton } from "@/components/AlertsButton";
 import { SettingsButton } from "@/components/SettingsButton";
 import { TAB_BAR_HEIGHT } from "@/components/Snackbar";
-import { useColors, useTextScale } from "@/lib/theme";
+import { BAR_HEIGHT, useColors, useTextScale } from "@/lib/theme";
 
 type IconName = ComponentProps<typeof FontAwesome>["name"];
 
@@ -46,8 +46,13 @@ export default function TabLayout() {
           fontWeight: "600",
           marginBottom: 4,
         },
-        headerStyle: { backgroundColor: c.bg },
-        headerTintColor: c.text,
+        headerStyle: {
+          backgroundColor: c.bar,
+          height: BAR_HEIGHT + insets.top,
+        },
+        headerTintColor: c.onBar,
+        headerTitleStyle: { fontSize: 19, fontWeight: "700" },
+        headerShadowVisible: false,
         sceneStyle: { backgroundColor: c.bg },
         // Settings (goals, diet, allergies, display) behind the gear, alerts behind the bell, on every tab.
         headerLeft: () => <SettingsButton />,
@@ -58,7 +63,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "ReFridge",
+          title: "ShelfLife",
           tabBarLabel: "Home",
           tabBarIcon: ({ color }) => <TabIcon name="home" color={color} />,
         }}
@@ -83,7 +88,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="browse"
         options={{
-          title: "Your fridge",
+          title: "Your Fridge",
           tabBarIcon: ({ color }) => <TabIcon name="th-list" color={color} />,
         }}
       />

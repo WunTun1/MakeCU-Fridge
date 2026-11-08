@@ -135,6 +135,25 @@ def test_adding_a_food_the_restock_plan_lists_makes_it_yours(client):
     assert db.get_grocery_entry(own_id)["source"] == "manual"
 
 
+def test_throwing_out_part_of_an_item_keeps_the_rest(client):
+    made = client.post("/api/items", json={"name": "Spinach", "grams": 200, "location": "fridge", "shelf": 0}).json()
+    out = client.post("/api/items/waste", json={"item_ids": [made["item_id"]], "grams": [50]}).json()
+    assert len(out["event_ids"]) == 1
+    assert _inventory(client)["Spinach"]["grams"] == 150
+
+
+def test_a_planner_suggestion_alone_is_not_on_your_list(client):
+    from intelligence import grocery_list
+
+    server = pytest.importorskip("api.server")
+    db = server.db
+    trip = db.get_setting(grocery_list.TRIP_KEY)
+    db.add_grocery_entry("Eggs", grocery_list.normalize("Eggs"), "plan", trip_date=trip)
+    assert grocery_list.normalize("Eggs") not in grocery_list.listed_norms(db)  # suggested, not said yes to
+    grocery_list.add_entry(db, "Eggs", "recipe")
+    assert grocery_list.normalize("Eggs") in grocery_list.listed_norms(db)
+
+
 def test_naming_an_unidentified_item_moves_it_to_that_food_and_drops_the_photo(client, monkeypatch, tmp_path):
     server = pytest.importorskip("api.server")
     monkeypatch.setattr(server, "ITEM_IMAGE_DIR", tmp_path / "item_images")
@@ -155,3 +174,14 @@ def test_a_recipe_adds_its_amounts_to_the_grocery_list(client):
     items = {i["name"]: i for i in client.get("/api/grocery").json()["items"]}
     assert items["vegetable broth"]["amount"] == "1/2 cup"
     assert items["lemon juice"]["amount"] is None
+
+
+def test_profile_keeps_your_name_and_likes(client):
+    client.put("/api/profile", json={"name": "Alex", "likes": ["Italian", "spinach"]})
+    profile = client.get("/api/profile").json()
+    assert profile["name"] == "Alex" and profile["likes"] == ["Italian", "spinach"]
+    from intelligence import taste
+
+    server = pytest.importorskip("api.server")
+    prefs = taste.profile(server.db)
+    assert prefs.get("cuisine:italian", 0) > 0.4 and prefs.get("ingredient:spinach", 0) > 0.4
